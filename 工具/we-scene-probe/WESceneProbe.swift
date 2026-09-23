@@ -14,6 +14,7 @@ func usage() {
       we-scene-probe scene <scene.json>       打印场景结构摘要
       we-scene-probe audit <scene.pkg>        只读解码所有 TEX，明确列出不支持项
       we-scene-probe resources <scene.pkg>    输出资源引用与能力 JSON（非渲染）
+      we-scene-probe capabilities <scene.pkg> [max-edge]  输出受限预览与桌面播放能力边界 JSON
       we-scene-probe still <scene.pkg> <out.png> [max-edge]  导出静态基础图及同名 .json 诊断
       we-scene-probe frame <scene.pkg> <materials/name.tex> <seconds> <out.png> [max-edge]  离线视频纹理取帧并合成
       we-scene-probe sequence <scene.pkg> <materials/name.tex> <fps> <count> <outdir> [max-edge]  有界离线逐帧序列，非实时播放
@@ -118,6 +119,15 @@ do {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         print(String(decoding: try encoder.encode(report), as: UTF8.self))
         if !report.issues.isEmpty { exit(3) }
+
+    case "capabilities":
+        guard (3...4).contains(args.count) else { usage(); exit(2) }
+        let maxEdge = args.count == 4 ? (Int(args[3]) ?? 0) : 640
+        let data = try WESceneInspection.capabilityReport(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), maxPreviewDimension: maxEdge)
+        print(String(decoding: data, as: UTF8.self))
+        // A restricted preview is useful for inspection, but not a playable wallpaper.
+        exit(3)
 
     case "still":
         guard (4...5).contains(args.count) else { usage(); exit(2) }

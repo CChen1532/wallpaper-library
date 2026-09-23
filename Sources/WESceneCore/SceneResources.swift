@@ -238,7 +238,7 @@ final class SceneResourceInspector {
         guard root["camera"] is [String: Any], let general = root["general"] as? [String: Any], let objects = root["objects"] as? [Any] else {
             throw ProbeError.invalid("scene.json 缺少 camera/general/objects 结构")
         }
-        issue("rendererUnavailable", "$scene", "scene.json", "仅资源报告，尚无 scene 渲染器，playable 恒为 false")
+        issue("rendererUnavailable", "$scene", "scene.json", "资源检查本身不渲染；现有受限预览不具备完整scene效果链及桌面呈现，playable 恒为 false")
         for key in ["bloom", "hdr", "cameraparallax", "camerashake"] where (defaultValue(general[key] ?? false) as? Bool) == true {
             issue("sceneFeature", "$scene", "general." + key, "场景特性暂不支持: \(key)")
         }

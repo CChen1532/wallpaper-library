@@ -84,4 +84,12 @@ func runResourceChecks(_ c: inout Checker) throws {
     let publicJSON = try WESceneInspection.resourceReport(packageData: Data(package(scene([layer])).bytes))
     let publicReport = try JSONDecoder().decode(SceneResourceReport.self, from: publicJSON)
     c.check(publicReport.edges.count == 3 && !publicReport.playable, "公共Data入口使用同一核心解析实现")
+    let capabilityData = try WESceneInspection.capabilityReport(packageData: Data(package(scene([layer])).bytes))
+    let capability = try JSONDecoder().decode(WESceneCapabilityReport.self, from: capabilityData)
+    c.check(capability.resourceInspectionAvailable && !capability.desktopScenePlayable && !capability.faithfulSceneRendering,
+            "能力报告不把资源齐全误认成桌面可播放")
+    c.check(!capability.restrictedStaticPreviewAvailable && capability.previewFailure != nil &&
+            capability.limitationCodes.contains("restrictedPreviewUnavailable"), "预览失败仍保留资源检查与显式限制")
+    c.check(rejects { _ = try WESceneInspection.capabilityReport(packageData: Data(package(scene([layer])).bytes), maxPreviewDimension: 961) },
+            "能力报告拒绝越界预览尺寸")
 }

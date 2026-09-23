@@ -50,6 +50,13 @@ func runCompositorChecks(_ c: inout Checker) throws {
     let red = solid(255, 0, 0), blue = solid(0, 0, 255)
     let base = try render([image("red", id: 1)], textures: ["red": red])
     c.check(base.width == 4 && base.height == 4 && pixel(base, 0, 0) == [255,0,0,255] && pixel(base, 3, 3) == [255,0,0,255], "基础图覆盖与边界像素")
+    let capabilityData = try WESceneInspection.capabilityReport(
+        packageData: makePreviewPackage(objects: [image("red", id: 1)], textures: ["red": red]),
+        maxPreviewDimension: 4)
+    let capability = try JSONDecoder().decode(WESceneCapabilityReport.self, from: capabilityData)
+    c.check(capability.restrictedStaticPreviewAvailable && capability.previewFailure == nil &&
+            !capability.desktopScenePlayable && !capability.faithfulSceneRendering,
+            "受限静态预览可用仍不解锁桌面动态播放")
     c.check(try !summary(base).playable && !summary(base).faithful, "静态导出不宣称可播放或忠实还原")
     c.check(try base.hasRenderableContent && summary(base).previewAvailable, "有基础图层才标记预览可用")
     c.check(try summary(base).frameMode == "staticApproximation" && summary(base).videoTexture == nil, "静态与视频帧报告分开标记")
