@@ -27,6 +27,9 @@ public actor WESceneRealtimeSceneSession {
 
     public func play() async throws { try await video.play() }
     public func pause() async { await video.pause() }
+    public func seek(to seconds: Double) async throws { try await video.seek(to: seconds) }
+    public func restart() async throws { try await video.restart() }
+    public func currentSeconds() async -> Double { await video.currentSeconds() }
     public func close() async { await video.close() }
 
     public func poll(maxDimension: Int = 960) async throws -> WESceneRealtimeSceneFrame? {

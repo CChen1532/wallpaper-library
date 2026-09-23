@@ -91,6 +91,25 @@ public actor WESceneRealtimeVideoSession {
         player.pause()
     }
 
+    public func currentSeconds() -> Double {
+        CMTimeGetSeconds(player.currentTime())
+    }
+
+    public func seek(to seconds: Double) async throws {
+        guard !closed else { throw ProbeError.invalid("视频输出会话已关闭") }
+        guard seconds.isFinite, seconds >= 0, seconds < durationSeconds else {
+            throw ProbeError.invalid("视频输出跳转时间超出范围")
+        }
+        let completed = await player.seek(to: CMTime(seconds: seconds, preferredTimescale: 60000),
+                                          toleranceBefore: .zero, toleranceAfter: .zero)
+        guard completed else { throw ProbeError.invalid("视频输出跳转未完成") }
+    }
+
+    public func restart() async throws {
+        try await seek(to: 0)
+        try play()
+    }
+
     public func close() {
         if closed { return }
         player.pause()
