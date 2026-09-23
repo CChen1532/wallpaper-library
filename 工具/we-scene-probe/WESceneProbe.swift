@@ -9,15 +9,17 @@ func usage() {
       we-scene-probe pkg <scene.pkg>          列出 PKGV 条目
       we-scene-probe extract <pkg> <outdir>   解包
       we-scene-probe tex <file.tex> [out.png] 解析 TEX，可导出首张图 PNG
+      we-scene-probe video-payload <file.tex> <out.mp4> 只提取已识别视频纹理载荷（拒绝覆盖）
       we-scene-probe scene <scene.json>       打印场景结构摘要
       we-scene-probe audit <scene.pkg>        只读解码所有 TEX，明确列出不支持项
       we-scene-probe resources <scene.pkg>    输出资源引用与能力 JSON（非渲染）
       we-scene-probe still <scene.pkg> <out.png> [max-edge]  导出静态基础图及同名 .json 诊断
+      we-scene-probe frame <scene.pkg> <materials/name.tex> <seconds> <out.png> [max-edge]  离线视频纹理取帧并合成
     """)
 }
 
 @main enum WESceneProbeCLI {
-static func main() {
+static func main() async {
 let args = CommandLine.arguments
 guard args.count >= 2 else { usage(); exit(2) }
 
@@ -72,6 +74,13 @@ do {
             print("已导出 PNG: \(args[3]) (\(w)x\(h))")
         }
 
+    case "video-payload":
+        guard args.count == 4 else { usage(); exit(2) }
+        let tex = try parseTex(Data(contentsOf: URL(fileURLWithPath: args[2])))
+        let bytes = try SceneVideoTextureDecoder.payload(tex)
+        try Data(bytes).write(to: URL(fileURLWithPath: args[3]), options: .withoutOverwriting)
+        print("已提取包内 MP4 载荷：\(bytes.count) 字节；仅用于离线检查")
+
     case "scene":
         guard args.count >= 3 else { usage(); exit(2) }
         print(try summarizeScene(try Data(contentsOf: URL(fileURLWithPath: args[2]))))
@@ -115,6 +124,21 @@ do {
         }
         try writePNG([UInt8](image.rgba), width: image.width, height: image.height, to: output.path)
         print("静态基础图: \(output.path) (\(image.width)x\(image.height))；同名JSON记录降级项，非可播放壁纸")
+
+    case "frame":
+        guard (6...7).contains(args.count), let seconds = Double(args[4]) else { usage(); exit(2) }
+        let maxEdge = args.count == 7 ? (Int(args[6]) ?? 0) : 1600
+        let image = try await WESceneInspection.offlineFrame(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])),
+            videoTexturePath: args[3], atSeconds: seconds, maxDimension: maxEdge)
+        let output = URL(fileURLWithPath: args[5])
+        try image.diagnosticsJSON.write(to: output.deletingPathExtension().appendingPathExtension("json"), options: .atomic)
+        guard image.hasRenderableContent else {
+            FileHandle.standardError.write("无可合成内容；仅写出诊断JSON，未生成PNG\n".data(using: .utf8)!)
+            exit(3)
+        }
+        try writePNG([UInt8](image.rgba), width: image.width, height: image.height, to: output.path)
+        print("离线帧: \(output.path) (\(image.width)x\(image.height))；同名JSON记录请求/实际时间与降级项，非桌面播放")
 
     default:
         usage(); exit(2)

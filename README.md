@@ -34,7 +34,7 @@ bash scripts/check.sh --live --media
 
 - 本机脚本的 `rotate on` 分派只传递间隔，没有传递模式，因此 UI 暂仅开放随机轮播。该分派逻辑尚未修改。
 - `start` 的返回码可能被脚本后续逻辑覆盖；前端会在完成后核对实际运行状态和路径。
-- 显示器和解码负载当前通过诊断文本展示，尚无专门图表。暂不支持菜单栏、开机启动以及 Wallpaper Engine 场景桌面播放；独立工具已有受限解析与静态基础图合成，但尚未接入 UI。
+- 显示器和解码负载当前通过诊断文本展示，尚无专门图表。暂不支持菜单栏、开机启动以及 Wallpaper Engine 场景桌面播放；独立工具已有解析、静态基础图和指定视频纹理的离线取帧合成，但尚未接入 UI。
 - `WallpaperBackend` 协议与资源类型字段作为后续适配入口；现在仅实现 phonto 视频。
 - 配置路径与现有控制脚本保持一致。更换素材位置前需要同步后端配置。
 - 状态四秒刷新一次；首次预览生成逐个处理，避免同时解码多个 4K 视频。
@@ -45,7 +45,8 @@ bash scripts/check.sh --live --media
 ## 进度入口
 
 
-Scene实验进度：`WE场景-阶段2C静态合成验收.md`。核心位于 `Sources/WESceneCore`；
+Scene实验进度：`WE场景-阶段2D离线视频帧验收.md`。核心位于 `Sources/WESceneCore`；
 用 `bash scripts/check-scene.sh` 运行自检，`bash scripts/scene-probe.sh resources /path/scene.pkg` 生成只读 JSON 报告，
 `bash scripts/scene-probe.sh still /path/scene.pkg /tmp/scene.png` 可尝试导出受限静态基础图及同名诊断 JSON。
 没有可合成静态层时只写诊断、退出 3；静态图不能代替动态 scene 桌面播放。视频后端保持原有实现。
+`bash scripts/scene-probe.sh frame /path/scene.pkg materials/name.tex 1 /tmp/scene-t1.png` 可离线查看指定视频纹理在 1 秒的基础合成帧；这同样不是连续播放或视觉等效验收。

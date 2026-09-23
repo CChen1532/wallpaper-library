@@ -55,9 +55,13 @@ func runTextureChecks(_ c: inout Checker) throws {
         let disguised = makeSyntheticDisguisedVideoTex(version: version)
         let parsed = try parseTex(disguised)
         c.check(parsed.isVideoTexture && parsed.imageFormat == .mp4, "TEXB000\(version) 未标记 MP4 内容识别")
+        c.check(try SceneVideoTextureDecoder.payload(parsed).count == 12, "伪装 MP4 载荷只取声明切片")
         c.check(rejects { _ = try texMipmapToRGBA(parsed, mipmap: parsed.images[0].mipmaps[0]) }, "伪装 MP4 不当作裸像素")
         c.check(rejects { _ = try TextureCache().load(disguised) }, "伪装 MP4 不进入静态缓存")
     }
+    var brokenVideo = makeSyntheticDisguisedVideoTex(version: 3)
+    brokenVideo.replaceSubrange((brokenVideo.count-12)..<(brokenVideo.count-8), with: [0,0,0,40])
+    c.check(rejects { _ = try SceneVideoTextureDecoder.payload(parseTex(brokenVideo)) }, "MP4 ftyp box 越界拒绝")
     let extra = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0,
                           rawBytes: [UInt8](repeating: 7, count: 17))
     c.check(rejects { _ = try texMipmapToRGBA(rawTex(.rgba8888), mipmap: extra) }, "裸像素多余字节不静默截断")

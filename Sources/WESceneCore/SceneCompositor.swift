@@ -27,6 +27,11 @@ struct PreviewSummary: Codable {
     let playable: Bool
     let faithful: Bool
     let previewAvailable: Bool
+    let frameMode: String
+    let videoTexture: String?
+    let requestedSeconds: Double?
+    let actualSeconds: Double?
+    let videoDurationSeconds: Double?
     let description: String
 }
 
@@ -71,6 +76,8 @@ final class SceneCompositor {
     private let package: PkgFile
     private let entries: [String: PkgEntry]
     private let textureCache = TextureCache()
+    private let videoFrame: WESceneVideoTextureFrame?
+    private var videoFrameApplied = false
     private var diagnostics: [PreviewDiagnostic] = []
     private var drawn: [String] = []
     private var skipped: [String] = []
@@ -81,8 +88,9 @@ final class SceneCompositor {
     private var visibility: [String: Bool] = [:]
     private var pixelBudget = 0
 
-    init(package: PkgFile) throws {
+    init(package: PkgFile, videoFrame: WESceneVideoTextureFrame? = nil) throws {
         self.package = package
+        self.videoFrame = videoFrame
         // Reject ambiguous paths before resolving any references.
         _ = try SceneResourceInspector(package: package)
         entries = Dictionary(uniqueKeysWithValues: package.entries.filter { !$0.path.isEmpty }.map { ($0.path, $0) })
@@ -223,7 +231,17 @@ final class SceneCompositor {
         }
         let path = source.hasPrefix("materials/") ? source : "materials/" + source
         let texPath = path.hasSuffix(".tex") ? path : path + ".tex"
-        let tex = try textureCache.load(data(texPath))
+        let tex: DecodedTexture
+        if let videoFrame, videoFrame.texturePath == texPath {
+            videoFrameApplied = true
+            tex = DecodedTexture(width: videoFrame.width, height: videoFrame.height,
+                                 rgba: [UInt8](videoFrame.rgba), sourceFormat: .rgba8888,
+                                 embeddedFormat: .mp4, imageWidth: videoFrame.width,
+                                 imageHeight: videoFrame.height, flags: 0, mipLevel: 0)
+            note("offlineVideoFrame", layer.location, "视频纹理仅按指定时刻离线取帧；非桌面播放")
+        } else {
+            tex = try textureCache.load(data(texPath))
+        }
         guard tex.sourceFormat != .r8 && tex.sourceFormat != .rg88 else { throw ProbeError.unsupported("灰度/双通道纹理不能直接作为颜色图") }
         let defaultSize = Point2(x: Double(model["width"] as? Int ?? tex.imageWidth),
                                  y: Double(model["height"] as? Int ?? tex.imageHeight))
@@ -314,7 +332,11 @@ final class SceneCompositor {
                 continue
             }
             do {
-                if let effects = layer.object["effects"] as? [Any], !effects.isEmpty { note("effectsOmitted", layer.location, "效果器未渲染，仅显示基础图") }
+                if let effects = layer.object["effects"] as? [[String: Any]], !effects.isEmpty {
+                    let files = effects.compactMap { $0["file"] as? String }.prefix(3).map { String($0.prefix(160)) }
+                    let suffix = files.isEmpty ? "" : ": " + files.joined(separator: ", ")
+                    note("effectsOmitted", layer.location, "效果器未渲染，仅显示基础图\(suffix)")
+                }
                 let blendMode = layer.object["colorBlendMode"] as? Int ?? 0
                 guard blendMode == 0 else { throw ProbeError.unsupported("图层混合模式 \(blendMode)") }
                 let (transform, alpha, show) = try world(index)
@@ -328,11 +350,21 @@ final class SceneCompositor {
                 note("layerSkipped", layer.location, String(describing: error))
             }
         }
+        if videoFrame != nil && !videoFrameApplied {
+            throw ProbeError.unsupported("所选视频纹理未被可合成图层引用")
+        }
         let summary = PreviewSummary(schemaVersion: 1, width: width, height: height, sceneWidth: sceneWidth,
                                      sceneHeight: sceneHeight, drawnLayers: drawn, skippedLayers: skipped,
                                      diagnostics: diagnostics, playable: false, faithful: false,
                                      previewAvailable: !drawn.isEmpty,
-                                     description: "静态frame 0近似画面；不支持动画、脚本、效果器、粒子与桌面播放")
+                                     frameMode: videoFrame == nil ? "staticApproximation" : "offlineVideoTextureFrame",
+                                     videoTexture: videoFrame?.texturePath,
+                                     requestedSeconds: videoFrame?.requestedSeconds,
+                                     actualSeconds: videoFrame?.actualSeconds,
+                                     videoDurationSeconds: videoFrame?.durationSeconds,
+                                     description: videoFrame == nil
+                                         ? "静态frame 0近似画面；不支持动画、脚本、效果器、粒子与桌面播放"
+                                         : "指定视频纹理离线取帧并合成基础图；不支持完整动画、效果器或桌面播放")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return WESceneStaticPreview(width: width, height: height, rgba: Data(canvas),
                                     diagnosticsJSON: try encoder.encode(summary),
@@ -344,5 +376,12 @@ extension WESceneInspection {
     public static func staticPreview(packageData: Data, maxDimension: Int = 1600) throws -> WESceneStaticPreview {
         guard packageData.count <= 256 * 1024 * 1024 else { throw ProbeError.invalid("PKG超过256MiB预览预算") }
         return try SceneCompositor(package: parsePkg(packageData)).render(maxDimension: maxDimension)
+    }
+
+    public static func offlineFrame(packageData: Data, videoTexturePath: String,
+                                    atSeconds seconds: Double, maxDimension: Int = 1600) async throws -> WESceneStaticPreview {
+        guard (1...4096).contains(maxDimension) else { throw ProbeError.invalid("预览最大边长必须在1...4096") }
+        let frame = try await videoTextureFrame(packageData: packageData, texturePath: videoTexturePath, atSeconds: seconds)
+        return try SceneCompositor(package: parsePkg(packageData), videoFrame: frame).render(maxDimension: maxDimension)
     }
 }

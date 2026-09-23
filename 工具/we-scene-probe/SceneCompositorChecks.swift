@@ -50,6 +50,22 @@ func runCompositorChecks(_ c: inout Checker) throws {
     c.check(base.width == 4 && base.height == 4 && pixel(base, 0, 0) == [255,0,0,255] && pixel(base, 3, 3) == [255,0,0,255], "基础图覆盖与边界像素")
     c.check(try !summary(base).playable && !summary(base).faithful, "静态导出不宣称可播放或忠实还原")
     c.check(try base.hasRenderableContent && summary(base).previewAvailable, "有基础图层才标记预览可用")
+    c.check(try summary(base).frameMode == "staticApproximation" && summary(base).videoTexture == nil, "静态与视频帧报告分开标记")
+    let injected = WESceneVideoTextureFrame(width: 4, height: 4, rgba: Data(blue),
+                                            durationSeconds: 2, requestedSeconds: 1,
+                                            actualSeconds: 1, texturePath: "materials/red.tex")
+    let injectedPackage = try parsePkg(makePreviewPackage(objects: [image("red", id: 1)], textures: ["red": red]))
+    let frame = try SceneCompositor(package: injectedPackage, videoFrame: injected).render(maxDimension: 4)
+    c.check(pixel(frame, 1, 1) == [0,0,255,255], "视频帧按同一路径替换静态贴图")
+    c.check(try summary(frame).frameMode == "offlineVideoTextureFrame" &&
+            summary(frame).requestedSeconds == 1 && summary(frame).actualSeconds == 1 &&
+            summary(frame).videoDurationSeconds == 2 &&
+            !summary(frame).playable && !summary(frame).faithful, "离线动态帧不冒充桌面可播放")
+    let unrelated = WESceneVideoTextureFrame(width: 4, height: 4, rgba: Data(blue),
+                                             durationSeconds: 2, requestedSeconds: 1,
+                                             actualSeconds: 1, texturePath: "materials/unused.tex")
+    c.check(rejects { _ = try SceneCompositor(package: injectedPackage, videoFrame: unrelated).render(maxDimension: 4) },
+            "未被图层使用的视频帧不冒充动态合成")
 
     var pattern: [UInt8] = []
     for y in 0..<4 { for _ in 0..<4 { pattern += y == 0 ? [255,0,0,255] : [0,0,255,255] } }
