@@ -47,15 +47,17 @@ enum SceneVideoTextureDecoder {
 /// The caller must use it serially; this is not a real-time display decoder.
 final class SceneVideoTextureSession {
     private let directory: URL
+    let asset: AVURLAsset
     private let generator: AVAssetImageGenerator
     private let texturePath: String
-    private let width: Int
-    private let height: Int
+    let width: Int
+    let height: Int
     let durationSeconds: Double
 
-    private init(directory: URL, generator: AVAssetImageGenerator, path: String,
+    private init(directory: URL, asset: AVURLAsset, generator: AVAssetImageGenerator, path: String,
                  width: Int, height: Int, durationSeconds: Double) {
         self.directory = directory
+        self.asset = asset
         self.generator = generator
         self.texturePath = path
         self.width = width
@@ -95,7 +97,7 @@ final class SceneVideoTextureSession {
             generator.appliesPreferredTrackTransform = false
             generator.requestedTimeToleranceBefore = .zero
             generator.requestedTimeToleranceAfter = .zero
-            return SceneVideoTextureSession(directory: directory, generator: generator, path: path,
+            return SceneVideoTextureSession(directory: directory, asset: asset, generator: generator, path: path,
                                             width: tex.imageWidth, height: tex.imageHeight,
                                             durationSeconds: durationSeconds)
         } catch {

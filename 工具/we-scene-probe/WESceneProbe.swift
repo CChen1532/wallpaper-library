@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // MARK: - 命令
 
@@ -16,6 +17,7 @@ func usage() {
       we-scene-probe still <scene.pkg> <out.png> [max-edge]  导出静态基础图及同名 .json 诊断
       we-scene-probe frame <scene.pkg> <materials/name.tex> <seconds> <out.png> [max-edge]  离线视频纹理取帧并合成
       we-scene-probe sequence <scene.pkg> <materials/name.tex> <fps> <count> <outdir> [max-edge]  有界离线逐帧序列，非实时播放
+      we-scene-probe realtime-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz]  静音无窗口视频输出采样，不控制桌面
     """)
 }
 
@@ -182,6 +184,43 @@ do {
             .write(to: staging.appendingPathComponent("sequence.json"), options: .withoutOverwriting)
         try FileManager.default.moveItem(at: staging, to: destination)
         print("离线序列: \(destination.path) (\(count)帧)；复用单个提取视频与解码器，不代表桌面连续播放")
+
+    case "realtime-probe":
+        guard (5...6).contains(args.count), let duration = Double(args[4]),
+              duration.isFinite, (0.5...5).contains(duration) else { usage(); exit(2) }
+        let pollHz = args.count == 6 ? (Int(args[5]) ?? 0) : 10
+        guard (2...30).contains(pollHz) else { usage(); exit(2) }
+        let session = try await WESceneRealtimeVideoSession.open(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), videoTexturePath: args[3])
+        var observations: [[String: Any]] = []
+        do {
+            try await session.play()
+            let started = ProcessInfo.processInfo.systemUptime
+            while ProcessInfo.processInfo.systemUptime - started < duration {
+                try Task.checkCancellation()
+                if let frame = try await session.poll() {
+                    let digest = SHA256.hash(data: frame.rgba).map { String(format: "%02x", $0) }.joined()
+                    observations.append(["itemSeconds": frame.itemSeconds,
+                                         "displaySeconds": frame.displaySeconds,
+                                         "sha256": digest, "width": frame.width, "height": frame.height])
+                }
+                try await Task.sleep(nanoseconds: UInt64(1_000_000_000 / pollHz))
+            }
+            await session.close()
+        } catch {
+            await session.close()
+            throw error
+        }
+        let distinct = Set(observations.compactMap { $0["sha256"] as? String }).count
+        let report: [String: Any] = ["schemaVersion": 1, "probeMode": "windowlessMutedVideoOutput",
+                                     "playableScene": false, "desktopAttached": false,
+                                     "requestedDurationSeconds": duration, "pollHz": pollHz,
+                                     "videoDurationSeconds": session.durationSeconds,
+                                     "observedFrames": observations.count, "distinctFrames": distinct,
+                                     "frames": observations]
+        print(String(decoding: try JSONSerialization.data(withJSONObject: report,
+            options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+        if distinct < 2 { exit(3) }
 
     default:
         usage(); exit(2)

@@ -289,6 +289,7 @@ func runSelfTest() throws {
     try runResourceChecks(&c)
     try runCompositorChecks(&c)
     try runTimelineChecks(&c)
+    try runRealtimeChecks(&c)
     print("\n=== 自检结果：通过 \(c.passes) 项，失败 \(c.failures.count) 项 ===")
     if !c.failures.isEmpty {
         for f in c.failures { print("  ❌ \(f)") }
