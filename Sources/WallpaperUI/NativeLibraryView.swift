@@ -32,6 +32,8 @@ struct NativeLibraryView: View {
     @State private var sceneEntries: [SceneCatalogPayload.Entry] = []
     @State private var sceneLoading = false
     @State private var sceneError: String?
+    @State private var visibleSceneLimitations: [String] = []
+    @State private var showSceneLimitations = false
     @FocusState private var focusedVideo: String?
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
@@ -95,6 +97,7 @@ struct NativeLibraryView: View {
             Button("取消", role: .cancel) {}
         } message: { Text("\(model.selectedWallpaper?.url.lastPathComponent ?? "")\n可以从废纸篓恢复。若正在播放此视频或开启了轮播，将先停止桌面播放并关闭轮播。") }
         .sheet(isPresented: $showDiagnostics) { diagnosticsSheet }
+        .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
     }
     private var videoLibrary: some View {
         HSplitView {
@@ -154,13 +157,34 @@ struct NativeLibraryView: View {
                             Label(capability.restrictedStaticPreviewAvailable ? "可生成受限静态预览" : "无可合成静态预览",
                                   systemImage: capability.restrictedStaticPreviewAvailable ? "photo" : "photo.badge.exclamationmark")
                             Text("桌面动态播放未支持 · 完整效果未还原").foregroundStyle(.secondary)
-                            Text("限制：" + capability.limitationCodes.joined(separator: "、"))
-                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            if !capability.limitationCodes.isEmpty {
+                                Button("查看限制详情（\(capability.limitationCodes.count) 项）") {
+                                    visibleSceneLimitations = capability.limitationCodes
+                                    showSceneLimitations = true
+                                }.buttonStyle(.link).font(.caption)
+                            }
                         }
                     }.font(.callout).padding(.vertical, 5)
                 }.listStyle(.inset)
             }
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+    private var sceneLimitationsSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("场景限制详情").font(.title2.weight(.semibold))
+                Spacer()
+                Button("完成") { showSceneLimitations = false }.keyboardShortcut(.cancelAction)
+            }
+            Text("这些限制说明受限静态检查的边界；场景尚不能作为动态桌面壁纸播放。")
+                .font(.callout).foregroundStyle(.secondary)
+            List(visibleSceneLimitations, id: \.self) { code in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(SceneLimitationLabels.title(for: code))
+                    Text(code).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                }.padding(.vertical, 3)
+            }.listStyle(.inset)
+        }.padding(20).frame(minWidth: 460, minHeight: 380)
     }
     private func chooseSceneDirectory() {
         let panel = NSOpenPanel()
