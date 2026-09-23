@@ -243,6 +243,8 @@ do {
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: staging) }
         var observations: [[String: Any]] = []
+        var cacheBeforeClose: WESceneTextureCacheStats?
+        var cacheAfterClose: WESceneTextureCacheStats?
         do {
             try await session.play()
             let started = ProcessInfo.processInfo.systemUptime
@@ -265,7 +267,9 @@ do {
                 }
                 try await Task.sleep(nanoseconds: UInt64(1_000_000_000 / pollHz))
             }
+            cacheBeforeClose = await session.cacheStats()
             await session.close()
+            cacheAfterClose = await session.cacheStats()
         } catch {
             await session.close()
             throw error
@@ -275,7 +279,13 @@ do {
                                         "playableScene": false, "faithful": false, "desktopAttached": false,
                                         "requestedDurationSeconds": duration, "pollHz": pollHz,
                                         "observedFrames": observations.count, "distinctFrames": distinct,
-                                        "videoTexture": args[3], "frames": observations]
+                                        "videoTexture": args[3], "frames": observations,
+                                        "staticTextureCache": [
+                                            "hits": cacheBeforeClose?.hits ?? 0,
+                                            "misses": cacheBeforeClose?.misses ?? 0,
+                                            "residentBytesBeforeClose": cacheBeforeClose?.residentBytes ?? 0,
+                                            "residentBytesAfterClose": cacheAfterClose?.residentBytes ?? -1
+                                        ]]
         try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
             .write(to: staging.appendingPathComponent("probe.json"), options: .withoutOverwriting)
         try FileManager.default.moveItem(at: staging, to: destination)

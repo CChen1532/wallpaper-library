@@ -99,7 +99,7 @@ enum SceneVideoFrameKind: Equatable {
 final class SceneCompositor {
     private let package: PkgFile
     private let entries: [String: PkgEntry]
-    private let textureCache = TextureCache()
+    private let textureCache: TextureCache
     private let videoFrame: WESceneVideoTextureFrame?
     private let videoFrameKind: SceneVideoFrameKind
     private var videoFrameApplied = false
@@ -114,10 +114,12 @@ final class SceneCompositor {
     private var pixelBudget = 0
 
     init(package: PkgFile, videoFrame: WESceneVideoTextureFrame? = nil,
-         videoFrameKind: SceneVideoFrameKind = .offline) throws {
+         videoFrameKind: SceneVideoFrameKind = .offline,
+         textureCache: TextureCache? = nil) throws {
         self.package = package
         self.videoFrame = videoFrame
         self.videoFrameKind = videoFrameKind
+        self.textureCache = textureCache ?? TextureCache()
         // Reject ambiguous paths before resolving any references.
         _ = try SceneResourceInspector(package: package)
         entries = Dictionary(uniqueKeysWithValues: package.entries.filter { !$0.path.isEmpty }.map { ($0.path, $0) })

@@ -53,6 +53,16 @@ func runCompositorChecks(_ c: inout Checker) throws {
     c.check(try !summary(base).playable && !summary(base).faithful, "静态导出不宣称可播放或忠实还原")
     c.check(try base.hasRenderableContent && summary(base).previewAvailable, "有基础图层才标记预览可用")
     c.check(try summary(base).frameMode == "staticApproximation" && summary(base).videoTexture == nil, "静态与视频帧报告分开标记")
+    let sharedPackage = try parsePkg(makePreviewPackage(objects: [image("red", id: 1)], textures: ["red": red]))
+    let sharedCache = TextureCache()
+    let firstCached = try SceneCompositor(package: sharedPackage, textureCache: sharedCache).render(maxDimension: 4)
+    c.check(sharedCache.misses == 1 && sharedCache.hits == 0 && sharedCache.residentBytes > 0,
+            "首次静态纹理解码进入会话缓存")
+    let secondCached = try SceneCompositor(package: sharedPackage, textureCache: sharedCache).render(maxDimension: 4)
+    c.check(sharedCache.misses == 1 && sharedCache.hits == 1 &&
+            firstCached.rgba == secondCached.rgba, "下一帧静态纹理命中缓存且画面相同")
+    sharedCache.removeAll()
+    c.check(sharedCache.residentBytes == 0, "会话结束清空静态纹理缓存")
     let injected = WESceneVideoTextureFrame(width: 4, height: 4, rgba: Data(blue),
                                             durationSeconds: 2, requestedSeconds: 1,
                                             actualSeconds: 1, texturePath: "materials/red.tex")
