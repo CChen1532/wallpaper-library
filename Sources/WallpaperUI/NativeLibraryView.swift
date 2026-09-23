@@ -30,6 +30,7 @@ struct NativeLibraryView: View {
     @State private var showDiagnostics = false
     @State private var sceneRoot: URL?
     @State private var sceneEntries: [SceneCatalogPayload.Entry] = []
+    @State private var selectedSceneName: String?
     @State private var sceneLoading = false
     @State private var sceneError: String?
     @State private var visibleSceneLimitations: [String] = []
@@ -38,6 +39,10 @@ struct NativeLibraryView: View {
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
         sceneEntries.filter { search.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(search) || $0.name.localizedCaseInsensitiveContains(search) }
+    }
+    private var selectedSceneLimitations: [String] {
+        guard let selectedSceneName else { return [] }
+        return filteredScenes.first(where: { $0.name == selectedSceneName })?.capability?.limitationCodes ?? []
     }
     var body: some View {
         NavigationSplitView {
@@ -72,6 +77,12 @@ struct NativeLibraryView: View {
                     if page == .scenes {
                         Button(action: chooseSceneDirectory) { Label("选择场景目录", systemImage: "folder.badge.plus") }.disabled(sceneLoading)
                         Button { if let sceneRoot { Task { await loadScenes(from: sceneRoot) } } } label: { Label("刷新场景", systemImage: "arrow.clockwise") }.disabled(sceneLoading || sceneRoot == nil)
+                        Button {
+                            visibleSceneLimitations = selectedSceneLimitations
+                            showSceneLimitations = true
+                        } label: { Label("限制详情", systemImage: "info.circle") }
+                        .disabled(selectedSceneLimitations.isEmpty || sceneLoading)
+                        .help("先在列表中选中场景，再查看限制详情")
                     } else {
                         Button(action: importVideos) { Label("导入视频", systemImage: "plus") }.help("导入 MP4 视频").keyboardShortcut("o", modifiers: .command).disabled(model.isWorking || !model.capabilities.canImport)
                         Button { Task { await model.refreshLibrary() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.help("刷新资料库").keyboardShortcut("r", modifiers: .command).disabled(model.isWorking)
@@ -147,7 +158,7 @@ struct NativeLibraryView: View {
                     description: Text("试试场景标题或目录编号。"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(filteredScenes) { item in
+                List(filteredScenes, selection: $selectedSceneName) { item in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(item.title ?? item.name).font(.headline)
                         Text("\(item.name) · " + ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
@@ -158,10 +169,8 @@ struct NativeLibraryView: View {
                                   systemImage: capability.restrictedStaticPreviewAvailable ? "photo" : "photo.badge.exclamationmark")
                             Text("桌面动态播放未支持 · 完整效果未还原").foregroundStyle(.secondary)
                             if !capability.limitationCodes.isEmpty {
-                                Button("查看限制详情（\(capability.limitationCodes.count) 项）") {
-                                    visibleSceneLimitations = capability.limitationCodes
-                                    showSceneLimitations = true
-                                }.buttonStyle(.link).font(.caption)
+                                Text("限制：\(capability.limitationCodes.count) 项 · 选中后可查看详情")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }.font(.callout).padding(.vertical, 5)
@@ -193,6 +202,7 @@ struct NativeLibraryView: View {
         if panel.runModal() == .OK, let url = panel.url {
             sceneRoot = url
             sceneEntries = []
+            selectedSceneName = nil
             Task { await loadScenes(from: url) }
         }
     }
@@ -208,6 +218,7 @@ struct NativeLibraryView: View {
             }.value
             guard sceneRoot == root else { return }
             sceneEntries = try JSONDecoder().decode(SceneCatalogPayload.self, from: data).entries
+            if !sceneEntries.contains(where: { $0.name == selectedSceneName }) { selectedSceneName = nil }
         } catch is CancellationError { return }
         catch {
             guard sceneRoot == root else { return }
