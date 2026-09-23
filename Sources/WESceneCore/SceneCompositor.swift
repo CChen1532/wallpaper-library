@@ -71,6 +71,25 @@ private struct RasterLayer {
     let parent: String?
 }
 
+private struct ColorKeyEffect {
+    let red: Double
+    let green: Double
+    let blue: Double
+    let alpha: Double
+    let fuzziness: Double
+    let tolerance: Double
+
+    func opacity(red sourceRed: UInt8, green sourceGreen: UInt8, blue sourceBlue: UInt8) -> Double {
+        let delta = abs(red - Double(sourceRed) / 255)
+                  + abs(green - Double(sourceGreen) / 255)
+                  + abs(blue - Double(sourceBlue) / 255)
+        let lower = 0.001, upper = 0.002 + fuzziness
+        let t = min(1, max(0, (delta - tolerance - lower) / (upper - lower)))
+        let blend = t * t * (3 - 2 * t)
+        return alpha * (1 - blend) + blend
+    }
+}
+
 /// Read-only frame zero approximation. Canvas and decoded textures are RGBA in top-down row order.
 final class SceneCompositor {
     private let package: PkgFile
@@ -250,7 +269,64 @@ final class SceneCompositor {
         return (tex, size)
     }
 
+    /// Only the single-pass, non-inverted built-in color key is approximated. Unknown variants
+    /// remain explicit omissions rather than silently acquiring the sample's parameters.
+    private func colorKey(for layer: RasterLayer) throws -> ColorKeyEffect? {
+        guard let effects = layer.object["effects"] as? [[String: Any]], !effects.isEmpty else { return nil }
+        guard effects.count == 1, let effect = effects.first,
+              effect["file"] as? String == "effects/colorkey/effect.json" else { return nil }
+        guard Set(effect.keys).isSubset(of: ["file", "id", "name", "passes", "visible"]) else {
+            throw ProbeError.unsupported("colorkey 图层含未实现的配置")
+        }
+        if let visible = effect["visible"] {
+            guard let enabled = visible as? Bool else { throw ProbeError.invalid("colorkey visible 必须为布尔值") }
+            if !enabled { return nil }
+        }
+        let definition = try json("effects/colorkey/effect.json")
+        guard definition["version"] as? Int == 1,
+              definition["replacementkey"] as? String == "colorkey",
+              let definitionPasses = definition["passes"] as? [[String: Any]],
+              definitionPasses.count == 1,
+              definitionPasses[0]["material"] as? String == "materials/effects/colorkey.json",
+              let materialPasses = try json("materials/effects/colorkey.json")["passes"] as? [[String: Any]],
+              materialPasses.count == 1,
+              materialPasses[0]["shader"] as? String == "effects/colorkey",
+              materialPasses[0]["combos"] == nil else {
+            throw ProbeError.unsupported("colorkey 定义或着色器版本不受支持")
+        }
+        guard let passes = effect["passes"] as? [[String: Any]], passes.count == 1,
+              let constants = passes[0]["constantshadervalues"] as? [String: Any],
+              let color = constants["color"] as? String else {
+            throw ProbeError.invalid("colorkey 缺少单 pass 或颜色参数")
+        }
+        // Other shader branches (INVERT/FLATTEN) and dynamic parameter bindings are not implemented.
+        guard effect["combos"] == nil, passes[0]["combos"] == nil,
+              Set(passes[0].keys).isSubset(of: ["id", "constantshadervalues"]),
+              Set(constants.keys) == Set(["alpha", "color", "fuzziness", "tolerance"]) else {
+            throw ProbeError.unsupported("colorkey 的扩展参数或组合未实现")
+        }
+        let parts = color.split(whereSeparator: { $0.isWhitespace })
+        guard parts.count == 3,
+              let red = Double(parts[0]), let green = Double(parts[1]), let blue = Double(parts[2]),
+              [red, green, blue].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+            throw ProbeError.invalid("colorkey 颜色必须为三个0...1的有限数")
+        }
+        func parameter(_ name: String, range: ClosedRange<Double>) throws -> Double {
+            guard let value = constants[name] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else {
+                throw ProbeError.invalid("colorkey \(name) 必须为数字")
+            }
+            let number = value.doubleValue
+            guard number.isFinite, range.contains(number) else { throw ProbeError.invalid("colorkey \(name) 越界") }
+            return number
+        }
+        return ColorKeyEffect(red: red, green: green, blue: blue,
+                              alpha: try parameter("alpha", range: 0...1),
+                              fuzziness: try parameter("fuzziness", range: 0...3),
+                              tolerance: try parameter("tolerance", range: 0...3))
+    }
+
     private func draw(texture: DecodedTexture, size: Point2, matrix: Affine2, alpha: Double,
+                      colorKey: ColorKeyEffect?,
                       canvas: inout [UInt8], width: Int, height: Int, sceneWidth: Double, sceneHeight: Double) throws {
         guard alpha > 0 else { return }
         guard let inverse = matrix.inverse() else { throw ProbeError.invalid("图层变换不可逆（零缩放）") }
@@ -282,7 +358,9 @@ final class SceneCompositor {
                 let sourceY = min(cropHeight-1, Int(v * Double(cropHeight)))
                 let source = (sourceY * texture.width + sourceX) * 4
                 let destination = (y * width + x) * 4
-                let sourceAlpha = Double(texture.rgba[source+3]) / 255 * alpha
+                let keyOpacity = colorKey?.opacity(red: texture.rgba[source], green: texture.rgba[source+1],
+                                                   blue: texture.rgba[source+2]) ?? 1
+                let sourceAlpha = Double(texture.rgba[source+3]) / 255 * alpha * keyOpacity
                 if sourceAlpha <= 0 { continue }
                 let destinationAlpha = Double(canvas[destination+3]) / 255
                 let outAlpha = sourceAlpha + destinationAlpha * (1-sourceAlpha)
@@ -335,14 +413,22 @@ final class SceneCompositor {
                 if let effects = layer.object["effects"] as? [[String: Any]], !effects.isEmpty {
                     let files = effects.compactMap { $0["file"] as? String }.prefix(3).map { String($0.prefix(160)) }
                     let suffix = files.isEmpty ? "" : ": " + files.joined(separator: ", ")
-                    note("effectsOmitted", layer.location, "效果器未渲染，仅显示基础图\(suffix)")
+                    if effects.count != 1 || effects[0]["file"] as? String != "effects/colorkey/effect.json" {
+                        note("effectsOmitted", layer.location, "效果器未渲染，仅显示基础图\(suffix)")
+                    }
                 }
                 let blendMode = layer.object["colorBlendMode"] as? Int ?? 0
                 guard blendMode == 0 else { throw ProbeError.unsupported("图层混合模式 \(blendMode)") }
                 let (transform, alpha, show) = try world(index)
                 guard show, alpha > 0 else { continue }
                 let (image, size) = try texture(for: layer)
-                try draw(texture: image, size: size, matrix: transform, alpha: alpha, canvas: &canvas,
+                let key = try colorKey(for: layer)
+                if key != nil { note("colorKeyApproximation", layer.location, "按已识别单pass参数离线抠色；非完整效果链或桌面播放") }
+                else if let effects = layer.object["effects"] as? [[String: Any]],
+                        effects.count == 1, effects[0]["file"] as? String == "effects/colorkey/effect.json" {
+                    note("colorKeyDisabled", layer.location, "colorkey 已禁用，按原图绘制")
+                }
+                try draw(texture: image, size: size, matrix: transform, alpha: alpha, colorKey: key, canvas: &canvas,
                          width: width, height: height, sceneWidth: Double(sceneWidth), sceneHeight: Double(sceneHeight))
                 drawn.append(layer.location)
             } catch {
@@ -363,8 +449,8 @@ final class SceneCompositor {
                                      actualSeconds: videoFrame?.actualSeconds,
                                      videoDurationSeconds: videoFrame?.durationSeconds,
                                      description: videoFrame == nil
-                                         ? "静态frame 0近似画面；不支持动画、脚本、效果器、粒子与桌面播放"
-                                         : "指定视频纹理离线取帧并合成基础图；不支持完整动画、效果器或桌面播放")
+                                         ? "静态frame 0近似画面；仅支持受限colorkey近似，不支持动画、脚本、其他效果器、粒子与桌面播放"
+                                         : "指定视频纹理离线取帧并合成基础图；仅支持受限colorkey近似，不支持完整动画、其他效果器或桌面播放")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return WESceneStaticPreview(width: width, height: height, rgba: Data(canvas),
                                     diagnosticsJSON: try encoder.encode(summary),

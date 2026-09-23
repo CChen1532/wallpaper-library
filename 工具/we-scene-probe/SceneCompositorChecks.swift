@@ -1,7 +1,8 @@
 import Foundation
 
 func makePreviewPackage(objects: [[String: Any]], textures: [String: [UInt8]],
-                        projection: (Int, Int) = (4, 4), clear: Bool = false) throws -> Data {
+                        projection: (Int, Int) = (4, 4), clear: Bool = false,
+                        extraFiles: [(String, Data)] = []) throws -> Data {
     var files: [(String, Data)] = []
     let scene: [String: Any] = [
         "camera": [:],
@@ -15,6 +16,7 @@ func makePreviewPackage(objects: [[String: Any]], textures: [String: [UInt8]],
         files.append(("materials/\(name).json", try JSONSerialization.data(withJSONObject: ["passes": [["textures": [name], "blending": "translucent"]]])))
         files.append(("materials/\(name).tex", try makeSyntheticTexRGBA4x4(pixels: pixels)))
     }
+    files.append(contentsOf: extraFiles)
     var header = sizedStringBytes("PKGV0024") + u32le(files.count)
     var offset = 0
     for (path, bytes) in files {
@@ -106,6 +108,52 @@ func runCompositorChecks(_ c: inout Checker) throws {
     c.check(try summary(blend).skippedLayers.count == 1, "未知混合模式不误画为source-over")
     let effects = try render([image("red", id: 1, extra: ["effects": [["file": "effects/a.json"]]])], textures: ["red": red])
     c.check(try summary(effects).diagnostics.contains { $0.code == "effectsOmitted" }, "效果器省略有诊断")
+
+    let keyDefinition = try JSONSerialization.data(withJSONObject: [
+        "version": 1, "replacementkey": "colorkey",
+        "passes": [["material": "materials/effects/colorkey.json"]]
+    ])
+    let keyMaterial = try JSONSerialization.data(withJSONObject: [
+        "passes": [["shader": "effects/colorkey", "blending": "normal"]]
+    ])
+    let keyFiles = [("effects/colorkey/effect.json", keyDefinition),
+                    ("materials/effects/colorkey.json", keyMaterial)]
+    func keyed(_ constants: [String: Any], extra: [String: Any] = [:]) -> [String: Any] {
+        var effect: [String: Any] = ["file": "effects/colorkey/effect.json",
+                                     "passes": [["constantshadervalues": constants]], "visible": true]
+        effect.merge(extra) { _, new in new }
+        return image("foreground", id: 2, extra: ["effects": [effect]])
+    }
+    let keyValues: [String: Any] = ["color": "1 1 0", "alpha": 0,
+                                    "fuzziness": 0.1, "tolerance": 0.3]
+    func keyRender(_ foreground: [UInt8], _ layer: [String: Any]) throws -> WESceneStaticPreview {
+        try WESceneInspection.staticPreview(packageData: makePreviewPackage(
+            objects: [image("background", id: 1), layer],
+            textures: ["background": blue, "foreground": foreground], extraFiles: keyFiles), maxDimension: 4)
+    }
+    let removed = try keyRender(solid(255,255,0), keyed(keyValues))
+    c.check(pixel(removed, 1, 1) == [0,0,255,255], "colorkey 精确键色露出下层")
+    c.check(try summary(removed).diagnostics.contains { $0.code == "colorKeyApproximation" } &&
+            !summary(removed).playable && !summary(removed).faithful, "colorkey 仍报告离线近似和不可播放")
+    let retained = try keyRender(red, keyed(keyValues))
+    c.check(pixel(retained, 1, 1) == [255,0,0,255], "colorkey 远离键色保持不透明")
+    let partial = try keyRender(solid(255, 170, 0), keyed(keyValues))
+    let partialPixel = pixel(partial, 1, 1)
+    c.check(partialPixel[0] > 0 && partialPixel[0] < 255 && partialPixel[2] > 0 && partialPixel[2] < 255,
+            "colorkey 平滑边缘与下层混合")
+    let preservedAlpha = try keyRender(solid(255,255,0,128), keyed([
+        "color": "1 1 0", "alpha": 0.5, "fuzziness": 0.1, "tolerance": 0.3
+    ]))
+    c.check(abs(Int(pixel(preservedAlpha, 1, 1)[0]) - 64) <= 2, "colorkey 输出透明度与原始alpha相乘")
+    let disabled = try keyRender(solid(255,255,0), keyed(keyValues, extra: ["visible": false]))
+    c.check(pixel(disabled, 1, 1) == [255,255,0,255], "禁用colorkey按原图绘制")
+    let malformed = try keyRender(solid(255,255,0), keyed([
+        "color": "1 1 0", "alpha": 0, "fuzziness": 0.1, "tolerance": 9
+    ]))
+    c.check(try summary(malformed).skippedLayers.count == 1 && pixel(malformed, 1, 1) == [0,0,255,255],
+            "越界colorkey参数拒绝该层而非显示错误背景")
+    let unsupportedCombo = try keyRender(solid(255,255,0), keyed(keyValues, extra: ["combos": ["INVERT": 1]]))
+    c.check(try summary(unsupportedCombo).skippedLayers.count == 1, "未实现反选组合明确拒绝")
 
     var padded = pattern
     for y in 0..<4 { for x in 2..<4 { let p = (y*4+x)*4; padded[p]=0; padded[p+1]=255; padded[p+2]=0 } }
