@@ -15,6 +15,7 @@ func usage() {
       we-scene-probe resources <scene.pkg>    输出资源引用与能力 JSON（非渲染）
       we-scene-probe still <scene.pkg> <out.png> [max-edge]  导出静态基础图及同名 .json 诊断
       we-scene-probe frame <scene.pkg> <materials/name.tex> <seconds> <out.png> [max-edge]  离线视频纹理取帧并合成
+      we-scene-probe sequence <scene.pkg> <materials/name.tex> <fps> <count> <outdir> [max-edge]  有界离线逐帧序列，非实时播放
     """)
 }
 
@@ -139,6 +140,48 @@ do {
         }
         try writePNG([UInt8](image.rgba), width: image.width, height: image.height, to: output.path)
         print("离线帧: \(output.path) (\(image.width)x\(image.height))；同名JSON记录请求/实际时间与降级项，非桌面播放")
+
+    case "sequence":
+        guard (7...8).contains(args.count), let fps = Double(args[4]), fps.isFinite,
+              (1...60).contains(fps),
+              let count = Int(args[5]), (1...120).contains(count) else { usage(); exit(2) }
+        let maxEdge = args.count == 8 ? (Int(args[7]) ?? 0) : 960
+        guard (1...1600).contains(maxEdge) else { throw ProbeError.invalid("离线序列最大边长必须在1...1600") }
+        let destination = URL(fileURLWithPath: args[6], isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw ProbeError.invalid("序列输出目录必须不存在，拒绝覆盖")
+        }
+        let session = try await WESceneOfflineFrameSession.open(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), videoTexturePath: args[3])
+        let timeline = try WESceneOfflineTimeline(framesPerSecond: fps, durationSeconds: session.durationSeconds)
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".wescene-sequence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var frames: [[String: Any]] = []
+        for index in 0..<count {
+            try Task.checkCancellation()
+            let seconds = try timeline.sourceSeconds(forFrame: index)
+            let image = try await session.frame(atSeconds: seconds, maxDimension: maxEdge)
+            guard image.hasRenderableContent else { throw ProbeError.unsupported("序列帧没有可合成内容") }
+            let name = String(format: "frame-%04d", index)
+            try writePNG([UInt8](image.rgba), width: image.width, height: image.height,
+                         to: staging.appendingPathComponent(name + ".png").path)
+            try image.diagnosticsJSON.write(to: staging.appendingPathComponent(name + ".json"), options: .withoutOverwriting)
+            let report = try JSONDecoder().decode(PreviewSummary.self, from: image.diagnosticsJSON)
+            frames.append(["index": index, "requestedSeconds": seconds,
+                           "actualSeconds": report.actualSeconds ?? seconds, "png": name + ".png"])
+        }
+        let manifest: [String: Any] = ["schemaVersion": 1, "frameMode": "offlineSequence",
+                                        "playable": false, "faithful": false,
+                                        "framesPerSecond": fps, "frameCount": count,
+                                        "videoDurationSeconds": session.durationSeconds,
+                                        "videoTexture": args[3], "frames": frames]
+        try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+            .write(to: staging.appendingPathComponent("sequence.json"), options: .withoutOverwriting)
+        try FileManager.default.moveItem(at: staging, to: destination)
+        print("离线序列: \(destination.path) (\(count)帧)；复用单个提取视频与解码器，不代表桌面连续播放")
 
     default:
         usage(); exit(2)
