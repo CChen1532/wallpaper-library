@@ -44,3 +44,7 @@ bash scripts/check.sh --live --media
 
 ## 进度入口
 
+
+Scene实验进度：`WE场景-阶段2B资源引用验收.md`。核心已分离到 `Sources/WESceneCore`；
+用 `bash scripts/check-scene.sh` 运行自检，`bash scripts/scene-probe.sh resources /path/scene.pkg` 生成只读JSON报告。
+当前报告明确不可播放，尚未接入UI或桌面渲染，视频后端保持原有实现。
