@@ -1,0 +1,124 @@
+{
+  "generated_at": "2026-09-23T09:13:05+08:00",
+  "running": false,
+  "current": {
+    "path": "/Users/you/Movies/Wallpapers/1-sample-01.mp4",
+    "stale": true,
+    "note": "未播放时 ~/.cache/phonto/current 是上次的陈旧值"
+  },
+  "labels": {
+    "com.local.phonto-wall": null,
+    "com.local.phonto-wall.b": null
+  },
+  "rotate": {
+    "enabled": false,
+    "interval_seconds": null,
+    "mode": null
+  },
+  "wallpaper_dir": "/Users/you/Movies/Wallpapers",
+  "displays": [
+    {
+      "id": "Built-in Retina Display",
+      "description": "Built-in Retina Display",
+      "resolution": "2880x1864"
+    }
+  ],
+  "wallpapers": [
+    {
+      "index": 1,
+      "name": "1-sample-01.mp4",
+      "path": "/Users/you/Movies/Wallpapers/1-sample-01.mp4",
+      "size_bytes": 99562967,
+      "width": 3840,
+      "height": 2160,
+      "codec": "h264",
+      "fps": 30,
+      "duration_seconds": 12,
+      "hardware_decode": true
+    },
+    {
+      "index": 2,
+      "name": "2-sample-02.mp4",
+      "path": "/Users/you/Movies/Wallpapers/2-sample-02.mp4",
+      "size_bytes": 39024631,
+      "width": 3840,
+      "height": 2160,
+      "codec": "h264",
+      "fps": 60,
+      "duration_seconds": 30,
+      "hardware_decode": true
+    },
+    {
+      "index": 3,
+      "name": "3-sample-03.mp4",
+      "path": "/Users/you/Movies/Wallpapers/3-sample-03.mp4",
+      "size_bytes": 52223515,
+      "width": 2500,
+      "height": 1406,
+      "codec": "h264",
+      "fps": 30,
+      "duration_seconds": 20,
+      "hardware_decode": true
+    },
+    {
+      "index": 4,
+      "name": "4-sample-04.mp4",
+      "path": "/Users/you/Movies/Wallpapers/4-sample-04.mp4",
+      "size_bytes": 119881252,
+      "width": 3840,
+      "height": 2554,
+      "codec": "h264",
+      "fps": 60,
+      "duration_seconds": 24,
+      "hardware_decode": true
+    },
+    {
+      "index": 5,
+      "name": "5-sample-05.mp4",
+      "path": "/Users/you/Movies/Wallpapers/5-sample-05.mp4",
+      "size_bytes": 293512461,
+      "width": 3840,
+      "height": 2158,
+      "codec": "h264",
+      "fps": 30,
+      "duration_seconds": 20,
+      "hardware_decode": true
+    },
+    {
+      "index": 6,
+      "name": "6-sample-06.mp4",
+      "path": "/Users/you/Movies/Wallpapers/6-sample-06.mp4",
+      "size_bytes": 336235138,
+      "width": 3840,
+      "height": 2160,
+      "codec": "h264",
+      "fps": 60,
+      "duration_seconds": 29.95,
+      "hardware_decode": true
+    },
+    {
+      "index": 7,
+      "name": "7-sample-07.mp4",
+      "path": "/Users/you/Movies/Wallpapers/7-sample-07.mp4",
+      "size_bytes": 58879056,
+      "width": 3840,
+      "height": 2160,
+      "codec": "hevc",
+      "fps": 30,
+      "duration_seconds": 24,
+      "hardware_decode": true
+    },
+    {
+      "index": 8,
+      "name": "8-sample-08.mp4",
+      "path": "/Users/you/Movies/Wallpapers/8-sample-08.mp4",
+      "size_bytes": 248848169,
+      "width": 3840,
+      "height": 2160,
+      "codec": "h264",
+      "fps": 60,
+      "duration_seconds": 23.7,
+      "hardware_decode": true
+    }
+  ]
+}
