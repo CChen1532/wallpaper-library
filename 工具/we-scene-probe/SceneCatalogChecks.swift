@@ -13,7 +13,7 @@ func runCatalogChecks(_ c: inout Checker) throws {
     let package = try makePreviewPackage(objects: [["id": 1, "image": "models/red.json", "origin": "2 2 0", "size": "4 4"]],
                                          textures: ["red": pixels])
     try package.write(to: valid.appendingPathComponent("scene.pkg"))
-    try Data(#"{"type":"scene","title":" 演示场景 "}"#.utf8).write(to: valid.appendingPathComponent("project.json"))
+    try Data(#"{"type":"scene","title":" 演示\n场景 "}"#.utf8).write(to: valid.appendingPathComponent("project.json"))
     try Data([1, 2, 3]).write(to: corrupt.appendingPathComponent("scene.pkg"))
     let linked = root.appendingPathComponent("003-link", isDirectory: true)
     try fm.createSymbolicLink(at: linked, withDestinationURL: valid)
@@ -24,8 +24,8 @@ func runCatalogChecks(_ c: inout Checker) throws {
     c.check(report.entries[0].capability?.restrictedStaticPreviewAvailable == true &&
             report.entries[0].capability?.desktopScenePlayable == false,
             "有效场景包保留受限静态预览与播放边界")
-    c.check(report.entries[0].title == "演示场景" && report.entries[1].title == nil,
-            "有界项目元数据读取标题，缺失时回退目录名")
+    c.check(report.entries[0].title == "演示 场景" && report.entries[1].title == nil,
+            "有界项目元数据读取标题并清理控制字符，缺失时回退目录名")
     c.check(report.entries[1].capability == nil && report.entries[1].error != nil,
             "损坏场景包不阻断其余目录条目")
     var refusedLinkedRoot = false

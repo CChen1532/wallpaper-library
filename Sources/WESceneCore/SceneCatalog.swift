@@ -22,11 +22,13 @@ extension WESceneInspection {
         guard let values = try? project.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
               values.isRegularFile == true, values.isSymbolicLink != true,
               let size = values.fileSize, (1...1_048_576).contains(size),
-              let data = try? Data(contentsOf: project),
+              let data = try? Data(contentsOf: project, options: .mappedIfSafe),
+              (1...1_048_576).contains(data.count),
               let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               metadata["type"] as? String == "scene",
               let raw = metadata["title"] as? String else { return nil }
-        let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = raw.components(separatedBy: .controlCharacters).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
         return String(clean.prefix(160))
     }
@@ -67,6 +69,9 @@ extension WESceneInspection {
             }
             do {
                 let data = try Data(contentsOf: pkg, options: .mappedIfSafe)
+                guard data.count > 0 && data.count <= 128 * 1024 * 1024 else {
+                    throw ProbeError.invalid("读取后的场景包大小超出1...128MiB范围")
+                }
                 let report = try capabilityReport(packageData: data, maxPreviewDimension: maxPreviewDimension)
                 let capability = try JSONDecoder().decode(WESceneCapabilityReport.self, from: report)
                 entries.append(.init(name: name, title: title, packagePath: pkg.path, packageBytes: bytes,

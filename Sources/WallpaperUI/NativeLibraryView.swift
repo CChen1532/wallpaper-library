@@ -178,7 +178,9 @@ struct NativeLibraryView: View {
         defer { sceneLoading = false }
         do {
             let data = try await Task.detached(priority: .userInitiated) {
-                try WESceneInspection.catalog(directory: root, maxPreviewDimension: 480)
+                let scoped = root.startAccessingSecurityScopedResource()
+                defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+                return try WESceneInspection.catalog(directory: root, maxPreviewDimension: 480)
             }.value
             guard sceneRoot == root else { return }
             sceneEntries = try JSONDecoder().decode(SceneCatalogPayload.self, from: data).entries
