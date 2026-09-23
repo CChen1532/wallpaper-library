@@ -20,6 +20,7 @@ func usage() {
       we-scene-probe realtime-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz]  静音无窗口视频输出采样，不控制桌面
       we-scene-probe realtime-scene-probe <scene.pkg> <materials/name.tex> <seconds> <outdir> [poll-hz] [max-edge]  无窗口受限scene合成
       we-scene-probe transport-probe <scene.pkg> <materials/name.tex>  静音无窗口验证暂停/恢复/显式回绕
+      we-scene-probe loop-probe <scene.pkg> <materials/name.tex>  静音无窗口验证轮询驱动的自动片尾循环
     """)
 }
 
@@ -339,6 +340,48 @@ do {
         let restartSeen = restarted.contains { ($0["displaySeconds"] as? Double ?? .infinity) < 2 }
         if first.isEmpty || resumed.isEmpty || !nearEndSeen || !restartSeen ||
             !invalidSeekRejected || abs(pausedAfterWait - pausedAt) > 0.05 { exit(3) }
+
+    case "loop-probe":
+        guard args.count == 4 else { usage(); exit(2) }
+        let session = try await WESceneRealtimeVideoSession.open(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), videoTexturePath: args[3])
+        guard session.durationSeconds > 3 else { throw ProbeError.unsupported("循环探针要求视频时长超过3秒") }
+        var observations: [[String: Any]] = []
+        var loops = 0, loopsAfterPause = 0
+        do {
+            try await session.setLooping(true)
+            try await session.seek(to: session.durationSeconds - 0.5)
+            try await session.play()
+            let started = ProcessInfo.processInfo.systemUptime
+            while ProcessInfo.processInfo.systemUptime - started < 1.6 {
+                try Task.checkCancellation()
+                if let frame = try await session.poll() {
+                    let digest = SHA256.hash(data: frame.rgba).map { String(format: "%02x", $0) }.joined()
+                    observations.append(["displaySeconds": frame.displaySeconds, "sha256": digest])
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            loops = await session.completedLoops()
+            await session.pause()
+            try await Task.sleep(nanoseconds: 300_000_000)
+            _ = try await session.poll()
+            loopsAfterPause = await session.completedLoops()
+            await session.close()
+        } catch {
+            await session.close()
+            throw error
+        }
+        let nearEndSeen = observations.contains { ($0["displaySeconds"] as? Double ?? 0) > session.durationSeconds - 1 }
+        let restartSeen = observations.contains { ($0["displaySeconds"] as? Double ?? .infinity) < 1 }
+        let report: [String: Any] = ["schemaVersion": 1, "probeMode": "pollDrivenAutoLoop",
+                                     "desktopAttached": false, "playableScene": false,
+                                     "videoDurationSeconds": session.durationSeconds,
+                                     "completedLoops": loops, "completedLoopsAfterPause": loopsAfterPause,
+                                     "nearEndSeen": nearEndSeen, "restartSeen": restartSeen,
+                                     "frames": observations]
+        print(String(decoding: try JSONSerialization.data(withJSONObject: report,
+            options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+        if loops != 1 || loopsAfterPause != loops || !nearEndSeen || !restartSeen { exit(3) }
 
     default:
         usage(); exit(2)

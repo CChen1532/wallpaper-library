@@ -53,6 +53,9 @@ public actor WESceneRealtimeVideoSession {
     private let player: AVPlayer
     private let output: AVPlayerItemVideoOutput
     private var closed = false
+    private var playingRequested = false
+    private var loopEnabled = false
+    private var loopCount = 0
     public nonisolated let durationSeconds: Double
 
     private init(extracted: SceneVideoTextureSession, player: AVPlayer,
@@ -84,12 +87,21 @@ public actor WESceneRealtimeVideoSession {
 
     public func play() throws {
         guard !closed else { throw ProbeError.invalid("视频输出会话已关闭") }
+        playingRequested = true
         player.play()
     }
 
     public func pause() {
+        playingRequested = false
         player.pause()
     }
+
+    public func setLooping(_ enabled: Bool) throws {
+        guard !closed else { throw ProbeError.invalid("视频输出会话已关闭") }
+        loopEnabled = enabled
+    }
+
+    public func completedLoops() -> Int { loopCount }
 
     public func currentSeconds() -> Double {
         CMTimeGetSeconds(player.currentTime())
@@ -112,13 +124,24 @@ public actor WESceneRealtimeVideoSession {
 
     public func close() {
         if closed { return }
+        playingRequested = false
         player.pause()
         player.replaceCurrentItem(with: nil)
         closed = true
     }
 
-    public func poll() throws -> WESceneRealtimeVideoFrame? {
+    public func poll() async throws -> WESceneRealtimeVideoFrame? {
         guard !closed else { throw ProbeError.invalid("视频输出会话已关闭") }
+        if loopEnabled && playingRequested {
+            let current = CMTimeGetSeconds(player.currentTime())
+            if current.isFinite && current >= durationSeconds - 0.001 {
+                guard loopCount < Int.max else { throw ProbeError.invalid("视频循环计数溢出") }
+                try await seek(to: 0)
+                player.play()
+                loopCount += 1
+                return nil // A post-seek frame must arrive before it may be reported.
+            }
+        }
         let itemTime = output.itemTime(forHostTime: CACurrentMediaTime())
         guard itemTime.isValid, !itemTime.isIndefinite,
               output.hasNewPixelBuffer(forItemTime: itemTime) else { return nil }
@@ -130,7 +153,7 @@ public actor WESceneRealtimeVideoSession {
                                                     expectedHeight: extracted.height)
         let itemSeconds = CMTimeGetSeconds(itemTime)
         let actualSeconds = CMTimeGetSeconds(displayTime)
-        guard itemSeconds.isFinite, itemSeconds >= 0 else { throw ProbeError.invalid("实时视频项目时间非法") }
+        guard itemSeconds.isFinite, itemSeconds >= 0 else { return nil } // seek/preroll may briefly expose no usable time
         return WESceneRealtimeVideoFrame(width: extracted.width, height: extracted.height, rgba: rgba,
             itemSeconds: itemSeconds,
             displaySeconds: actualSeconds.isFinite && actualSeconds >= 0 ? actualSeconds : itemSeconds)

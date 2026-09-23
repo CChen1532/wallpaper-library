@@ -29,6 +29,8 @@ public actor WESceneRealtimeSceneSession {
     public func pause() async { await video.pause() }
     public func seek(to seconds: Double) async throws { try await video.seek(to: seconds) }
     public func restart() async throws { try await video.restart() }
+    public func setLooping(_ enabled: Bool) async throws { try await video.setLooping(enabled) }
+    public func completedLoops() async -> Int { await video.completedLoops() }
     public func currentSeconds() async -> Double { await video.currentSeconds() }
     public func close() async { await video.close() }
 
