@@ -288,6 +288,7 @@ func runSelfTest() throws {
     try runTextureChecks(&c)
     try runResourceChecks(&c)
     try runCompositorChecks(&c)
+    try runCatalogChecks(&c)
     try runTimelineChecks(&c)
     try runRealtimeChecks(&c)
     print("\n=== 自检结果：通过 \(c.passes) 项，失败 \(c.failures.count) 项 ===")
