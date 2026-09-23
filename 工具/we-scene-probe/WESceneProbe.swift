@@ -21,6 +21,7 @@ func usage() {
       we-scene-probe realtime-scene-probe <scene.pkg> <materials/name.tex> <seconds> <outdir> [poll-hz] [max-edge]  无窗口受限scene合成
       we-scene-probe transport-probe <scene.pkg> <materials/name.tex>  静音无窗口验证暂停/恢复/显式回绕
       we-scene-probe loop-probe <scene.pkg> <materials/name.tex>  静音无窗口验证轮询驱动的自动片尾循环
+      we-scene-probe stability-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge]  有界无窗口合成统计
     """)
 }
 
@@ -392,6 +393,66 @@ do {
         print(String(decoding: try JSONSerialization.data(withJSONObject: report,
             options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
         if loops != 1 || loopsAfterPause != loops || !nearEndSeen || !restartSeen { exit(3) }
+
+    case "stability-probe":
+        guard (5...7).contains(args.count), let duration = Double(args[4]),
+              duration.isFinite, (3...15).contains(duration) else { usage(); exit(2) }
+        let pollHz = args.count >= 6 ? (Int(args[5]) ?? 0) : 5
+        let maxEdge = args.count == 7 ? (Int(args[6]) ?? 0) : 640
+        guard (2...10).contains(pollHz), (1...960).contains(maxEdge) else { usage(); exit(2) }
+        let session = try await WESceneRealtimeSceneSession.open(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), videoTexturePath: args[3])
+        var pollAttempts = 0, observedFrames = 0, loops = 0
+        var displayTimes: [Double] = [], processingSeconds: [Double] = [], hashes: Set<String> = []
+        var cacheBefore: WESceneTextureCacheStats?, cacheAfter: WESceneTextureCacheStats?
+        do {
+            try await session.setLooping(true)
+            let sourceDuration = await session.videoDurationSeconds()
+            guard sourceDuration > 2.1 else { throw ProbeError.unsupported("持续探针要求视频时长超过2.1秒") }
+            try await session.seek(to: sourceDuration - 2)
+            try await session.play()
+            let started = ProcessInfo.processInfo.systemUptime
+            while ProcessInfo.processInfo.systemUptime - started < duration {
+                try Task.checkCancellation()
+                pollAttempts += 1
+                let before = ProcessInfo.processInfo.systemUptime
+                if let frame = try await session.poll(maxDimension: maxEdge) {
+                    observedFrames += 1
+                    displayTimes.append(frame.displaySeconds)
+                    hashes.insert(SHA256.hash(data: frame.preview.rgba).map { String(format: "%02x", $0) }.joined())
+                    processingSeconds.append(ProcessInfo.processInfo.systemUptime - before)
+                }
+                try await Task.sleep(nanoseconds: UInt64(1_000_000_000 / pollHz))
+            }
+            loops = await session.completedLoops()
+            cacheBefore = await session.cacheStats()
+            await session.close()
+            cacheAfter = await session.cacheStats()
+        } catch {
+            await session.close()
+            throw error
+        }
+        let sortedProcessing = processingSeconds.sorted()
+        let p95Index = max(0, Int(ceil(Double(sortedProcessing.count) * 0.95)) - 1)
+        let maximumGap = zip(displayTimes, displayTimes.dropFirst()).map { current, next in
+            next >= current ? next - current : 0 // reset at loop is a separate discontinuity
+        }.max() ?? 0
+        let report: [String: Any] = ["schemaVersion": 1, "probeMode": "boundedWindowlessSceneStability",
+                                     "desktopAttached": false, "playableScene": false,
+                                     "requestedSeconds": duration, "requestedPollHz": pollHz,
+                                     "pollAttempts": pollAttempts, "observedFrames": observedFrames,
+                                     "distinctFrames": hashes.count, "completedLoops": loops,
+                                     "maxForwardDisplayGapSeconds": maximumGap,
+                                     "meanProcessingSeconds": processingSeconds.isEmpty ? 0 : processingSeconds.reduce(0,+) / Double(processingSeconds.count),
+                                     "p95ProcessingSeconds": sortedProcessing.isEmpty ? 0 : sortedProcessing[p95Index],
+                                     "staticTextureCache": ["hits": cacheBefore?.hits ?? 0,
+                                                            "misses": cacheBefore?.misses ?? 0,
+                                                            "residentBytesBeforeClose": cacheBefore?.residentBytes ?? 0,
+                                                            "residentBytesAfterClose": cacheAfter?.residentBytes ?? -1],
+                                     "displayTimes": displayTimes]
+        print(String(decoding: try JSONSerialization.data(withJSONObject: report,
+            options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+        if observedFrames < 5 || hashes.count < 3 || loops < 1 || cacheAfter?.residentBytes != 0 { exit(3) }
 
     default:
         usage(); exit(2)
