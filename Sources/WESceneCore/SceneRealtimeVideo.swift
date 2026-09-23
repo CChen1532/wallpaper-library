@@ -3,7 +3,7 @@ import AVFoundation
 import CoreVideo
 import QuartzCore
 
-public struct WESceneRealtimeVideoFrame {
+public struct WESceneRealtimeVideoFrame: Sendable {
     public let width: Int
     public let height: Int
     public let rgba: Data
@@ -65,7 +65,11 @@ public actor WESceneRealtimeVideoSession {
 
     public static func open(packageData: Data, videoTexturePath: String) async throws -> WESceneRealtimeVideoSession {
         let (_, tex) = try WESceneInspection.videoTexture(packageData: packageData, texturePath: videoTexturePath)
-        let extracted = try await SceneVideoTextureSession.open(tex, path: videoTexturePath)
+        return try await open(tex: tex, path: videoTexturePath)
+    }
+
+    static func open(tex: TexFile, path: String) async throws -> WESceneRealtimeVideoSession {
+        let extracted = try await SceneVideoTextureSession.open(tex, path: path)
         let item = AVPlayerItem(asset: extracted.asset)
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)

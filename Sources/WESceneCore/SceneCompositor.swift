@@ -1,7 +1,7 @@
 import Foundation
 import CoreFoundation
 
-public struct WESceneStaticPreview {
+public struct WESceneStaticPreview: Sendable {
     public let width: Int
     public let height: Int
     public let rgba: Data
@@ -90,12 +90,18 @@ private struct ColorKeyEffect {
     }
 }
 
+enum SceneVideoFrameKind: Equatable {
+    case offline
+    case windowlessProbe
+}
+
 /// Read-only frame zero approximation. Canvas and decoded textures are RGBA in top-down row order.
 final class SceneCompositor {
     private let package: PkgFile
     private let entries: [String: PkgEntry]
     private let textureCache = TextureCache()
     private let videoFrame: WESceneVideoTextureFrame?
+    private let videoFrameKind: SceneVideoFrameKind
     private var videoFrameApplied = false
     private var diagnostics: [PreviewDiagnostic] = []
     private var drawn: [String] = []
@@ -107,9 +113,11 @@ final class SceneCompositor {
     private var visibility: [String: Bool] = [:]
     private var pixelBudget = 0
 
-    init(package: PkgFile, videoFrame: WESceneVideoTextureFrame? = nil) throws {
+    init(package: PkgFile, videoFrame: WESceneVideoTextureFrame? = nil,
+         videoFrameKind: SceneVideoFrameKind = .offline) throws {
         self.package = package
         self.videoFrame = videoFrame
+        self.videoFrameKind = videoFrameKind
         // Reject ambiguous paths before resolving any references.
         _ = try SceneResourceInspector(package: package)
         entries = Dictionary(uniqueKeysWithValues: package.entries.filter { !$0.path.isEmpty }.map { ($0.path, $0) })
@@ -257,7 +265,11 @@ final class SceneCompositor {
                                  rgba: [UInt8](videoFrame.rgba), sourceFormat: .rgba8888,
                                  embeddedFormat: .mp4, imageWidth: videoFrame.width,
                                  imageHeight: videoFrame.height, flags: 0, mipLevel: 0)
-            note("offlineVideoFrame", layer.location, "视频纹理仅按指定时刻离线取帧；非桌面播放")
+            if videoFrameKind == .offline {
+                note("offlineVideoFrame", layer.location, "视频纹理仅按指定时刻离线取帧；非桌面播放")
+            } else {
+                note("windowlessVideoFrame", layer.location, "无窗口播放器取帧；非桌面scene播放")
+            }
         } else {
             tex = try textureCache.load(data(texPath))
         }
@@ -423,7 +435,7 @@ final class SceneCompositor {
                 guard show, alpha > 0 else { continue }
                 let (image, size) = try texture(for: layer)
                 let key = try colorKey(for: layer)
-                if key != nil { note("colorKeyApproximation", layer.location, "按已识别单pass参数离线抠色；非完整效果链或桌面播放") }
+                if key != nil { note("colorKeyApproximation", layer.location, "按已识别单pass参数CPU抠色；非完整效果链或桌面播放") }
                 else if let effects = layer.object["effects"] as? [[String: Any]],
                         effects.count == 1, effects[0]["file"] as? String == "effects/colorkey/effect.json" {
                     note("colorKeyDisabled", layer.location, "colorkey 已禁用，按原图绘制")
@@ -443,14 +455,17 @@ final class SceneCompositor {
                                      sceneHeight: sceneHeight, drawnLayers: drawn, skippedLayers: skipped,
                                      diagnostics: diagnostics, playable: false, faithful: false,
                                      previewAvailable: !drawn.isEmpty,
-                                     frameMode: videoFrame == nil ? "staticApproximation" : "offlineVideoTextureFrame",
+                                     frameMode: videoFrame == nil ? "staticApproximation"
+                                         : (videoFrameKind == .offline ? "offlineVideoTextureFrame" : "windowlessRealtimeProbe"),
                                      videoTexture: videoFrame?.texturePath,
                                      requestedSeconds: videoFrame?.requestedSeconds,
                                      actualSeconds: videoFrame?.actualSeconds,
                                      videoDurationSeconds: videoFrame?.durationSeconds,
                                      description: videoFrame == nil
                                          ? "静态frame 0近似画面；仅支持受限colorkey近似，不支持动画、脚本、其他效果器、粒子与桌面播放"
-                                         : "指定视频纹理离线取帧并合成基础图；仅支持受限colorkey近似，不支持完整动画、其他效果器或桌面播放")
+                                         : (videoFrameKind == .offline
+                                            ? "指定视频纹理离线取帧并合成基础图；仅支持受限colorkey近似，不支持完整动画、其他效果器或桌面播放"
+                                            : "无窗口视频帧与基础图受限合成；非完整scene渲染，不支持桌面播放"))
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return WESceneStaticPreview(width: width, height: height, rgba: Data(canvas),
                                     diagnosticsJSON: try encoder.encode(summary),

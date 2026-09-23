@@ -63,6 +63,12 @@ func runCompositorChecks(_ c: inout Checker) throws {
             summary(frame).requestedSeconds == 1 && summary(frame).actualSeconds == 1 &&
             summary(frame).videoDurationSeconds == 2 &&
             !summary(frame).playable && !summary(frame).faithful, "离线动态帧不冒充桌面可播放")
+    let windowless = try SceneCompositor(package: injectedPackage, videoFrame: injected,
+                                          videoFrameKind: .windowlessProbe).render(maxDimension: 4)
+    c.check(try summary(windowless).frameMode == "windowlessRealtimeProbe" &&
+            summary(windowless).diagnostics.contains { $0.code == "windowlessVideoFrame" } &&
+            !summary(windowless).playable && !summary(windowless).faithful,
+            "无窗口视频帧与离线帧分开诊断且不冒充桌面scene")
     let unrelated = WESceneVideoTextureFrame(width: 4, height: 4, rgba: Data(blue),
                                              durationSeconds: 2, requestedSeconds: 1,
                                              actualSeconds: 1, texturePath: "materials/unused.tex")

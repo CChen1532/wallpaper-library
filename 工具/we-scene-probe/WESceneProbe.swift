@@ -18,6 +18,7 @@ func usage() {
       we-scene-probe frame <scene.pkg> <materials/name.tex> <seconds> <out.png> [max-edge]  离线视频纹理取帧并合成
       we-scene-probe sequence <scene.pkg> <materials/name.tex> <fps> <count> <outdir> [max-edge]  有界离线逐帧序列，非实时播放
       we-scene-probe realtime-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz]  静音无窗口视频输出采样，不控制桌面
+      we-scene-probe realtime-scene-probe <scene.pkg> <materials/name.tex> <seconds> <outdir> [poll-hz] [max-edge]  无窗口受限scene合成
     """)
 }
 
@@ -220,6 +221,63 @@ do {
                                      "frames": observations]
         print(String(decoding: try JSONSerialization.data(withJSONObject: report,
             options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+        if distinct < 2 { exit(3) }
+
+    case "realtime-scene-probe":
+        guard (6...8).contains(args.count), let duration = Double(args[4]),
+              duration.isFinite, (0.5...3).contains(duration) else { usage(); exit(2) }
+        let pollHz = args.count >= 7 ? (Int(args[6]) ?? 0) : 5
+        let maxEdge = args.count == 8 ? (Int(args[7]) ?? 0) : 640
+        guard (2...10).contains(pollHz), (1...960).contains(maxEdge) else { usage(); exit(2) }
+        let destination = URL(fileURLWithPath: args[5], isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw ProbeError.invalid("无窗口合成输出目录必须不存在，拒绝覆盖")
+        }
+        let session = try await WESceneRealtimeSceneSession.open(
+            packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), videoTexturePath: args[3])
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".wescene-realtime-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var observations: [[String: Any]] = []
+        do {
+            try await session.play()
+            let started = ProcessInfo.processInfo.systemUptime
+            while ProcessInfo.processInfo.systemUptime - started < duration && observations.count < 20 {
+                try Task.checkCancellation()
+                if let frame = try await session.poll(maxDimension: maxEdge) {
+                    guard frame.preview.hasRenderableContent else {
+                        throw ProbeError.unsupported("无窗口scene帧没有可合成图层")
+                    }
+                    let name = String(format: "frame-%04d", observations.count)
+                    try writePNG([UInt8](frame.preview.rgba), width: frame.preview.width,
+                                 height: frame.preview.height,
+                                 to: staging.appendingPathComponent(name + ".png").path)
+                    try frame.preview.diagnosticsJSON.write(
+                        to: staging.appendingPathComponent(name + ".json"), options: .withoutOverwriting)
+                    let digest = SHA256.hash(data: frame.preview.rgba).map { String(format: "%02x", $0) }.joined()
+                    observations.append(["itemSeconds": frame.itemSeconds,
+                                         "displaySeconds": frame.displaySeconds,
+                                         "sha256": digest, "png": name + ".png"])
+                }
+                try await Task.sleep(nanoseconds: UInt64(1_000_000_000 / pollHz))
+            }
+            await session.close()
+        } catch {
+            await session.close()
+            throw error
+        }
+        let distinct = Set(observations.compactMap { $0["sha256"] as? String }).count
+        let manifest: [String: Any] = ["schemaVersion": 1, "frameMode": "windowlessRealtimeProbe",
+                                        "playableScene": false, "faithful": false, "desktopAttached": false,
+                                        "requestedDurationSeconds": duration, "pollHz": pollHz,
+                                        "observedFrames": observations.count, "distinctFrames": distinct,
+                                        "videoTexture": args[3], "frames": observations]
+        try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+            .write(to: staging.appendingPathComponent("probe.json"), options: .withoutOverwriting)
+        try FileManager.default.moveItem(at: staging, to: destination)
+        print("无窗口受限scene帧: \(destination.path) (\(observations.count)帧，\(distinct)种画面)；非桌面播放")
         if distinct < 2 { exit(3) }
 
     default:
