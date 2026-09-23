@@ -17,6 +17,7 @@
 // 编译：swiftc -O WESceneProbe.swift -o we-scene-probe
 
 import Foundation
+import CryptoKit
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -136,12 +137,26 @@ func parsePkg(_ data: Data) throws -> PkgFile {
         guard offset >= 0, length >= 0 else { throw ProbeError.invalid("条目 \(path) 偏移/长度非法") }
         entries.append(PkgEntry(path: path, offset: offset, length: length))
     }
+    for entry in entries {
+        guard entry.offset <= r.remaining, entry.length <= r.remaining - entry.offset else {
+            throw ProbeError.truncated("条目 \(entry.path) 超出数据区")
+        }
+    }
     return PkgFile(magic: magic, entries: entries, dataStart: r.pos, bytes: r.bytes)
+}
+
+func safePackagePath(_ path: String) -> Bool {
+    let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+    return !path.isEmpty && !path.contains("\\") && !path.contains(":") && !path.contains("\0") &&
+        parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
 }
 
 // MARK: - LZ4 block 解压（WE 的 .tex mipmap 用它）
 
 func lz4BlockDecompress(_ src: [UInt8], expectedSize: Int) throws -> [UInt8] {
+    guard expectedSize > 0, expectedSize <= 64 * 1024 * 1024 else {
+        throw ProbeError.invalid("LZ4 输出长度必须在 1...64MiB")
+    }
     var out: [UInt8] = []
     out.reserveCapacity(max(expectedSize, 16))
     var i = 0
@@ -160,6 +175,7 @@ func lz4BlockDecompress(_ src: [UInt8], expectedSize: Int) throws -> [UInt8] {
             }
         }
         guard i + literalLength <= n else { throw ProbeError.truncated("LZ4 字面量数据") }
+        guard literalLength <= expectedSize - out.count else { throw ProbeError.invalid("LZ4 字面量超出输出预算") }
         out.append(contentsOf: src[i..<(i + literalLength)])
         i += literalLength
         if i >= n { break }
@@ -179,6 +195,7 @@ func lz4BlockDecompress(_ src: [UInt8], expectedSize: Int) throws -> [UInt8] {
             }
         }
         matchLength += 4
+        guard matchLength <= expectedSize - out.count else { throw ProbeError.invalid("LZ4 匹配超出输出预算") }
 
         var srcIndex = out.count - offset
         for _ in 0..<matchLength {
@@ -198,6 +215,7 @@ func lz4BlockDecompress(_ src: [UInt8], expectedSize: Int) throws -> [UInt8] {
 enum DXTKind { case dxt1, dxt3, dxt5 }
 
 func decodeDXT(_ data: [UInt8], width: Int, height: Int, kind: DXTKind) throws -> [UInt8] {
+    _ = try checkedRGBAByteCount(width: width, height: height)
     let blockSize = (kind == .dxt1) ? 8 : 16
     let bw = (width + 3) / 4
     let bh = (height + 3) / 4
@@ -385,13 +403,20 @@ func parseTex(_ data: Data) throws -> TexFile {
         throw ProbeError.badMagic(expected: "TEXB000x", got: containerMagic)
     }
     let version = Int(containerMagic.suffix(4)) ?? 0
+    guard (1...4).contains(version), containerMagic == String(format: "TEXB%04d", version) else {
+        throw ProbeError.unsupported("未知 TEX 容器版本 \(containerMagic)")
+    }
     let imageCount = Int(try r.i32())
     guard imageCount >= 0, imageCount <= 1024 else { throw ProbeError.invalid("图像数异常 \(imageCount)") }
 
     var imageFormat = FreeImageFormat.unknown
     var isVideo = false
     if version >= 3 {
-        imageFormat = FreeImageFormat(rawValue: Int(try r.i32())) ?? .unknown
+        let code = Int(try r.i32())
+        // 真实 TEXB0004 裸像素使用 -1；0 保留对早期合成夹具的兼容。
+        if code == -1 { imageFormat = .unknown }
+        else if let known = FreeImageFormat(rawValue: code) { imageFormat = known }
+        else { throw ProbeError.unsupported("内嵌格式码 \(code)") }
     }
     if version >= 4 {
         isVideo = (try r.i32()) == 1
@@ -435,6 +460,10 @@ func parseTex(_ data: Data) throws -> TexFile {
 
 /// 把某个 mipmap 解成 RGBA8
 func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, height: Int, rgba: [UInt8]) {
+    guard !tex.isGIF, tex.imageFormat != .gif, !tex.isVideoTexture, tex.imageFormat != .mp4 else {
+        throw ProbeError.unsupported("GIF/视频纹理暂不支持，不能静默取首帧")
+    }
+    _ = try checkedRGBAByteCount(width: mipmap.width, height: mipmap.height)
     var payload = mipmap.rawBytes
     if mipmap.isLZ4 {
         payload = try lz4BlockDecompress(payload, expectedSize: mipmap.decompressedSize)
@@ -442,7 +471,18 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
 
     if tex.imageFormat != .unknown {
         // 内嵌图片（PNG/JPEG/GIF/...）→ 交给 ImageIO
+        guard tex.imageFormat == .png || tex.imageFormat == .jpeg else { throw ProbeError.unsupported("只支持内嵌 PNG/JPEG") }
         guard let src = CGImageSourceCreateWithData(Data(payload) as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else {
+            throw ProbeError.invalid("内嵌图片尺寸不可读")
+        }
+        _ = try checkedRGBAByteCount(width: width, height: height)
+        guard width == mipmap.width, height == mipmap.height, CGImageSourceGetCount(src) == 1 else {
+            throw ProbeError.unsupported("内嵌图片尺寸与 mipmap 不一致或包含多帧")
+        }
+        guard
               let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
             throw ProbeError.unsupported("内嵌图片解码失败（\(tex.imageFormat.name)）")
         }
@@ -462,6 +502,7 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
     case .dxt5:
         return (mipmap.width, mipmap.height, try decodeDXT(payload, width: mipmap.width, height: mipmap.height, kind: .dxt5))
     case .rg88:
+        guard payload.count >= mipmap.width * mipmap.height * 2 else { throw ProbeError.truncated("RG88 数据不足") }
         var out = [UInt8](repeating: 255, count: mipmap.width * mipmap.height * 4)
         for i in 0..<(mipmap.width * mipmap.height) {
             out[i * 4] = payload[i * 2]
@@ -470,6 +511,7 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
         }
         return (mipmap.width, mipmap.height, out)
     case .r8:
+        guard payload.count >= mipmap.width * mipmap.height else { throw ProbeError.truncated("R8 数据不足") }
         var out = [UInt8](repeating: 255, count: mipmap.width * mipmap.height * 4)
         for i in 0..<(mipmap.width * mipmap.height) {
             out[i * 4] = payload[i]
@@ -483,6 +525,7 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
 func cgImageToRGBA(_ cg: CGImage) throws -> (width: Int, height: Int, rgba: [UInt8]) {
     let w = cg.width
     let h = cg.height
+    _ = try checkedRGBAByteCount(width: w, height: h)
     var buf = [UInt8](repeating: 0, count: w * h * 4)
     let ok: Bool = buf.withUnsafeMutableBytes { raw -> Bool in
         guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
@@ -492,14 +535,23 @@ func cgImageToRGBA(_ cg: CGImage) throws -> (width: Int, height: Int, rgba: [UIn
         return true
     }
     guard ok else { throw ProbeError.invalid("CGContext 创建失败") }
+    // ImageIO/CGContext 返回预乘 alpha；统一为 straight RGBA，与 DXT/裸像素一致。
+    for i in stride(from: 0, to: buf.count, by: 4) {
+        let a = Int(buf[i + 3])
+        for channel in 0..<3 {
+            buf[i + channel] = a == 0 ? 0 : UInt8(min(255, (Int(buf[i + channel]) * 255 + a / 2) / a))
+        }
+    }
     return (w, h, buf)
 }
 
 func writePNG(_ rgba: [UInt8], width: Int, height: Int, to path: String) throws {
+    let required = try checkedRGBAByteCount(width: width, height: height)
+    guard rgba.count == required else { throw ProbeError.invalid("PNG 像素长度不匹配") }
     guard let provider = CGDataProvider(data: Data(rgba) as CFData),
           let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
                               bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                              bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                              bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
                               provider: provider, decode: nil, shouldInterpolate: false,
                               intent: .defaultIntent) else {
         throw ProbeError.invalid("PNG 图像构造失败")
@@ -510,6 +562,127 @@ func writePNG(_ rgba: [UInt8], width: Int, height: Int, to path: String) throws 
     }
     CGImageDestinationAddImage(dest, image, nil)
     guard CGImageDestinationFinalize(dest) else { throw ProbeError.invalid("PNG 收尾失败") }
+}
+
+// MARK: - 阶段 2A：有界 CPU 纹理缓存（串行使用，不是 GPU 显存预算）
+
+func checkedRGBAByteCount(width: Int, height: Int) throws -> Int {
+    guard width > 0, height > 0, width <= 16384, height <= 16384,
+          width <= (64 * 1024 * 1024 / 4) / height else {
+        throw ProbeError.invalid("纹理尺寸无效或解码超过单图 64MiB 预算")
+    }
+    return width * height * 4
+}
+
+struct DecodedTexture {
+    let width: Int
+    let height: Int
+    let rgba: [UInt8] // straight alpha; R8/RG88 的源通道语义由 sourceFormat 保留
+    let sourceFormat: TexPixelFormat
+    let embeddedFormat: FreeImageFormat
+    let imageWidth: Int
+    let imageHeight: Int
+    let flags: Int
+    let mipLevel: Int
+}
+
+/// 仅在串行加载队列使用。预算只限制本缓存持有的 RGBA，不包括调用方持有对象与解析临时数组。
+final class TextureCache {
+    private let budget: Int
+    private var entries: [String: DecodedTexture] = [:]
+    private var order: [String] = [] // 最早使用在前
+    private(set) var residentBytes = 0
+    private(set) var hits = 0
+    private(set) var misses = 0
+
+    init(budget: Int = 128 * 1024 * 1024) { self.budget = max(0, budget) }
+
+    func load(_ data: Data, mipLevel: Int = 0) throws -> DecodedTexture {
+        guard data.count <= 128 * 1024 * 1024 else { throw ProbeError.invalid("单个 TEX 输入超过 128MiB") }
+        let key = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() + ":\(mipLevel)"
+        if let entry = entries[key] {
+            hits += 1
+            order.removeAll { $0 == key }; order.append(key)
+            return entry
+        }
+        misses += 1
+        let tex = try parseTex(data)
+        guard tex.images.count == 1, let image = tex.images.first,
+              image.mipmaps.indices.contains(mipLevel) else {
+            throw ProbeError.unsupported("要求单图 TEX 与有效 mipmap；多图不能静默取首张")
+        }
+        let decoded = try texMipmapToRGBA(tex, mipmap: image.mipmaps[mipLevel])
+        let entry = DecodedTexture(width: decoded.width, height: decoded.height, rgba: decoded.rgba,
+                                   sourceFormat: tex.format, embeddedFormat: tex.imageFormat,
+                                   imageWidth: tex.imageWidth, imageHeight: tex.imageHeight,
+                                   flags: tex.flags, mipLevel: mipLevel)
+        if entry.rgba.count <= budget {
+            while residentBytes > budget - entry.rgba.count, let oldest = order.first {
+                if let removed = entries.removeValue(forKey: oldest) { residentBytes -= removed.rgba.count }
+                order.removeFirst()
+            }
+            entries[key] = entry; order.append(key); residentBytes += entry.rgba.count
+        }
+        return entry
+    }
+
+    func removeAll() { entries.removeAll(); order.removeAll(); residentBytes = 0 }
+}
+
+func runTextureChecks(_ c: inout Checker) throws {
+    func rejects(_ operation: () throws -> Void) -> Bool {
+        do { try operation(); return false } catch { return true }
+    }
+    c.check(rejects { _ = try checkedRGBAByteCount(width: Int.max, height: 2) }, "超大尺寸拒绝且无乘法溢出")
+    c.check(rejects { _ = try checkedRGBAByteCount(width: -1, height: 2) }, "负尺寸拒绝")
+    c.check(rejects { _ = try lz4BlockDecompress([0x40, 1, 2, 3, 4], expectedSize: 3) }, "LZ4 字面量超预算拒绝")
+    c.check(rejects { _ = try lz4BlockDecompress([0x10, 1, 1, 0], expectedSize: 4) }, "LZ4 回引超预算拒绝")
+    c.check(rejects { _ = try lz4BlockDecompress([], expectedSize: Int.max) }, "LZ4 声明超限拒绝")
+    func rawTex(_ format: TexPixelFormat, flags: Int = 0, video: Bool = false) -> TexFile {
+        TexFile(format: format, flags: flags, textureWidth: 2, textureHeight: 2, imageWidth: 2, imageHeight: 2,
+                containerMagic: "TEXB0004", imageFormat: .unknown, isVideoTexture: video, images: [])
+    }
+    let short = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0, rawBytes: [1])
+    for format in [TexPixelFormat.r8, .rg88, .rgba8888] {
+        c.check(rejects { _ = try texMipmapToRGBA(rawTex(format), mipmap: short) }, "截断 \(format.name) 拒绝")
+    }
+    c.check(rejects { _ = try texMipmapToRGBA(rawTex(.r8, flags: 4), mipmap: short) }, "GIF 拒绝静默首帧")
+    c.check(rejects { _ = try texMipmapToRGBA(rawTex(.r8, video: true), mipmap: short) }, "视频纹理拒绝静默首帧")
+    let full = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0, rawBytes: [10,20,30,40,50,60,70,80])
+    let r8 = try texMipmapToRGBA(rawTex(.r8), mipmap: full)
+    let rg = try texMipmapToRGBA(rawTex(.rg88), mipmap: full)
+    c.check(Array(r8.rgba.prefix(4)) == [10,10,10,255], "R8 通道展开")
+    c.check(Array(rg.rgba.prefix(4)) == [10,20,0,255], "RG88 通道展开")
+    let a = try makeSyntheticTexRGBA4x4(pixels: [UInt8](repeating: 255, count: 64))
+    let b = try makeSyntheticTexRGBA4x4(pixels: [UInt8](repeating: 127, count: 64))
+    let cache = TextureCache(budget: 64)
+    _ = try cache.load(a); _ = try cache.load(a)
+    c.check(cache.hits == 1 && cache.misses == 1 && cache.residentBytes == 64, "内容缓存命中")
+    let changed = try cache.load(b)
+    c.check(changed.rgba[0] == 127 && cache.residentBytes == 64, "内容改变刷新且 LRU 不超预算")
+    _ = try cache.load(a)
+    c.check(cache.misses == 3, "被淘汰纹理重新解码")
+    c.check(rejects { _ = try cache.load(a, mipLevel: -1) }, "无效 mipmap 拒绝")
+    let tiny = TextureCache(budget: 1)
+    _ = try tiny.load(a)
+    c.check(tiny.residentBytes == 0, "超过缓存预算的单图可用但不驻留")
+    cache.removeAll()
+    c.check(cache.residentBytes == 0, "显式清空预算归零")
+    var brokenPkg = try makeSyntheticPkg(); brokenPkg.removeLast()
+    c.check(rejects { _ = try parsePkg(brokenPkg) }, "PKG 解析立即拒绝越界条目")
+    c.check(!safePackagePath("../outside") && !safePackagePath("/absolute") && !safePackagePath("a\\b"), "解包拒绝路径穿越")
+    c.check(safePackagePath("materials/中文.tex"), "安全中文相对路径保留")
+    // TEX 头：18 字节 magic + 28 字节元信息 + 9 字节容器 + 4 字节图像数。
+    var realRaw = a
+    realRaw.replaceSubrange(59..<63, with: [255,255,255,255])
+    c.check(try parseTex(realRaw).imageFormat == .unknown, "真实样本 -1 裸像素标记")
+    var unknown = a
+    unknown.replaceSubrange(59..<63, with: [123,0,0,0])
+    c.check(rejects { _ = try parseTex(unknown) }, "未知图片码不回退为裸像素")
+    let lru = TextureCache(budget: 128)
+    let third = try makeSyntheticTexRGBA4x4(pixels: [UInt8](repeating: 50, count: 64))
+    _ = try lru.load(a); _ = try lru.load(b); _ = try lru.load(a); _ = try lru.load(third); _ = try lru.load(a)
+    c.check(lru.hits == 2 && lru.residentBytes == 128, "LRU 命中更新顺序，保留热纹理")
 }
 
 // MARK: - scene.json 摘要（只读，不渲染）
@@ -767,8 +940,15 @@ func runSelfTest() throws {
     let attrs = try FileManager.default.attributesOfItem(atPath: pngPath)
     let size = (attrs[.size] as? Int) ?? 0
     c.check(size > 50, "PNG 已写出（\(size) 字节）")
+    let alphaPath = tmp.appendingPathComponent("alpha.png").path
+    try writePNG([200,100,50,128], width: 1, height: 1, to: alphaPath)
+    let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: alphaPath) as CFURL, nil)!
+    let alphaImage = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+    let alpha = try cgImageToRGBA(alphaImage).rgba
+    c.check(zip(alpha, [UInt8(200),100,50,128]).allSatisfy { abs(Int($0.0) - Int($0.1)) <= 2 }, "半透明 PNG straight alpha 往返")
     print("  样本目录: \(tmp.path)")
 
+    try runTextureChecks(&c)
     print("\n=== 自检结果：通过 \(c.passes) 项，失败 \(c.failures.count) 项 ===")
     if !c.failures.isEmpty {
         for f in c.failures { print("  ❌ \(f)") }
@@ -786,6 +966,7 @@ func usage() {
       we-scene-probe extract <pkg> <outdir>   解包
       we-scene-probe tex <file.tex> [out.png] 解析 TEX，可导出首张图 PNG
       we-scene-probe scene <scene.json>       打印场景结构摘要
+      we-scene-probe audit <scene.pkg>        只读解码所有 TEX，明确列出不支持项
     """)
 }
 
@@ -811,13 +992,19 @@ do {
         let data = try Data(contentsOf: URL(fileURLWithPath: args[2]))
         let pkg = try parsePkg(data)
         let outDir = URL(fileURLWithPath: args[3])
-        for e in pkg.entries {
+        let named = pkg.entries.filter { !$0.path.isEmpty }
+        guard named.allSatisfy({ safePackagePath($0.path) }), Set(named.map { $0.path.lowercased() }).count == named.count else {
+            throw ProbeError.invalid("包内包含不安全路径或重复路径，拒绝解包")
+        }
+        guard !FileManager.default.fileExists(atPath: outDir.path) else { throw ProbeError.invalid("解包要求全新输出目录，拒绝覆盖") }
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: false)
+        for e in named {
             let dest = outDir.appendingPathComponent(e.path)
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
-            try Data(try pkg.data(of: e)).write(to: dest)
+            try Data(try pkg.data(of: e)).write(to: dest, options: .withoutOverwriting)
         }
-        print("已解出 \(pkg.entries.count) 个条目 → \(outDir.path)")
+        print("已解出 \(named.count) 个条目；跳过 \(pkg.entries.count - named.count) 个空路径 → \(outDir.path)")
 
     case "tex":
         guard args.count >= 3 else { usage(); exit(2) }
@@ -840,6 +1027,24 @@ do {
     case "scene":
         guard args.count >= 3 else { usage(); exit(2) }
         print(try summarizeScene(try Data(contentsOf: URL(fileURLWithPath: args[2]))))
+
+    case "audit":
+        guard args.count == 3 else { usage(); exit(2) }
+        let pkg = try parsePkg(Data(contentsOf: URL(fileURLWithPath: args[2])))
+        let cache = TextureCache()
+        var success = 0, rejected = 0
+        for entry in pkg.entries where entry.path.lowercased().hasSuffix(".tex") {
+            do {
+                let texture = try cache.load(Data(pkg.data(of: entry)))
+                success += 1
+                print("OK \(entry.path) \(texture.width)x\(texture.height) \(texture.sourceFormat.name) / \(texture.embeddedFormat.name)")
+            } catch {
+                rejected += 1
+                print("REJECT \(entry.path): \(error)")
+            }
+        }
+        print("AUDIT decoded=\(success) rejected=\(rejected) cacheBytes=\(cache.residentBytes)")
+        if rejected > 0 { exit(3) }
 
     default:
         usage(); exit(2)

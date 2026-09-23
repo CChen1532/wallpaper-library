@@ -2,3 +2,5 @@
 dist/
 .DS_Store
 .swiftpm/
+/工具/we-scene-probe/we-scene-probe
+样本/
