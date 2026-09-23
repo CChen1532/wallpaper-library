@@ -35,6 +35,11 @@ struct NativeLibraryView: View {
     @State private var sceneError: String?
     @State private var visibleSceneLimitations: [String] = []
     @State private var showSceneLimitations = false
+    @State private var showScenePreview = false
+    @State private var scenePreviewTitle = ""
+    @State private var scenePreviewImage: NSImage?
+    @State private var scenePreviewError: String?
+    @State private var scenePreviewLoading = false
     @FocusState private var focusedVideo: String?
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
@@ -43,6 +48,13 @@ struct NativeLibraryView: View {
     private var selectedSceneLimitations: [String] {
         guard let selectedSceneName else { return [] }
         return filteredScenes.first(where: { $0.name == selectedSceneName })?.capability?.limitationCodes ?? []
+    }
+    private var selectedPreviewScene: SceneCatalogPayload.Entry? {
+        guard let selectedSceneName,
+              let entry = filteredScenes.first(where: { $0.name == selectedSceneName }),
+              entry.error == nil, entry.capability?.restrictedStaticPreviewAvailable == true,
+              entry.packageBytes > 0, entry.packageBytes <= SceneStaticPreviewLoader.maxPackageBytes else { return nil }
+        return entry
     }
     var body: some View {
         NavigationSplitView {
@@ -83,6 +95,9 @@ struct NativeLibraryView: View {
                         } label: { Label("限制详情", systemImage: "info.circle") }
                         .disabled(selectedSceneLimitations.isEmpty || sceneLoading)
                         .help("先在列表中选中场景，再查看限制详情")
+                        Button(action: beginScenePreview) { Label("受限静态预览", systemImage: "photo") }
+                            .disabled(selectedPreviewScene == nil || sceneLoading || scenePreviewLoading)
+                            .help("仅查看所选场景的离线静态近似图；不播放或更改桌面")
                     } else {
                         Button(action: importVideos) { Label("导入视频", systemImage: "plus") }.help("导入 MP4 视频").keyboardShortcut("o", modifiers: .command).disabled(model.isWorking || !model.capabilities.canImport)
                         Button { Task { await model.refreshLibrary() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.help("刷新资料库").keyboardShortcut("r", modifiers: .command).disabled(model.isWorking)
@@ -109,6 +124,7 @@ struct NativeLibraryView: View {
         } message: { Text("\(model.selectedWallpaper?.url.lastPathComponent ?? "")\n可以从废纸篓恢复。若正在播放此视频或开启了轮播，将先停止桌面播放并关闭轮播。") }
         .sheet(isPresented: $showDiagnostics) { diagnosticsSheet }
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
+        .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
     }
     private var videoLibrary: some View {
         HSplitView {
@@ -168,6 +184,10 @@ struct NativeLibraryView: View {
                             Label(capability.restrictedStaticPreviewAvailable ? "可生成受限静态预览" : "无可合成静态预览",
                                   systemImage: capability.restrictedStaticPreviewAvailable ? "photo" : "photo.badge.exclamationmark")
                             Text("桌面动态播放未支持 · 完整效果未还原").foregroundStyle(.secondary)
+                            if item.packageBytes > SceneStaticPreviewLoader.maxPackageBytes && capability.restrictedStaticPreviewAvailable {
+                                Text("应用内静态预览超过64 MiB读取上限")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             if !capability.limitationCodes.isEmpty {
                                 Text("限制：\(capability.limitationCodes.count) 项 · 选中后可查看详情")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -194,6 +214,56 @@ struct NativeLibraryView: View {
                 }.padding(.vertical, 3)
             }.listStyle(.inset)
         }.padding(20).frame(minWidth: 460, minHeight: 380)
+    }
+    private var scenePreviewSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("受限静态预览").font(.title2.weight(.semibold))
+                Spacer()
+                Button("完成") { showScenePreview = false }.keyboardShortcut(.cancelAction)
+            }
+            Text(scenePreviewTitle).font(.headline).lineLimit(2)
+            Text("离线静态近似画面；视频纹理运动、脚本及完整效果未还原。不能作为动态桌面壁纸播放。")
+                .font(.callout).foregroundStyle(.secondary)
+            if scenePreviewLoading { ProgressView("正在只读生成静态近似图…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+            else if let scenePreviewImage {
+                Image(nsImage: scenePreviewImage).resizable().aspectRatio(contentMode: .fit)
+                    .accessibilityLabel("受限静态近似图，非桌面动态播放")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView("预览不可用", systemImage: "photo.badge.exclamationmark",
+                    description: Text(scenePreviewError ?? "此场景没有可显示的受限静态画面。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }.padding(20).frame(minWidth: 520, minHeight: 420)
+    }
+    private func beginScenePreview() {
+        guard !scenePreviewLoading, let sceneRoot, let item = selectedPreviewScene else { return }
+        scenePreviewTitle = item.title ?? item.name
+        scenePreviewImage = nil
+        scenePreviewError = nil
+        scenePreviewLoading = true
+        showScenePreview = true
+        Task {
+            defer { scenePreviewLoading = false }
+            do {
+                let raster = try await Task.detached(priority: .userInitiated) {
+                    let scoped = sceneRoot.startAccessingSecurityScopedResource()
+                    defer { if scoped { sceneRoot.stopAccessingSecurityScopedResource() } }
+                    return try SceneStaticPreviewLoader.load(root: sceneRoot, sceneName: item.name,
+                                                             expectedBytes: item.packageBytes)
+                }.value
+                guard showScenePreview, self.sceneRoot == sceneRoot, selectedSceneName == item.name else { return }
+                guard let image = SceneStaticPreviewLoader.image(from: raster) else {
+                    scenePreviewError = "像素缓冲区无法转换为图片"
+                    return
+                }
+                scenePreviewImage = image
+            } catch {
+                guard showScenePreview, self.sceneRoot == sceneRoot, selectedSceneName == item.name else { return }
+                scenePreviewError = error.localizedDescription
+            }
+        }
     }
     private func chooseSceneDirectory() {
         let panel = NSOpenPanel()
