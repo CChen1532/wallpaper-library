@@ -11,6 +11,7 @@ struct NativeLibraryView: View {
     @State private var mode = "rand"
     @State private var confirmTrash = false
     @State private var showDiagnostics = false
+    @FocusState private var focusedVideo: String?
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
     var body: some View {
         NavigationSplitView {
@@ -72,7 +73,16 @@ struct NativeLibraryView: View {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 195), spacing: 16)], spacing: 20) {
                             ForEach(filtered) { item in
-                                VideoCard(item: item, selected: model.selected == item.id, playing: model.stateIssue == nil && model.state.currentPath == item.id) { model.selected = item.id }
+                                VideoCard(item: item, selected: model.selected == item.id, playing: model.stateIssue == nil && model.state.currentPath == item.id) { model.selected = item.id; focusedVideo = item.id }
+                                    .focused($focusedVideo, equals: item.id)
+                                    .onMoveCommand { direction in
+                                        switch direction {
+                                        case .left, .up: model.selectNextVideo(in: filtered.map(\.id), forward: false)
+                                        case .right, .down: model.selectNextVideo(in: filtered.map(\.id), forward: true)
+                                        default: return
+                                        }
+                                        focusedVideo = model.selected
+                                    }
                             }
                         }.padding(20)
                     }
@@ -94,7 +104,7 @@ struct NativeLibraryView: View {
                     Label("动态视频壁纸", systemImage: "video").font(.caption).foregroundStyle(.secondary)
                 }
                 Button { Task { await model.perform(.play(item.id)) } } label: { Label("设为动态壁纸", systemImage: "desktopcomputer").frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.isWorking || !item.playable)
+                    .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
                 Text("视频将在桌面背景中持续播放。此处图片仅为视频封面。").font(.caption).foregroundStyle(.secondary)
                 if model.stateIssue == nil && model.state.currentPath == item.id { Label("正在桌面播放", systemImage: "waveform").font(.callout).foregroundStyle(.tint) }
                 Divider()
@@ -116,8 +126,8 @@ struct NativeLibraryView: View {
     private var rotationSettings: some View {
         Form {
             Section {
-                LabeledContent("当前状态", value: model.state.rotating ? "已开启" : "已关闭")
-                if model.state.rotating { LabeledContent("当前间隔", value: model.state.interval.map { "\($0 / 60) 分钟" } ?? "未知") }
+                LabeledContent("当前状态", value: model.rotationStatusText)
+                if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: model.rotationIntervalText) }
             } header: { Text("桌面视频轮播") } footer: { Text("轮播会定时更换桌面正在播放的视频。关闭应用窗口后，已开启的轮播仍会继续。") }
             Section("轮播设置") {
                 Picker("切换方式", selection: $mode) {
@@ -164,6 +174,7 @@ struct NativeLibraryView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("显示器与运行状态").font(.title2.bold()); Spacer(); Button("完成") { showDiagnostics = false }.keyboardShortcut(.cancelAction) }
             if model.loadingDiagnostics { ProgressView("正在读取…") }
+            Text("手动刷新时的诊断快照，不代表实时画面运动。").font(.caption).foregroundStyle(.secondary)
             ScrollView { Text(model.diagnostics.map { $0.displays + "\n" + $0.status } ?? "暂无诊断数据").font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             Text("负载为系统诊断快照，不能单凭 CPU 百分比断定硬件解码或功耗。").font(.caption).foregroundStyle(.secondary)
             Button("刷新诊断") { Task { await model.refreshDiagnostics() } }.disabled(model.loadingDiagnostics)
@@ -202,6 +213,6 @@ private struct VideoCard: View {
                 }.font(.caption)
             }.padding(8).background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)).contentShape(RoundedRectangle(cornerRadius: 12))
-        }.buttonStyle(.plain).accessibilityLabel(item.title + "，视频壁纸").accessibilityValue(playing ? "正在桌面播放" : selected ? "已选择" : "未选择")
+        }.buttonStyle(.plain).focusable().accessibilityLabel(item.title + "，视频壁纸").accessibilityValue(playing ? "正在桌面播放" : selected ? "已选择" : "未选择")
     }
 }

@@ -17,6 +17,18 @@ import Combine
     var capabilities: BackendCapabilities { backend.capabilities }
     var isWorking: Bool { busy || loading }
     var selectedWallpaper: Wallpaper? { items.first { $0.id == selected } }
+    var rotationStatusText: String { stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
+    var rotationIntervalText: String {
+        guard stateIssue == nil else { return "未知" }
+        return state.interval.map { $0 % 60 == 0 ? "\($0 / 60) 分钟" : "\($0) 秒" } ?? "未知"
+    }
+    func selectNextVideo(in visibleIDs: [String], forward: Bool) {
+        guard !visibleIDs.isEmpty else { selected = nil; return }
+        guard let selected, let index = visibleIDs.firstIndex(of: selected) else {
+            self.selected = forward ? visibleIDs.first : visibleIDs.last; return
+        }
+        self.selected = visibleIDs[min(max(index + (forward ? 1 : -1), 0), visibleIDs.count - 1)]
+    }
 
     init(backend: any WallpaperBackend = PhontoBackend()) { self.backend = backend }
 

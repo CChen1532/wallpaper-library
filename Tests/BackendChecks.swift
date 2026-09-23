@@ -101,6 +101,22 @@ import Foundation
         await model.perform(.next)
         await operation.value
         check(await controlled.actionCount == 2, "进行中重复操作被拒绝")
+        model.state.rotating = true
+        model.state.interval = 90
+        model.stateIssue = "查询失败"
+        check(model.rotationStatusText == "状态未知" && model.rotationIntervalText == "未知", "失败时不展示陈旧轮播状态")
+        model.stateIssue = nil
+        check(model.rotationStatusText == "已开启" && model.rotationIntervalText == "90 秒", "非整分钟间隔不被截断")
+        model.selected = nil
+        model.selectNextVideo(in: ["a", "b"], forward: true)
+        check(model.selected == "a", "键盘选择起始项")
+        model.selectNextVideo(in: ["a", "b"], forward: true)
+        model.selectNextVideo(in: ["a", "b"], forward: true)
+        check(model.selected == "b", "键盘选择末尾不会越界")
+        model.selectNextVideo(in: ["a"], forward: false)
+        check(model.selected == "a", "过滤掉选中项后键盘选择有效项")
+        model.selectNextVideo(in: [], forward: true)
+        check(model.selected == nil, "空搜索结果清除键盘选择")
         if CommandLine.arguments.contains("--live") {
             let backend = PhontoBackend()
             let state = try await backend.state()
