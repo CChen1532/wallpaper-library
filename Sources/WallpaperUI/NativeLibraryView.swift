@@ -12,6 +12,7 @@ private struct SceneCatalogPayload: Decodable {
             let limitationCodes: [String]
         }
         let name: String
+        let title: String?
         let packageBytes: Int64
         let capability: Capability?
         let error: String?
@@ -33,6 +34,9 @@ struct NativeLibraryView: View {
     @State private var sceneError: String?
     @FocusState private var focusedVideo: String?
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
+    private var filteredScenes: [SceneCatalogPayload.Entry] {
+        sceneEntries.filter { search.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(search) || $0.name.localizedCaseInsensitiveContains(search) }
+    }
     var body: some View {
         NavigationSplitView {
             List(selection: $page) {
@@ -60,7 +64,7 @@ struct NativeLibraryView: View {
             }
             .navigationTitle(page == .rotation ? "自动轮播" : page == .scenes ? "WE 场景" : "全部视频")
             .navigationSubtitle(page == .rotation ? "定时切换桌面上的视频壁纸" : page == .scenes ? "只读检查，尚不可设为动态壁纸" : "\(model.items.count) 个视频")
-            .searchable(text: $search, placement: .toolbar, prompt: "搜索视频")
+            .searchable(text: $search, placement: .toolbar, prompt: page == .scenes ? "搜索场景" : "搜索视频")
             .toolbar {
                 ToolbarItemGroup {
                     if page == .scenes {
@@ -70,10 +74,10 @@ struct NativeLibraryView: View {
                         Button(action: importVideos) { Label("导入视频", systemImage: "plus") }.help("导入 MP4 视频").keyboardShortcut("o", modifiers: .command).disabled(model.isWorking || !model.capabilities.canImport)
                         Button { Task { await model.refreshLibrary() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.help("刷新资料库").keyboardShortcut("r", modifiers: .command).disabled(model.isWorking)
                     }
-                    Menu {
+                    if page != .scenes { Menu {
                         Button("打开视频文件夹", systemImage: "folder") { if let url = model.capabilities.libraryDirectory { NSWorkspace.shared.open(url) } }.disabled(model.capabilities.libraryDirectory == nil)
                         Button("显示器与运行状态", systemImage: "desktopcomputer") { showDiagnostics = true; Task { await model.refreshDiagnostics() } }
-                    } label: { Label("更多", systemImage: "ellipsis.circle") }.help("更多操作")
+                    } label: { Label("更多", systemImage: "ellipsis.circle") }.help("更多操作") }
                 }
             }
         }
@@ -84,7 +88,7 @@ struct NativeLibraryView: View {
                 await model.refreshState()
             }
         }
-        .onChange(of: page) { _, newValue in if newValue == .rotation { syncRotationFields() } }
+        .onChange(of: page) { _, newValue in search = ""; if newValue == .rotation { syncRotationFields() } }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(model.error ?? "") }
         .confirmationDialog("将所选视频移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("移入废纸篓", role: .destructive) { Task { await model.trashSelected() } }
@@ -135,11 +139,15 @@ struct NativeLibraryView: View {
                 ContentUnavailableView("没有找到 scene.pkg", systemImage: "doc.text.magnifyingglass",
                     description: Text("请检查所选目录是否包含场景子目录。"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !sceneLoading && filteredScenes.isEmpty && sceneError == nil {
+                ContentUnavailableView("没有匹配的场景", systemImage: "magnifyingglass",
+                    description: Text("试试场景标题或目录编号。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(sceneEntries) { item in
+                List(filteredScenes) { item in
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(item.name).font(.headline)
-                        Text(ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
+                        Text(item.title ?? item.name).font(.headline)
+                        Text("\(item.name) · " + ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
                             .font(.caption).foregroundStyle(.secondary)
                         if let error = item.error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                         else if let capability = item.capability {
