@@ -22,9 +22,10 @@ func runTextureChecks(_ c: inout Checker) throws {
     }
     c.check(rejects { _ = try texMipmapToRGBA(rawTex(.r8, flags: 4), mipmap: short) }, "GIF 拒绝静默首帧")
     c.check(rejects { _ = try texMipmapToRGBA(rawTex(.r8, video: true), mipmap: short) }, "视频纹理拒绝静默首帧")
-    let full = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0, rawBytes: [10,20,30,40,50,60,70,80])
-    let r8 = try texMipmapToRGBA(rawTex(.r8), mipmap: full)
-    let rg = try texMipmapToRGBA(rawTex(.rg88), mipmap: full)
+    let r8Full = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0, rawBytes: [10,20,30,40])
+    let rgFull = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0, rawBytes: [10,20,30,40,50,60,70,80])
+    let r8 = try texMipmapToRGBA(rawTex(.r8), mipmap: r8Full)
+    let rg = try texMipmapToRGBA(rawTex(.rg88), mipmap: rgFull)
     c.check(Array(r8.rgba.prefix(4)) == [10,10,10,255], "R8 通道展开")
     c.check(Array(rg.rgba.prefix(4)) == [10,20,0,255], "RG88 通道展开")
     let a = try makeSyntheticTexRGBA4x4(pixels: [UInt8](repeating: 255, count: 64))
@@ -50,6 +51,16 @@ func runTextureChecks(_ c: inout Checker) throws {
     var realRaw = a
     realRaw.replaceSubrange(59..<63, with: [255,255,255,255])
     c.check(try parseTex(realRaw).imageFormat == .unknown, "真实样本 -1 裸像素标记")
+    for version in [3, 4] {
+        let disguised = makeSyntheticDisguisedVideoTex(version: version)
+        let parsed = try parseTex(disguised)
+        c.check(parsed.isVideoTexture && parsed.imageFormat == .mp4, "TEXB000\(version) 未标记 MP4 内容识别")
+        c.check(rejects { _ = try texMipmapToRGBA(parsed, mipmap: parsed.images[0].mipmaps[0]) }, "伪装 MP4 不当作裸像素")
+        c.check(rejects { _ = try TextureCache().load(disguised) }, "伪装 MP4 不进入静态缓存")
+    }
+    let extra = TexMipmap(width: 2, height: 2, isLZ4: false, decompressedSize: 0,
+                          rawBytes: [UInt8](repeating: 7, count: 17))
+    c.check(rejects { _ = try texMipmapToRGBA(rawTex(.rgba8888), mipmap: extra) }, "裸像素多余字节不静默截断")
     var unknown = a
     unknown.replaceSubrange(59..<63, with: [123,0,0,0])
     c.check(rejects { _ = try parseTex(unknown) }, "未知图片码不回退为裸像素")
@@ -99,6 +110,21 @@ func makeSyntheticTexRGBA4x4(pixels: [UInt8]) throws -> Data {
     out += u32le(1)                                  // isLZ4
     out += u32le(64)                                 // decompressed size
     out += u32le(lz4.count) + lz4                    // bytes
+    return Data(out)
+}
+
+func makeSyntheticDisguisedVideoTex(version: Int) -> Data {
+    precondition(version == 3 || version == 4)
+    let payload: [UInt8] = [0, 0, 0, 12] + Array("ftypmp42".utf8)
+    var out: [UInt8] = []
+    out += nstringBytes("TEXV0005") + nstringBytes("TEXI0001")
+    out += u32le(TexPixelFormat.rgba8888.rawValue) + u32le(0)
+    out += u32le(2) + u32le(2) + u32le(2) + u32le(2) + u32le(0)
+    out += nstringBytes(String(format: "TEXB%04d", version))
+    out += u32le(1) + u32le(-1)
+    if version == 4 { out += u32le(0) } // 视频位未设置，仍须从载荷识别
+    out += u32le(1) + u32le(2) + u32le(2)
+    out += u32le(0) + u32le(0) + u32le(payload.count) + payload
     return Data(out)
 }
 
@@ -257,6 +283,7 @@ func runSelfTest() throws {
 
     try runTextureChecks(&c)
     try runResourceChecks(&c)
+    try runCompositorChecks(&c)
     print("\n=== 自检结果：通过 \(c.passes) 项，失败 \(c.failures.count) 项 ===")
     if !c.failures.isEmpty {
         for f in c.failures { print("  ❌ \(f)") }

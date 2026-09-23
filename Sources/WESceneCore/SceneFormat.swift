@@ -453,6 +453,17 @@ func parseTex(_ data: Data) throws -> TexFile {
         images.append(TexImage(mipmaps: mipmaps))
     }
 
+    // Some real packages store an MP4 in a TEXB0003/0004 mipmap while leaving
+    // the embedded-format code at -1 and the V4 video flag unset. Do not let
+    // those bytes fall through to the raw-pixel decoder.
+    if imageFormat == .unknown,
+       let first = images.first?.mipmaps.first?.rawBytes,
+       first.count >= 12,
+       Array(first[4..<8]) == Array("ftyp".utf8) {
+        imageFormat = .mp4
+        isVideo = true
+    }
+
     return TexFile(format: format, flags: flags, textureWidth: texW, textureHeight: texH,
                    imageWidth: imgW, imageHeight: imgH, containerMagic: containerMagic,
                    imageFormat: imageFormat, isVideoTexture: isVideo, images: images)
@@ -491,10 +502,10 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
 
     switch tex.format {
     case .rgba8888:
-        guard payload.count >= mipmap.width * mipmap.height * 4 else {
-            throw ProbeError.truncated("RGBA8888 数据不足")
+        guard payload.count == mipmap.width * mipmap.height * 4 else {
+            throw ProbeError.invalid("RGBA8888 裸像素长度不匹配")
         }
-        return (mipmap.width, mipmap.height, Array(payload.prefix(mipmap.width * mipmap.height * 4)))
+        return (mipmap.width, mipmap.height, payload)
     case .dxt1:
         return (mipmap.width, mipmap.height, try decodeDXT(payload, width: mipmap.width, height: mipmap.height, kind: .dxt1))
     case .dxt3:
@@ -502,7 +513,7 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
     case .dxt5:
         return (mipmap.width, mipmap.height, try decodeDXT(payload, width: mipmap.width, height: mipmap.height, kind: .dxt5))
     case .rg88:
-        guard payload.count >= mipmap.width * mipmap.height * 2 else { throw ProbeError.truncated("RG88 数据不足") }
+        guard payload.count == mipmap.width * mipmap.height * 2 else { throw ProbeError.invalid("RG88 裸像素长度不匹配") }
         var out = [UInt8](repeating: 255, count: mipmap.width * mipmap.height * 4)
         for i in 0..<(mipmap.width * mipmap.height) {
             out[i * 4] = payload[i * 2]
@@ -511,7 +522,7 @@ func texMipmapToRGBA(_ tex: TexFile, mipmap: TexMipmap) throws -> (width: Int, h
         }
         return (mipmap.width, mipmap.height, out)
     case .r8:
-        guard payload.count >= mipmap.width * mipmap.height else { throw ProbeError.truncated("R8 数据不足") }
+        guard payload.count == mipmap.width * mipmap.height else { throw ProbeError.invalid("R8 裸像素长度不匹配") }
         var out = [UInt8](repeating: 255, count: mipmap.width * mipmap.height * 4)
         for i in 0..<(mipmap.width * mipmap.height) {
             out[i * 4] = payload[i]

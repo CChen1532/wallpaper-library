@@ -12,6 +12,7 @@ func usage() {
       we-scene-probe scene <scene.json>       打印场景结构摘要
       we-scene-probe audit <scene.pkg>        只读解码所有 TEX，明确列出不支持项
       we-scene-probe resources <scene.pkg>    输出资源引用与能力 JSON（非渲染）
+      we-scene-probe still <scene.pkg> <out.png> [max-edge]  导出静态基础图及同名 .json 诊断
     """)
 }
 
@@ -101,6 +102,19 @@ do {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         print(String(decoding: try encoder.encode(report), as: UTF8.self))
         if !report.issues.isEmpty { exit(3) }
+
+    case "still":
+        guard (4...5).contains(args.count) else { usage(); exit(2) }
+        let maxEdge = args.count == 5 ? (Int(args[4]) ?? 0) : 1600
+        let image = try WESceneInspection.staticPreview(packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), maxDimension: maxEdge)
+        let output = URL(fileURLWithPath: args[3])
+        try image.diagnosticsJSON.write(to: output.deletingPathExtension().appendingPathExtension("json"), options: .atomic)
+        guard image.hasRenderableContent else {
+            FileHandle.standardError.write("无可合成的静态内容；仅写出诊断JSON，未生成PNG\n".data(using: .utf8)!)
+            exit(3)
+        }
+        try writePNG([UInt8](image.rgba), width: image.width, height: image.height, to: output.path)
+        print("静态基础图: \(output.path) (\(image.width)x\(image.height))；同名JSON记录降级项，非可播放壁纸")
 
     default:
         usage(); exit(2)
