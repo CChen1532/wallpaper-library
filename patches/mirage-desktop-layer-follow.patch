@@ -1,0 +1,172 @@
+diff --git a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h
+index f72a1d0..22ab671 100644
+--- a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h
++++ b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h
+@@ -15,2 +15,5 @@ struct SceneRendererMacDesktopConfig {
+     bool deferred_show;
++    // Opt-in preview: one desktop window joins the current Space and may be
++    // moved between displays without creating another renderer instance.
++    bool follow_focus;
+ };
+@@ -47,2 +50,3 @@ void  SceneRendererMacDesktopActivate(void* handle);
+ void  SceneRendererMacDesktopDeactivate(void* handle);
++bool  SceneRendererMacDesktopMoveToDisplay(void* handle, std::uint32_t display_id);
+ bool  SceneRendererMacDesktopPrepareMetalFX(void* handle);
+diff --git a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
+index 7e081f8..25c9cde 100644
+--- a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
++++ b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
+@@ -56,2 +56,3 @@ @implementation SRHostRef
+     CGDirectDisplayID                display_id { 0 };
++    bool                             follow_focus { false };
+     NSTimer*                         input_timer { nil };
+@@ -452,2 +453,5 @@ bool ValidateGeometry(MacDesktopHost* host, bool activated) {
+     if (host == nullptr || host->window == nil || host->surface_layer == nil) return false;
++    if (host->follow_focus &&
++        (host->window.level != CGWindowLevelForKey(kCGDesktopWindowLevelKey) ||
++         !host->window.ignoresMouseEvents)) return false;
+     NSScreen* screen = ResolveScreen(host->display_id);
+@@ -689,2 +693,3 @@ void StopApplicationOnMainThread() {
+         host->display_id = display_id;
++        host->follow_focus = config != nullptr && config->follow_focus;
+ 
+@@ -703,5 +708,6 @@ void StopApplicationOnMainThread() {
+-        window.level                 = CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1;
++        window.level                 = CGWindowLevelForKey(kCGDesktopWindowLevelKey);
+-        window.collectionBehavior    = NSWindowCollectionBehaviorCanJoinAllSpaces |
+-                                    NSWindowCollectionBehaviorStationary |
+-                                    NSWindowCollectionBehaviorIgnoresCycle;
++        window.collectionBehavior    = NSWindowCollectionBehaviorStationary |
++                                    NSWindowCollectionBehaviorIgnoresCycle |
++                                    (host->follow_focus
++                                         ? NSWindowCollectionBehaviorCanJoinAllSpaces : 0);
+         const bool diagnostic = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR") != nullptr;
+@@ -878,2 +884,35 @@ void StopApplicationOnMainThread() {
+ 
++extern "C" bool SceneRendererMacDesktopMoveToDisplay(void* handle,
++                                                       std::uint32_t display_id) {
++    auto* host = static_cast<MacDesktopHost*>(handle);
++    if (host == nullptr || !host->follow_focus || display_id == 0) return false;
++    __block bool moved = false;
++    auto move = ^{
++      NSScreen* target = ResolveScreen(display_id);
++      if (host->window == nil || target == nil ||
++          host->window.level != CGWindowLevelForKey(kCGDesktopWindowLevelKey) ||
++          !host->window.ignoresMouseEvents) return;
++      if (host->display_id == display_id) {
++          moved = true;
++          return;
++      }
++
++      // Clear the old display before changing the target. A new presented
++      // frame must pass the existing activation geometry check before reveal.
++      host->window.alphaValue = 0.0;
++      [host->window orderOut:nil];
++      [CATransaction flush];
++      host->display_id = display_id;
++      host->activation_confirmed.store(false);
++      host->activation_frame_pending.store(host->activation_requested.load());
++      if (!NormalizeGeometry(host)) return; // Remain hidden on failure.
++      [host->window orderFrontRegardless];
++      [CATransaction flush];
++      moved = true;
++    };
++    if (NSThread.isMainThread) move();
++    else dispatch_sync(dispatch_get_main_queue(), move);
++    return moved;
++}
++
+ extern "C" bool SceneRendererMacDesktopPrepareMetalFX(void* handle) {
+diff --git a/SceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp b/SceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp
+index 034d294..95b2e11 100644
+--- a/SceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp
++++ b/SceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp
+@@ -228,2 +228,9 @@ void SceneControlChannel::dispatchLine(const char* line) {
+         if (m_on_activate) m_on_activate();
++    } else if (cmd == "moveDisplay") {
++        auto value = msg.get("displayID");
++        if (m_on_move && value.is_some() && (*value)->is_number()) {
++            auto number = (*value)->as_u64();
++            if (number.is_some() && *number > 0 && *number <= UINT32_MAX)
++                m_on_move(static_cast<std::uint32_t>(*number));
++        }
+     } else if (cmd == "deactivate") {
+diff --git a/SceneRenderer/Tools/SceneWallpaper/ControlChannel.h b/SceneRenderer/Tools/SceneWallpaper/ControlChannel.h
+index 778c779..2e58504 100644
+--- a/SceneRenderer/Tools/SceneWallpaper/ControlChannel.h
++++ b/SceneRenderer/Tools/SceneWallpaper/ControlChannel.h
+@@ -16,2 +16,3 @@
+ //   {"cmd":"activate"}              // reveal a deferred-show window
++//   {"cmd":"moveDisplay","displayID":3} // opt-in focus-follow preview
+ //   {"cmd":"snapshot","path":"…","token":"…"}  // still frame for the desktop picture
+@@ -35,2 +36,3 @@
+ #include <atomic>
++#include <cstdint>
+ #include <functional>
+@@ -59,3 +61,4 @@ public:
+                             on_snapshot = {},
+-                        std::function<void(const std::string&)> on_storage = {})
++                        std::function<void(const std::string&)> on_storage = {},
++                        std::function<void(std::uint32_t)> on_move = {})
+         : m_wallpaper(wallpaper),
+@@ -65,3 +68,4 @@ public:
+           m_on_snapshot(std::move(on_snapshot)),
+-          m_on_storage(std::move(on_storage)) {}
++          m_on_storage(std::move(on_storage)),
++          m_on_move(std::move(on_move)) {}
+ 
+@@ -97,2 +101,3 @@ private:
+     std::function<void(const std::string&)> m_on_storage;
++    std::function<void(std::uint32_t)> m_on_move;
+     std::atomic<bool>     m_running { false };
+diff --git a/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp b/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
+index cae3ccf..a23bdc9 100644
+--- a/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
++++ b/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
+@@ -155,2 +155,3 @@ struct Options {
+     bool                      deferred_show { false };
++    bool                      follow_focus { false };
+     bool                      spectrum_enabled { true };
+@@ -183,2 +184,14 @@ void EmitLifecycleEvent(const AppState* state, std::string_view event) {
+ 
++void EmitDisplayMove(const AppState* state, std::uint32_t display_id, bool ok) {
++    const auto elapsed = state == nullptr
++                             ? 0
++                             : std::chrono::duration_cast<std::chrono::milliseconds>(
++                                   std::chrono::steady_clock::now() - state->started_at)
++                                   .count();
++    std::lock_guard lock(LifecycleOutputMutex());
++    std::cout << "{\"event\":\"" << (ok ? "display-moved" : "display-move-failed")
++              << "\",\"display_id\":" << display_id << ",\"elapsed_ms\":" << elapsed
++              << "}\n" << std::flush;
++}
++
+ void EmitAudioDemand(bool needed) {
+@@ -257,2 +270,3 @@ void PrintUsage(const char* argv0) {
+         << "      --deferred-show         Keep the window transparent until activated\n"
++        << "      --follow-focus          Allow one window to follow Spaces and displays\n"
+         << "      --no-spectrum           Disable audio response\n"
+@@ -345,2 +359,4 @@ bool ParseArgs(int argc, char** argv, Options& out) {
+             out.deferred_show = true;
++        } else if (arg == "--follow-focus") {
++            out.follow_focus = true;
+         } else if (arg == "--no-spectrum") {
+@@ -524,2 +540,7 @@ int main(int argc, char** argv) {
+ 
++    if (options.follow_focus && (!options.control_stdin || !options.deferred_show)) {
++        std::cerr << "--follow-focus requires --control-stdin and --deferred-show\n";
++        return 1;
++    }
++
+     SceneRendererMacDesktopConfig desktop_config {
+@@ -530,2 +551,3 @@ int main(int argc, char** argv) {
+         .deferred_show = options.deferred_show,
++        .follow_focus = options.follow_focus,
+     };
+@@ -751,2 +773,6 @@ int main(int argc, char** argv) {
+                 });
++            },
++            [desktop, &state](std::uint32_t display_id) {
++                const bool ok = SceneRendererMacDesktopMoveToDisplay(desktop, display_id);
++                EmitDisplayMove(&state, display_id, ok);
+             });

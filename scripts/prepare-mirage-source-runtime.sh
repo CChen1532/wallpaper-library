@@ -6,11 +6,12 @@ cd "$(dirname "$0")/.."
 
 mode="${1:-default}"
 [[ "$#" -le 1 && ( "$mode" == 'default' || "$mode" == '--single-space' ||
-                    "$mode" == '--focus-follow' || "$mode" == '--managed-transition' ) ]] || {
-    printf 'Usage: %s [--single-space|--focus-follow|--managed-transition]\n' "$0" >&2; exit 2;
+                    "$mode" == '--focus-follow' || "$mode" == '--managed-transition' ||
+                    "$mode" == '--desktop-layer' ) ]] || {
+    printf 'Usage: %s [--single-space|--focus-follow|--managed-transition|--desktop-layer]\n' "$0" >&2; exit 2;
 }
 if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ||
-      "$mode" == '--managed-transition' ]]; then
+      "$mode" == '--managed-transition' || "$mode" == '--desktop-layer' ]]; then
     if [[ "$mode" == '--single-space' ]]; then
         mirage_root="$PWD/dist/MirageSingleSpaceSource"
         target='dist/MirageSingleSpaceRuntime'
@@ -21,10 +22,15 @@ if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ||
         target='dist/MirageFocusFollowRuntime'
         patch="$PWD/patches/mirage-focus-follow.patch"
         expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
-    else
+    elif [[ "$mode" == '--managed-transition' ]]; then
         mirage_root="$PWD/dist/MirageSpaceTransitionSource"
         target='dist/MirageSpaceTransitionRuntime'
         patch="$PWD/patches/mirage-space-transition-managed.patch"
+        expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+    else
+        mirage_root="$PWD/dist/MirageDesktopLayerSource"
+        target='dist/MirageDesktopLayerRuntime'
+        patch="$PWD/patches/mirage-desktop-layer-follow.patch"
         expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
     fi
     [[ -d "$mirage_root" && ! -L "$mirage_root" && -f "$patch" ]] || {
@@ -53,7 +59,7 @@ brew_vulkan_loader="$brew_root/opt/vulkan-loader/lib/libvulkan.1.dylib"
     printf 'Source renderer, assets, Vulkan Loader, or MoltenVK is missing\n' >&2; exit 2;
 }
 if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ||
-      "$mode" == '--managed-transition' ]]; then
+      "$mode" == '--managed-transition' || "$mode" == '--desktop-layer' ]]; then
     while IFS= read -r changed_file; do
         [[ "$source_renderer" -nt "$mirage_root/$changed_file" ]] || {
             printf 'Renderer is older than patched source; rebuild first: %s\n' "$changed_file" >&2; exit 2;

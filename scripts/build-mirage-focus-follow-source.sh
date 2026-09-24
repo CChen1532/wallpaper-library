@@ -1,13 +1,15 @@
 #!/bin/bash
 # Build an isolated, opt-in single-renderer Space/display-follow preview.
-# The managed-transition variant keeps the previous focus-follow build intact.
+# Variants keep the original focus-follow build intact. Managed failed its
+# Mission Control trial; desktop-layer is the next isolated hypothesis.
 set -euo pipefail
 
 mode="${1:---check}"
 variant="${2:-default}"
 if [[ "$#" -gt 2 || ( "$mode" != '--check' && "$mode" != '--build' ) ||
-      ( "$variant" != 'default' && "$variant" != '--managed-transition' ) ]]; then
-    printf 'Usage: %s [--check|--build] [--managed-transition]\n' "$0" >&2
+      ( "$variant" != 'default' && "$variant" != '--managed-transition' &&
+        "$variant" != '--desktop-layer' ) ]]; then
+    printf 'Usage: %s [--check|--build] [--managed-transition|--desktop-layer]\n' "$0" >&2
     exit 2
 fi
 
@@ -16,6 +18,9 @@ upstream="$project_root/ThirdParty/MirageWallpaper"
 if [[ "$variant" == '--managed-transition' ]]; then
     isolated="$project_root/dist/MirageSpaceTransitionSource"
     patch="$project_root/patches/mirage-space-transition-managed.patch"
+elif [[ "$variant" == '--desktop-layer' ]]; then
+    isolated="$project_root/dist/MirageDesktopLayerSource"
+    patch="$project_root/patches/mirage-desktop-layer-follow.patch"
 else
     isolated="$project_root/dist/MirageFocusFollowSource"
     patch="$project_root/patches/mirage-focus-follow.patch"
