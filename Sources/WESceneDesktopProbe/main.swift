@@ -12,6 +12,127 @@ private enum DesktopTrialError: Error, LocalizedError {
     }
 }
 
+/// The desktop app exits promptly after a trial. Keep a small, path-free record
+/// so a GUI launch does not lose its last completed stage or failure category.
+private struct TrialDiagnosticSnapshot: Codable {
+    let schemaVersion: Int
+    let runID: UUID
+    let startedAt: Date
+    let displayID: UInt32
+    var stage: String
+    var surfaceWindowNumber: Int?
+    var stopRequest: String?
+    var pollAttempts: Int?
+    var deliveredFrames: Int?
+    var distinctFrames: Int?
+    var deliveryStopReason: String?
+    var elapsedSeconds: Double?
+    var failureCategory: String?
+    var finishedAt: Date?
+}
+
+private final class TrialDiagnostics {
+    static var defaultURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WESceneDesktopProbe", isDirectory: true)
+            .appendingPathComponent("last-trial.json")
+    }
+
+    private let url: URL
+    private var snapshot: TrialDiagnosticSnapshot
+
+    init(url: URL, displayID: UInt32) throws {
+        self.url = url
+        snapshot = TrialDiagnosticSnapshot(schemaVersion: 1, runID: UUID(),
+                                           startedAt: Date(), displayID: displayID,
+                                           stage: "selected")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try persist()
+    }
+
+    func record(_ stage: String, surfaceWindowNumber: Int? = nil,
+                stopRequest: String? = nil) {
+        snapshot.stage = stage
+        if let surfaceWindowNumber { snapshot.surfaceWindowNumber = surfaceWindowNumber }
+        if let stopRequest { snapshot.stopRequest = stopRequest }
+        persistBestEffort()
+    }
+
+    func complete(pollAttempts: Int, deliveredFrames: Int, distinctFrames: Int,
+                  stopReason: WESceneFrameDeliveryStopReason, elapsedSeconds: Double) {
+        snapshot.stage = "completed"
+        snapshot.pollAttempts = pollAttempts
+        snapshot.deliveredFrames = deliveredFrames
+        snapshot.distinctFrames = distinctFrames
+        snapshot.deliveryStopReason = stopReason.rawValue
+        snapshot.elapsedSeconds = elapsedSeconds
+        snapshot.finishedAt = Date()
+        persistBestEffort()
+    }
+
+    func fail(_ error: Error, deliveredFrames: Int?, distinctFrames: Int?) {
+        snapshot.stage = error is CancellationError ? "stopped" : "failed"
+        snapshot.deliveredFrames = deliveredFrames
+        snapshot.distinctFrames = distinctFrames
+        snapshot.failureCategory = error is CancellationError
+            ? "CancellationError" : String(describing: type(of: error))
+        snapshot.finishedAt = Date()
+        persistBestEffort()
+    }
+
+    private func persistBestEffort() {
+        do { try persist() }
+        catch {
+            FileHandle.standardError.write("桌面试验诊断摘要写入失败：\(error)\n".data(using: .utf8)!)
+        }
+    }
+
+    private func persist() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(snapshot).write(to: url, options: .atomic)
+    }
+
+    static func selfTest() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("we-scene-trial-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("last-trial.json")
+        let report = try TrialDiagnostics(url: url, displayID: 7)
+        report.record("surfaceCreated", surfaceWindowNumber: 42)
+        report.complete(pollAttempts: 3, deliveredFrames: 2, distinctFrames: 2,
+                        stopReason: .frameLimit, elapsedSeconds: 0.3)
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let result = try decoder.decode(TrialDiagnosticSnapshot.self, from: data)
+        guard result.schemaVersion == 1, result.displayID == 7,
+              result.stage == "completed", result.surfaceWindowNumber == 42,
+              result.deliveredFrames == 2, result.distinctFrames == 2,
+              result.deliveryStopReason == "frameLimit", result.finishedAt != nil else {
+            throw DesktopTrialError.invalid("桌面试验诊断摘要自检失败")
+        }
+        let failureReport = try TrialDiagnostics(url: url, displayID: 8)
+        failureReport.fail(NSError(domain: "/private/canary/scene.pkg", code: 7),
+                           deliveredFrames: 1, distinctFrames: 1)
+        let failureData = try Data(contentsOf: url)
+        let failure = try decoder.decode(TrialDiagnosticSnapshot.self, from: failureData)
+        guard failure.stage == "failed", failure.failureCategory == "NSError",
+              failure.deliveredFrames == 1, failure.distinctFrames == 1,
+              !String(decoding: failureData, as: UTF8.self).contains("/private/canary/scene.pkg") else {
+            throw DesktopTrialError.invalid("桌面试验诊断失败记录或路径脱敏自检失败")
+        }
+        failureReport.fail(CancellationError(), deliveredFrames: 1, distinctFrames: 1)
+        let stopped = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
+        guard stopped.stage == "stopped", stopped.failureCategory == "CancellationError" else {
+            throw DesktopTrialError.invalid("桌面试验主动停止分类自检失败")
+        }
+        print("桌面试验无窗口诊断摘要写入、结果与失败分类自检通过")
+    }
+}
+
 private enum TrialRasterImage {
     static func make(width: Int, height: Int, rgba: Data) throws -> NSImage {
         guard (1...640).contains(width), (1...640).contains(height),
@@ -132,6 +253,7 @@ private final class TrialLifecycle {
 @MainActor private final class DesktopTrialSurface {
     private var window: NSWindow?
     private let imageView = NSImageView()
+    var windowNumber: Int { window?.windowNumber ?? 0 }
 
     init(screen: NSScreen, snapshot: TrialDisplaySnapshot) throws {
         guard snapshot.matches(screen) else {
@@ -203,6 +325,7 @@ private final class TrialLifecycle {
     private var packageURL: URL?
     private var work: Task<Void, Never>?
     private var delivery: WESceneFrameDelivery?
+    private var diagnostics: TrialDiagnostics?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private let lifecycle = TrialLifecycle()
 
@@ -332,6 +455,11 @@ private final class TrialLifecycle {
             populateDisplays()
             return
         }
+        do { diagnostics = try TrialDiagnostics(url: TrialDiagnostics.defaultURL, displayID: snapshot.id) }
+        catch {
+            statusLabel.stringValue = "无法写入试验诊断摘要：\(error.localizedDescription)"
+            return
+        }
         do { try lifecycle.start() }
         catch { statusLabel.stringValue = error.localizedDescription; return }
         startButton.isEnabled = false
@@ -349,6 +477,7 @@ private final class TrialLifecycle {
 
     private func requestStop(reason: String) {
         guard lifecycle.requestStop() else { return }
+        diagnostics?.record("stopRequested", stopRequest: reason)
         statusLabel.stringValue = reason
         stopButton.isEnabled = false
         work?.cancel()
@@ -357,6 +486,7 @@ private final class TrialLifecycle {
 
     private func perform(packageURL: URL, texture: String, snapshot: TrialDisplaySnapshot) async {
         var source: WESceneRealtimeSceneSession?
+        var sink: DesktopTrialSink?
         var deliveryOwnsResources = false
         do {
             let scoped = packageURL.startAccessingSecurityScopedResource()
@@ -368,9 +498,11 @@ private final class TrialLifecycle {
             }
             let data = try Data(contentsOf: packageURL, options: .mappedIfSafe)
             guard data.count == size else { throw DesktopTrialError.invalid("读取期间场景包大小变化") }
+            diagnostics?.record("packageValidated")
             try Task.checkCancellation()
             let opened = try await WESceneRealtimeSceneSession.open(packageData: data, videoTexturePath: texture)
             source = opened
+            diagnostics?.record("sceneOpened")
             try Task.checkCancellation()
             guard let screen = NSScreen.screens.first(where: { snapshot.matches($0) }) else {
                 throw DesktopTrialError.invalid("显示器布局变化，试验未启动")
@@ -378,21 +510,31 @@ private final class TrialLifecycle {
             let limits = try WESceneFrameDeliveryLimits(durationSeconds: 5, pollHz: 10,
                                                         maxDimension: 640, maxFrames: 50)
             let surface = try DesktopTrialSurface(screen: screen, snapshot: snapshot)
-            let sink = DesktopTrialSink(surface: surface)
-            let delivery = WESceneFrameDelivery(source: opened, sink: sink, limits: limits)
+            diagnostics?.record("surfaceCreated", surfaceWindowNumber: surface.windowNumber)
+            let frameSink = DesktopTrialSink(surface: surface)
+            sink = frameSink
+            let delivery = WESceneFrameDelivery(source: opened, sink: frameSink, limits: limits)
             self.delivery = delivery
             deliveryOwnsResources = true
+            diagnostics?.record("delivering")
             let summary = try await delivery.run()
             self.delivery = nil
             try Task.checkCancellation()
-            guard summary.deliveredFrames >= 2, sink.distinctFrames >= 2 else {
+            guard summary.deliveredFrames >= 2, frameSink.distinctFrames >= 2 else {
                 throw DesktopTrialError.invalid("试验未取得足够不同画面；不能视为桌面动态验收")
             }
-            print("隔离桌面试验交付 \(summary.deliveredFrames) 帧、\(sink.distinctFrames) 种画面；还需人工桌面验收")
+            diagnostics?.complete(pollAttempts: summary.pollAttempts,
+                                  deliveredFrames: summary.deliveredFrames,
+                                  distinctFrames: frameSink.distinctFrames,
+                                  stopReason: summary.stopReason,
+                                  elapsedSeconds: summary.elapsedSeconds)
+            print("隔离桌面试验交付 \(summary.deliveredFrames) 帧、\(frameSink.distinctFrames) 种画面；还需人工桌面验收")
             finish(exitCode: 0)
         } catch {
             self.delivery = nil
             if !deliveryOwnsResources { await source?.close() }
+            diagnostics?.fail(error, deliveredFrames: sink?.delivered,
+                              distinctFrames: sink?.distinctFrames)
             FileHandle.standardError.write("隔离桌面试验失败：\(error)\n".data(using: .utf8)!)
             statusLabel.stringValue = "试验已停止：\(error.localizedDescription)；未更改系统壁纸"
             try? await Task.sleep(for: .seconds(1))
@@ -428,6 +570,7 @@ private final class TrialLifecycle {
             do {
                 try TrialLifecycle.selfTest()
                 try TrialRasterImage.selfTest()
+                try TrialDiagnostics.selfTest()
                 print("桌面试验RGBA颜色、方向、透明度与边界自检通过；未创建窗口")
                 return
             }
