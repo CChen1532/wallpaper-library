@@ -372,6 +372,7 @@ private final class TrialLifecycle {
     private let consentButton = NSButton(checkboxWithTitle: "已获当次许可，可短时覆盖所选桌面", target: nil, action: nil)
     private let startButton = NSButton(title: "开始 5 秒桌面试验", target: nil, action: nil)
     private let stopButton = NSButton(title: "停止并清理", target: nil, action: nil)
+    private let spaceMonitorButton = NSButton(title: "监听 Space 通知 20 秒", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "隔离开发试验；不是正式 Scene 壁纸")
     private var displayIDs: [UInt32] = []
     private var packageURL: URL?
@@ -381,9 +382,11 @@ private final class TrialLifecycle {
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private let lifecycle = TrialLifecycle()
     private var spaceGate = TrialSpaceGate()
+    private var spaceMonitorActive = false
+    private var spaceMonitorCount = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
                               styleMask: [.titled, .closable, .miniaturizable],
                               backing: .buffered, defer: false)
         window.title = "Scene 桌面试验控制 · 最多 5 秒"
@@ -408,6 +411,8 @@ private final class TrialLifecycle {
         stopButton.target = self
         stopButton.action = #selector(stopFromButton)
         stopButton.isEnabled = false
+        spaceMonitorButton.target = self
+        spaceMonitorButton.action = #selector(startSpaceMonitor)
         statusLabel.textColor = .secondaryLabelColor
 
         let note = NSTextField(labelWithString: "启动控制窗口不会改变桌面；手动确认后才会短时覆盖所选背景。不修改系统壁纸或 phonto。")
@@ -415,7 +420,8 @@ private final class TrialLifecycle {
         let actions = NSStackView(views: [startButton, stopButton])
         actions.orientation = .horizontal
         actions.spacing = 12
-        let stack = NSStackView(views: [note, row, textureField, displayPopup, consentButton, actions, statusLabel])
+        let stack = NSStackView(views: [note, row, textureField, displayPopup, consentButton,
+                                        actions, spaceMonitorButton, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -451,10 +457,27 @@ private final class TrialLifecycle {
 
     private func updateStartAvailability() {
         startButton.isEnabled = packageURL != nil && !displayIDs.isEmpty &&
-                                consentButton.state == .on && work == nil
+                                consentButton.state == .on && work == nil && !spaceMonitorActive
     }
 
     @objc private func consentChanged() { updateStartAvailability() }
+
+    @objc private func startSpaceMonitor() {
+        guard work == nil, !spaceMonitorActive else { return }
+        spaceMonitorActive = true
+        spaceMonitorCount = 0
+        spaceMonitorButton.isEnabled = false
+        updateStartAvailability()
+        statusLabel.stringValue = "正在监听20秒：请在Mission Control顶部点“桌面 2”，再返回“桌面 1”。不会创建桌面显示面。"
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(20))
+            guard spaceMonitorActive else { return }
+            spaceMonitorActive = false
+            spaceMonitorButton.isEnabled = true
+            statusLabel.stringValue = "20秒监听结束：收到 \(spaceMonitorCount) 次 Space 通知；未创建桌面显示面。"
+            updateStartAvailability()
+        }
+    }
 
     private func observeEnvironment() {
         let appCenter = NotificationCenter.default
@@ -473,6 +496,10 @@ private final class TrialLifecycle {
     }
 
     private func environmentChanged(_ name: Notification.Name) {
+        if spaceMonitorActive && name == NSWorkspace.activeSpaceDidChangeNotification {
+            spaceMonitorCount += 1
+            statusLabel.stringValue = "正在监听 Space 通知：已收到 \(spaceMonitorCount) 次；20秒后自动结束。"
+        }
         if work == nil { populateDisplays(); return }
         if name == NSWorkspace.activeSpaceDidChangeNotification,
            !spaceGate.shouldStop(at: ProcessInfo.processInfo.systemUptime) {
