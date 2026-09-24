@@ -210,7 +210,7 @@ struct Checker {
     }
 }
 
-func runSelfTest() throws {
+func runSelfTest() async throws {
     var c = Checker()
     print("=== WESceneProbe 自检（合成样本，不使用真实素材）===")
 
@@ -291,6 +291,7 @@ func runSelfTest() throws {
     try runCatalogChecks(&c)
     try runTimelineChecks(&c)
     try runRealtimeChecks(&c)
+    try await runFrameDeliveryChecks(&c)
     print("\n=== 自检结果：通过 \(c.passes) 项，失败 \(c.failures.count) 项 ===")
     if !c.failures.isEmpty {
         for f in c.failures { print("  ❌ \(f)") }

@@ -1,6 +1,18 @@
 import Foundation
 import CryptoKit
 
+private actor OffscreenDigestSink: WESceneFrameSink {
+    private var digests: [String] = []
+    private var finished = false
+
+    func accept(_ frame: WESceneRealtimeSceneFrame) throws {
+        guard !finished else { throw ProbeError.invalid("无窗口接收端已关闭") }
+        digests.append(SHA256.hash(data: frame.preview.rgba).map { String(format: "%02x", $0) }.joined())
+    }
+    func finish() { finished = true }
+    func result() -> ([String], Bool) { (digests, finished) }
+}
+
 // MARK: - 命令
 
 func usage() {
@@ -24,6 +36,7 @@ func usage() {
       we-scene-probe transport-probe <scene.pkg> <materials/name.tex>  静音无窗口验证暂停/恢复/显式回绕
       we-scene-probe loop-probe <scene.pkg> <materials/name.tex>  静音无窗口验证轮询驱动的自动片尾循环
       we-scene-probe stability-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge]  有界无窗口合成统计
+      we-scene-probe delivery-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge] [max-frames]  单路有界无窗口交付，不控制桌面
     """)
 }
 
@@ -35,7 +48,47 @@ guard args.count >= 2 else { usage(); exit(2) }
 do {
     switch args[1] {
     case "selftest":
-        try runSelfTest()
+        try await runSelfTest()
+
+    case "delivery-probe":
+        guard (5...8).contains(args.count), let duration = Double(args[4]),
+              duration.isFinite, (1...5).contains(duration) else { usage(); exit(2) }
+        let pollHz = args.count >= 6 ? (Int(args[5]) ?? 0) : 5
+        let maxEdge = args.count >= 7 ? (Int(args[6]) ?? 0) : 640
+        let maxFrames = args.count == 8 ? (Int(args[7]) ?? 0) : 30
+        guard (2...10).contains(pollHz), (1...960).contains(maxEdge),
+              (2...50).contains(maxFrames) else { usage(); exit(2) }
+        let limits = try WESceneFrameDeliveryLimits(durationSeconds: duration, pollHz: pollHz,
+                                                    maxDimension: maxEdge, maxFrames: maxFrames)
+        let packageURL = URL(fileURLWithPath: args[2])
+        let values = try packageURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size > 0, size <= 64 * 1024 * 1024 else {
+            throw ProbeError.invalid("无窗口交付要求不超过64 MiB的非链接scene.pkg")
+        }
+        let packageData = try Data(contentsOf: packageURL, options: .mappedIfSafe)
+        guard packageData.count == size else { throw ProbeError.invalid("scene.pkg读取期间大小变化") }
+        let session = try await WESceneRealtimeSceneSession.open(packageData: packageData,
+                                                                  videoTexturePath: args[3])
+        do { try await session.setLooping(true) }
+        catch { await session.close(); throw error }
+        let sink = OffscreenDigestSink()
+        let delivery = WESceneFrameDelivery(source: session, sink: sink, limits: limits)
+        let summary = try await delivery.run()
+        let (digests, finished) = await sink.result()
+        let cache = await session.cacheStats()
+        let report: [String: Any] = ["schemaVersion": 1, "probeMode": "boundedOffscreenFrameDelivery",
+                                     "desktopAttached": false, "playableScene": false, "faithful": false,
+                                     "pollAttempts": summary.pollAttempts,
+                                     "deliveredFrames": summary.deliveredFrames,
+                                     "distinctFrames": Set(digests).count,
+                                     "elapsedSeconds": summary.elapsedSeconds,
+                                     "stopReason": summary.stopReason.rawValue,
+                                     "sinkFinished": finished,
+                                     "cacheBytesAfterClose": cache.residentBytes]
+        print(String(decoding: try JSONSerialization.data(withJSONObject: report,
+            options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+        if Set(digests).count < 2 || !finished || cache.residentBytes != 0 { exit(3) }
 
     case "pkg":
         guard args.count >= 3 else { usage(); exit(2) }

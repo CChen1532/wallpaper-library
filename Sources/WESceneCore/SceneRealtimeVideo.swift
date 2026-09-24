@@ -49,7 +49,9 @@ enum ScenePixelBufferDecoder {
 /// Muted, windowless AVPlayer output for a bounded diagnostic. It returns only
 /// freshly available video buffers; it does not render a scene or attach to the desktop.
 public actor WESceneRealtimeVideoSession {
-    private let extracted: SceneVideoTextureSession
+    private var extracted: SceneVideoTextureSession?
+    private let videoWidth: Int
+    private let videoHeight: Int
     private let player: AVPlayer
     private let output: AVPlayerItemVideoOutput
     private var closed = false
@@ -61,6 +63,8 @@ public actor WESceneRealtimeVideoSession {
     private init(extracted: SceneVideoTextureSession, player: AVPlayer,
                  output: AVPlayerItemVideoOutput) {
         self.extracted = extracted
+        self.videoWidth = extracted.width
+        self.videoHeight = extracted.height
         self.player = player
         self.output = output
         self.durationSeconds = extracted.durationSeconds
@@ -127,6 +131,7 @@ public actor WESceneRealtimeVideoSession {
         playingRequested = false
         player.pause()
         player.replaceCurrentItem(with: nil)
+        extracted = nil // release the private extracted MP4 without waiting for actor deallocation
         closed = true
     }
 
@@ -149,12 +154,12 @@ public actor WESceneRealtimeVideoSession {
         guard let buffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &displayTime) else {
             return nil
         }
-        let rgba = try ScenePixelBufferDecoder.rgba(buffer, expectedWidth: extracted.width,
-                                                    expectedHeight: extracted.height)
+        let rgba = try ScenePixelBufferDecoder.rgba(buffer, expectedWidth: videoWidth,
+                                                    expectedHeight: videoHeight)
         let itemSeconds = CMTimeGetSeconds(itemTime)
         let actualSeconds = CMTimeGetSeconds(displayTime)
         guard itemSeconds.isFinite, itemSeconds >= 0 else { return nil } // seek/preroll may briefly expose no usable time
-        return WESceneRealtimeVideoFrame(width: extracted.width, height: extracted.height, rgba: rgba,
+        return WESceneRealtimeVideoFrame(width: videoWidth, height: videoHeight, rgba: rgba,
             itemSeconds: itemSeconds,
             displaySeconds: actualSeconds.isFinite && actualSeconds >= 0 ? actualSeconds : itemSeconds)
     }
