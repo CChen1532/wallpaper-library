@@ -52,6 +52,7 @@ private struct TrialDiagnosticSnapshot: Codable {
     var surfaceWindowNumber: Int?
     var stopRequest: String?
     var stopCause: String?
+    var ignoredStartupSpaceNotifications: Int?
     var pollAttempts: Int?
     var deliveredFrames: Int?
     var distinctFrames: Int?
@@ -87,6 +88,12 @@ private final class TrialDiagnostics {
         if let surfaceWindowNumber { snapshot.surfaceWindowNumber = surfaceWindowNumber }
         if let stopRequest { snapshot.stopRequest = stopRequest }
         if let stopCause { snapshot.stopCause = stopCause.rawValue }
+        persistBestEffort()
+    }
+
+    func recordIgnoredStartupSpaceNotification() {
+        snapshot.ignoredStartupSpaceNotifications =
+            (snapshot.ignoredStartupSpaceNotifications ?? 0) + 1
         persistBestEffort()
     }
 
@@ -166,6 +173,13 @@ private final class TrialDiagnostics {
         let spaceStopped = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
         guard spaceStopped.stage == "stopped", spaceStopped.stopCause == "activeSpaceChanged" else {
             throw DesktopTrialError.invalid("Space 停止原因未保留到终态")
+        }
+        let ignoredReport = try TrialDiagnostics(url: url, displayID: 10)
+        ignoredReport.recordIgnoredStartupSpaceNotification()
+        ignoredReport.recordIgnoredStartupSpaceNotification()
+        let ignored = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
+        guard ignored.ignoredStartupSpaceNotifications == 2, ignored.stage == "selected" else {
+            throw DesktopTrialError.invalid("启动Space通知计数或阶段边界错误")
         }
         print("桌面试验无窗口诊断摘要写入、结果与失败分类自检通过")
     }
@@ -300,7 +314,7 @@ private final class TrialLifecycle {
         let window = NSWindow(contentRect: snapshot.frame, styleMask: [.borderless],
                               backing: .buffered, defer: false, screen: screen)
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.collectionBehavior = [.stationary, .ignoresCycle]
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
         window.hasShadow = false
@@ -461,7 +475,10 @@ private final class TrialLifecycle {
     private func environmentChanged(_ name: Notification.Name) {
         if work == nil { populateDisplays(); return }
         if name == NSWorkspace.activeSpaceDidChangeNotification,
-           !spaceGate.shouldStop(at: ProcessInfo.processInfo.systemUptime) { return }
+           !spaceGate.shouldStop(at: ProcessInfo.processInfo.systemUptime) {
+            diagnostics?.recordIgnoredStartupSpaceNotification()
+            return
+        }
         let cause: TrialStopCause
         switch name {
         case NSWorkspace.activeSpaceDidChangeNotification: cause = .activeSpaceChanged
