@@ -35,7 +35,7 @@ func usage() {
       we-scene-probe realtime-scene-probe <scene.pkg> <materials/name.tex> <seconds> <outdir> [poll-hz] [max-edge]  无窗口受限scene合成
       we-scene-probe transport-probe <scene.pkg> <materials/name.tex>  静音无窗口验证暂停/恢复/显式回绕
       we-scene-probe loop-probe <scene.pkg> <materials/name.tex>  静音无窗口验证轮询驱动的自动片尾循环
-      we-scene-probe stability-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge]  有界无窗口合成统计
+      we-scene-probe stability-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge]  3-120秒有界无窗口合成统计
       we-scene-probe delivery-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge] [max-frames]  单路有界无窗口交付，不控制桌面
     """)
 }
@@ -468,7 +468,7 @@ do {
 
     case "stability-probe":
         guard (5...7).contains(args.count), let duration = Double(args[4]),
-              duration.isFinite, (3...15).contains(duration) else { usage(); exit(2) }
+              duration.isFinite, (3...120).contains(duration) else { usage(); exit(2) }
         let pollHz = args.count >= 6 ? (Int(args[5]) ?? 0) : 5
         let maxEdge = args.count == 7 ? (Int(args[6]) ?? 0) : 640
         guard (2...10).contains(pollHz), (1...960).contains(maxEdge) else { usage(); exit(2) }
@@ -476,6 +476,8 @@ do {
             packageData: Data(contentsOf: URL(fileURLWithPath: args[2])), videoTexturePath: args[3])
         var pollAttempts = 0, observedFrames = 0, loops = 0
         var displayTimes: [Double] = [], processingSeconds: [Double] = [], hashes: Set<String> = []
+        var cacheSamples: [[String: Any]] = []
+        var actualElapsedSeconds = 0.0
         var cacheBefore: WESceneTextureCacheStats?, cacheAfter: WESceneTextureCacheStats?
         do {
             try await session.setLooping(true)
@@ -484,6 +486,7 @@ do {
             try await session.seek(to: sourceDuration - 2)
             try await session.play()
             let started = ProcessInfo.processInfo.systemUptime
+            var nextSampleAt = 10.0
             while ProcessInfo.processInfo.systemUptime - started < duration {
                 try Task.checkCancellation()
                 pollAttempts += 1
@@ -494,10 +497,24 @@ do {
                     hashes.insert(SHA256.hash(data: frame.preview.rgba).map { String(format: "%02x", $0) }.joined())
                     processingSeconds.append(ProcessInfo.processInfo.systemUptime - before)
                 }
+                let elapsed = ProcessInfo.processInfo.systemUptime - started
+                if elapsed >= nextSampleAt {
+                    let stats = await session.cacheStats()
+                    cacheSamples.append(["elapsedSeconds": elapsed,
+                                         "observedFrames": observedFrames,
+                                         "completedLoops": await session.completedLoops(),
+                                         "staticTextureCacheBytes": stats.residentBytes])
+                    nextSampleAt = (floor(elapsed / 10) + 1) * 10
+                }
                 try await Task.sleep(nanoseconds: UInt64(1_000_000_000 / pollHz))
             }
+            actualElapsedSeconds = ProcessInfo.processInfo.systemUptime - started
             loops = await session.completedLoops()
             cacheBefore = await session.cacheStats()
+            cacheSamples.append(["elapsedSeconds": actualElapsedSeconds,
+                                 "observedFrames": observedFrames,
+                                 "completedLoops": loops,
+                                 "staticTextureCacheBytes": cacheBefore?.residentBytes ?? 0])
             await session.close()
             cacheAfter = await session.cacheStats()
         } catch {
@@ -512,11 +529,14 @@ do {
         let report: [String: Any] = ["schemaVersion": 1, "probeMode": "boundedWindowlessSceneStability",
                                      "desktopAttached": false, "playableScene": false,
                                      "requestedSeconds": duration, "requestedPollHz": pollHz,
+                                     "actualElapsedSeconds": actualElapsedSeconds,
                                      "pollAttempts": pollAttempts, "observedFrames": observedFrames,
                                      "distinctFrames": hashes.count, "completedLoops": loops,
                                      "maxForwardDisplayGapSeconds": maximumGap,
+                                     "maxProcessingSeconds": processingSeconds.max() ?? 0,
                                      "meanProcessingSeconds": processingSeconds.isEmpty ? 0 : processingSeconds.reduce(0,+) / Double(processingSeconds.count),
                                      "p95ProcessingSeconds": sortedProcessing.isEmpty ? 0 : sortedProcessing[p95Index],
+                                     "cacheSamples": cacheSamples,
                                      "staticTextureCache": ["hits": cacheBefore?.hits ?? 0,
                                                             "misses": cacheBefore?.misses ?? 0,
                                                             "residentBytesBeforeClose": cacheBefore?.residentBytes ?? 0,
