@@ -1,18 +1,25 @@
 #!/bin/bash
 # Build an isolated, opt-in single-renderer Space/display-follow preview.
-# The pinned Mirage submodule and the proven single-Space variant stay intact.
+# The managed-transition variant keeps the previous focus-follow build intact.
 set -euo pipefail
 
 mode="${1:---check}"
-if [[ "$#" -gt 1 || ( "$mode" != '--check' && "$mode" != '--build' ) ]]; then
-    printf 'Usage: %s [--check|--build]\n' "$0" >&2
+variant="${2:-default}"
+if [[ "$#" -gt 2 || ( "$mode" != '--check' && "$mode" != '--build' ) ||
+      ( "$variant" != 'default' && "$variant" != '--managed-transition' ) ]]; then
+    printf 'Usage: %s [--check|--build] [--managed-transition]\n' "$0" >&2
     exit 2
 fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 upstream="$project_root/ThirdParty/MirageWallpaper"
-isolated="$project_root/dist/MirageFocusFollowSource"
-patch="$project_root/patches/mirage-focus-follow.patch"
+if [[ "$variant" == '--managed-transition' ]]; then
+    isolated="$project_root/dist/MirageSpaceTransitionSource"
+    patch="$project_root/patches/mirage-space-transition-managed.patch"
+else
+    isolated="$project_root/dist/MirageFocusFollowSource"
+    patch="$project_root/patches/mirage-focus-follow.patch"
+fi
 revision='d639939b925f08cfa0e5227ed9bea79529348fd6'
 ffmpeg_root="$upstream/Mirage/build/ffmpeg/arm64"
 expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
