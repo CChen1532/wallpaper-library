@@ -1,0 +1,12 @@
+diff --git a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
+--- a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
++++ b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
+@@ -701,7 +701,6 @@
+         window.title                 = title;
+         window.level                 = CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1;
+-        window.collectionBehavior    = NSWindowCollectionBehaviorCanJoinAllSpaces |
+-                                    NSWindowCollectionBehaviorStationary |
++        window.collectionBehavior    = NSWindowCollectionBehaviorStationary |
+                                     NSWindowCollectionBehaviorIgnoresCycle;
+         const bool diagnostic = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR") != nullptr;
+         if (diagnostic) window.level = NSNormalWindowLevel + 1;

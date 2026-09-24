@@ -4,13 +4,32 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-mirage_root="$PWD/ThirdParty/MirageWallpaper"
+mode="${1:-default}"
+[[ "$#" -le 1 && ( "$mode" == 'default' || "$mode" == '--single-space' ) ]] || {
+    printf 'Usage: %s [--single-space]\n' "$0" >&2; exit 2;
+}
+if [[ "$mode" == '--single-space' ]]; then
+    mirage_root="$PWD/dist/MirageSingleSpaceSource"
+    target='dist/MirageSingleSpaceRuntime'
+    patch="$PWD/patches/mirage-single-space.patch"
+    [[ -d "$mirage_root" && ! -L "$mirage_root" && -f "$patch" ]] || {
+        printf 'Isolated single-Space source or patch is missing\n' >&2; exit 2;
+    }
+    git -C "$mirage_root" apply --reverse --check "$patch" || {
+        printf 'Single-Space patch is not applied\n' >&2; exit 2;
+    }
+    [[ "$(git -C "$mirage_root" diff --name-only)" == 'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm' ]] || {
+        printf 'Isolated source has unexpected tracked changes\n' >&2; exit 2;
+    }
+else
+    mirage_root="$PWD/ThirdParty/MirageWallpaper"
+    target='dist/MirageSourceRuntime'
+fi
 source_renderer="$mirage_root/SceneRenderer/build/macos-arm64-clang-release/Tools/SceneWallpaper/SceneWallpaper"
 brew_root="${HOMEBREW_PREFIX:-$HOME/homebrew}"
 brew_icd="$brew_root/etc/vulkan/icd.d/MoltenVK_icd.json"
 brew_moltenvk="$brew_root/lib/libMoltenVK.dylib"
 brew_vulkan_loader="$brew_root/opt/vulkan-loader/lib/libvulkan.1.dylib"
-target='dist/MirageSourceRuntime'
 
 [[ "$(git -C "$mirage_root" rev-parse HEAD)" == 'd639939b925f08cfa0e5227ed9bea79529348fd6' ]] || {
     printf 'Mirage submodule is not at pinned v1.1.4\n' >&2; exit 2;
@@ -18,6 +37,11 @@ target='dist/MirageSourceRuntime'
 [[ -x "$source_renderer" && -d "$mirage_root/assets" && -f "$brew_icd" && -f "$brew_moltenvk" && -f "$brew_vulkan_loader" ]] || {
     printf 'Source renderer, assets, Vulkan Loader, or MoltenVK is missing\n' >&2; exit 2;
 }
+if [[ "$mode" == '--single-space' ]]; then
+    [[ "$source_renderer" -nt "$mirage_root/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm" ]] || {
+        printf 'Single-Space renderer is older than the patched desktop host; rebuild first\n' >&2; exit 2;
+    }
+fi
 [[ ! -e "$target" && ! -L "$target" ]] || { printf 'Runtime already exists: %s\n' "$target" >&2; exit 2; }
 
 mkdir -p dist

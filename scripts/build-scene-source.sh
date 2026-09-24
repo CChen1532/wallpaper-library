@@ -10,14 +10,14 @@ if [[ "$#" -gt 1 || ( "$mode" != "--build" && "$mode" != "--check" ) ]]; then
 fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-mirage_root="$project_root/ThirdParty/MirageWallpaper"
+mirage_root="${MIRAGE_SOURCE_ROOT:-$project_root/ThirdParty/MirageWallpaper}"
 scene_root="$mirage_root/SceneRenderer"
 brew_root="${HOMEBREW_PREFIX:-$HOME/homebrew}"
 llvm_root="${LLVM_PREFIX:-$HOME/tools/llvm}"
 jobs="${JOBS:-8}"
 expected_revision='d639939b925f08cfa0e5227ed9bea79529348fd6'
 build_root="$scene_root/build/macos-arm64-clang-release"
-ffmpeg_root="$mirage_root/Mirage/build/ffmpeg/arm64"
+ffmpeg_root="${MIRAGE_FFMPEG_PREFIX:-$mirage_root/Mirage/build/ffmpeg/arm64}"
 
 die() { printf 'Mirage source build: %s\n' "$*" >&2; exit 2; }
 
@@ -60,9 +60,11 @@ fi
 export PATH="$brew_root/bin:$llvm_root/bin:$PATH"
 export PKG_CONFIG_PATH="$brew_root/lib/pkgconfig:$brew_root/share/pkgconfig:$brew_root/opt/freetype/lib/pkgconfig:$brew_root/opt/glfw/lib/pkgconfig:$brew_root/opt/vulkan-loader/lib/pkgconfig:$brew_root/opt/fontconfig/lib/pkgconfig:$brew_root/opt/lz4/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
-# Upstream pins and verifies its decoder-only FFmpeg source. On a matching
-# existing build this step exits without rebuilding it.
-bash "$mirage_root/scripts/build_ffmpeg.sh" arm64
+# The single-Space isolated worktree reuses the already verified decoder-only
+# FFmpeg build from the pinned source tree; the default path still builds it.
+if [[ -z "${MIRAGE_FFMPEG_PREFIX:-}" ]]; then
+    bash "$mirage_root/scripts/build_ffmpeg.sh" arm64
+fi
 [[ -f "$ffmpeg_root/lib/pkgconfig/libavcodec.pc" ]] || die 'bundled FFmpeg build is missing'
 export PKG_CONFIG_PATH="$ffmpeg_root/lib/pkgconfig:$PKG_CONFIG_PATH"
 
