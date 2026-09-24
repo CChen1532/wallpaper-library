@@ -1,0 +1,3 @@
+[submodule "ThirdParty/MirageWallpaper"]
+	path = ThirdParty/MirageWallpaper
+	url = https://github.com/laobamac/MirageWallpaper.git
