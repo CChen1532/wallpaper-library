@@ -78,14 +78,39 @@ private func verifyRuntime(_ path: String) throws {
     print("runtime: renderer, assets, Vulkan ICD, frameworks, and CLI contract verified")
 }
 
-private func trial(_ arguments: [String]) throws {
+private func samplePerformance(pid: Int32, elapsedSeconds: Int) throws {
+    let command = Process()
+    command.executableURL = URL(fileURLWithPath: "/bin/ps")
+    command.arguments = ["-p", String(pid), "-o", "%cpu=,rss=,time="]
+    let output = Pipe()
+    command.standardOutput = output
+    command.standardError = FileHandle.nullDevice
+    try command.run()
+    command.waitUntilExit()
+    guard command.terminationStatus == 0 else {
+        throw MirageSceneBridgeError.failed("性能采样无法读取渲染进程")
+    }
+    let fields = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        .split(whereSeparator: \.isWhitespace)
+    guard fields.count == 3, let cpu = Double(fields[0]), let rssKiB = Int(fields[1]) else {
+        throw MirageSceneBridgeError.failed("性能采样输出格式异常")
+    }
+    print(String(format: "perf_sample elapsed=%ds cpu=%.1f%% rss=%.1fMiB cputime=%@",
+                 elapsedSeconds, cpu, Double(rssKiB) / 1024, String(fields[2])))
+    fflush(stdout)
+}
+
+private func trial(_ arguments: [String], durationSeconds: Int,
+                   collectPerformance: Bool = false) throws {
     guard arguments.count == 5, arguments[4] == "--consent",
           let displayID = UInt32(arguments[3]) else {
-        fail("试验格式：--trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
+        fail("试验格式：<Mirage运行目录> <scene.pkg> <displayID> --consent")
     }
     let runtime = try MirageSceneRuntime(app: URL(fileURLWithPath: arguments[1], isDirectory: true))
     let scene = URL(fileURLWithPath: arguments[2])
-    let rendererArguments = try runtime.trialArguments(scenePackage: scene, displayID: displayID)
+    let rendererArguments = try runtime.trialArguments(scenePackage: scene,
+                                                        displayID: displayID,
+                                                        durationSeconds: durationSeconds)
     require(NSScreen.screens.contains { screen in
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
     }, "目标显示器当前未连接或工具会话无法读取显示器")
@@ -107,9 +132,25 @@ private func trial(_ arguments: [String]) throws {
     try child.wait(for: "first-frame-presented", timeout: 15)
     try child.send("activate")
     try child.wait(for: "activated", timeout: 5)
-    print("trial: activated on display \(displayID); stopping after 5 seconds")
+    print("trial: activated on display \(displayID); stopping after \(durationSeconds) seconds")
     fflush(stdout)
-    Thread.sleep(forTimeInterval: 5)
+    let start = ProcessInfo.processInfo.systemUptime
+    let deadline = start + Double(durationSeconds)
+    var nextSample = start
+    while ProcessInfo.processInfo.systemUptime < deadline {
+        if let status = child.terminationStatus {
+            throw MirageSceneBridgeError.failed("Mirage Scene 在试验期间提前退出（\(status)）")
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if collectPerformance && now >= nextSample {
+            try samplePerformance(pid: child.processIdentifier, elapsedSeconds: Int((now - start).rounded()))
+            nextSample += 5
+        }
+        let remainingToEnd = deadline - ProcessInfo.processInfo.systemUptime
+        let remainingToSample = collectPerformance ? nextSample - ProcessInfo.processInfo.systemUptime : 1
+        Thread.sleep(forTimeInterval: max(0, min(1, min(remainingToSample, remainingToEnd))))
+    }
+    if collectPerformance { try samplePerformance(pid: child.processIdentifier, elapsedSeconds: durationSeconds) }
     child.stop()
     require(child.terminationStatus == 0, "渲染器未正常退出")
     print("trial: stopped cleanly")
@@ -123,9 +164,13 @@ do {
     case "--verify-runtime" where arguments.count == 3:
         try verifyRuntime(arguments[2])
     case "--trial":
-        try trial(Array(arguments.dropFirst()))
+        try trial(Array(arguments.dropFirst()), durationSeconds: 5)
+    case "--space-trial":
+        try trial(Array(arguments.dropFirst()), durationSeconds: 60)
+    case "--perf-trial":
+        try trial(Array(arguments.dropFirst()), durationSeconds: 60, collectPerformance: true)
     default:
-        fail("可用命令：--selftest | --verify-runtime <Mirage运行目录> | --trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
+        fail("可用命令：--selftest | --verify-runtime <Mirage运行目录> | --trial/--space-trial/--perf-trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
     }
 } catch {
     fail(error.localizedDescription)

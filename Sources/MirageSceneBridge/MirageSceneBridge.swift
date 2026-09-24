@@ -42,8 +42,12 @@ public struct MirageSceneRuntime {
         self.frameworks = frameworks
     }
 
-    public func trialArguments(scenePackage: URL, displayID: UInt32) throws -> [String] {
+    public func trialArguments(scenePackage: URL, displayID: UInt32,
+                               durationSeconds: Int = 5) throws -> [String] {
         guard displayID != 0 else { throw MirageSceneBridgeError.invalid("显示器 ID 必须非零") }
+        guard durationSeconds == 5 || durationSeconds == 60 else {
+            throw MirageSceneBridgeError.invalid("仅允许 5 秒或 60 秒的隔离试验")
+        }
         let values = try scenePackage.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard scenePackage.lastPathComponent == "scene.pkg",
               values.isRegularFile == true, values.isSymbolicLink != true,
@@ -51,7 +55,7 @@ public struct MirageSceneRuntime {
             throw MirageSceneBridgeError.invalid("仅接受不超过 256 MiB 的普通 scene.pkg")
         }
         return ["--display-id", String(displayID), "--fps", "30", "--muted", "--no-spectrum",
-                "--control-stdin", "--deferred-show", "--run-seconds", "90",
+                "--control-stdin", "--deferred-show", "--run-seconds", String(durationSeconds + 90),
                 assets.path, scenePackage.path]
     }
 
@@ -177,6 +181,8 @@ public final class MirageSceneChild: @unchecked Sendable {
         condition.lock(); defer { condition.unlock() }
         return exitCode
     }
+
+    public var processIdentifier: Int32 { process.processIdentifier }
 
     private func waitForExit(seconds: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
