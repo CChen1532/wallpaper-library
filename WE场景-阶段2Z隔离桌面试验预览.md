@@ -1,10 +1,10 @@
-# WE 场景阶段 2Z：隔离桌面试验实现（待真实桌面验收）
+# WE 场景阶段 2Z：隔离桌面试验实现（桌面画面待目视确认）
 
 日期：2026-09-24（Asia/Kuala_Lumpur）
 
 ## 已实现的预览能力
 
-新增独立可执行目标 `WESceneDesktopProbe`，**不接入正式「视频壁纸」应用或 phonto 控制入口**。普通启动立即退出；只有显式 `--desktop-trial` 才展示控制窗口，再由人手动选择单个 `scene.pkg`、包内视频 TEX 路径和一个显示器，并点击「开始 5 秒桌面试验」后，才尝试创建桌面层级的隔离窗口。构建与自检不会触碰真实桌面。
+新增独立可执行目标 `WESceneDesktopProbe`，**不接入正式「视频壁纸」应用或 phonto 控制入口**。为了让界面工具能安全启动控制窗口，普通启动现在只展示控制窗口、不会自动创建桌面显示面；需人手动选择单个 `scene.pkg`、包内视频 TEX 路径和一个显示器，勾选当次许可确认，再点击「开始 5 秒桌面试验」才尝试创建隔离窗口。`--desktop-trial` 也不跳过该确认。构建与自检不会触碰真实桌面；非法参数直接退出。
 
 试验显示面使用所选 `NSScreen` 的显示 ID 与完整屏幕矩形快照；建面前重新比对，屏幕布局一旦变化便停止。窗口候选层级为 Core Graphics 的 desktop-window level，非交互、无阴影，尝试跨 Space 且不加入窗口循环。**这些 API 选择只确定试验候选实现；未经实际桌面目视，不能断定系统壁纸前后层次、图标可用或全屏行为。**系统壁纸设置和 phonto 进程/任务均不被本目标写入或控制。
 
@@ -16,15 +16,21 @@ API 依据：[Apple 的窗口层级说明](https://developer.apple.com/documenta
 
 | 验证 | 结果和边界 |
 |---|---|
-| `bash scripts/check-desktop-probe.sh` | Debug 构建通过；显示 ID/几何变化、非法几何、一次性停止和 RGBA 颜色/方向/透明度/边界自检通过；无参数入口退出 2 并提示默认禁用。两条路径都不创建窗口。 |
+| `bash scripts/check-desktop-probe.sh` | Debug 构建通过；显示 ID/几何变化、非法几何、一次性停止和 RGBA 颜色/方向/透明度/边界自检通过；非法参数入口退出 2。自检/非法参数路径都不创建窗口。 |
 | `bash scripts/build-desktop-probe.sh`、`swift build --disable-sandbox`、`codesign --verify --deep --strict`、`plutil -lint` | Release 独立应用、全包构建、签名及 Info.plist 结构通过；**未启动** `--desktop-trial`。 |
 | `bash scripts/check-scene.sh`、`bash scripts/check.sh` | 161 项 Scene 与 39 项正式视频前端回归通过；不包含真实桌面层级和生命周期视觉验收。 |
 | `git diff --check` | 通过。 |
 
 DeepSeek 提供的抽象生命周期清单仅用作交叉检查；资源归属按本地 `WESceneFrameDelivery` 实现修正为交付器统一关闭源与接收端，避免协调器重复关闭。其「正式桌面能力为 false 就拒绝试验」建议没有照搬：本目标是隔离开发试验，正式能力仍为 false。
 
+## 2026-09-24 单显示器实机尝试
+
+经用户当次明确许可，先用 `phonto-wall status` 只读检查：phonto 未运行，轮播未开启。独立签名应用通过系统界面启动；控制窗口正常显示内置屏幕 `Built-in Retina Display · 1`，手选真实 `3483456356/scene.pkg`、填入 `materials/阿罗娜 人物.tex`，勾选确认并点击开始。控制窗口进入只读加载/短时交付状态；随后应用清单显示实验进程 `isRunning=false`。试验后再次只读检查，phonto 仍未运行、轮播仍未开启。未控制或切换原视频壁纸。
+
+目前界面截图工具只能捕获控制窗口或 Finder 窗口，无法捕获桌面背景层；应用清单只有退出状态，没有成功/错误退出码。因此尚不能单凭这些证据确认 Scene 画面真的显示在桌面、人物持续运动或图标仍可用。已向用户请求目视反馈，待结果回填；也没有测试 phonto **正在播放时**的共存。
+
 ## 尚未通过的门槛与下一步
 
-本轮**没有启动或修改真实桌面壁纸**，没有证据证明候选桌面窗口位于图标之后、在所有 Space 中正确显示、睡眠/热插拔后清理，或与当前 phonto 视频桌面输出共存。`desktopScenePlayable=false`、`faithfulSceneRendering=false` 保持不变；不能把此预览目标称作可用 Wallpaper Engine 桌面播放后端。
+本轮已在用户许可下尝试一次单显示器短时桌面试验，但没有证据证明候选窗口位于图标之后、画面持续运动、在所有 Space 中正确显示、睡眠/热插拔后清理，或与正在运行的 phonto 视频桌面输出共存。没有修改系统壁纸设置。`desktopScenePlayable=false`、`faithfulSceneRendering=false` 保持不变；不能把此预览目标称作可用 Wallpaper Engine 桌面播放后端。
 
-下一步先取得用户当次明确许可，再记录现有 phonto 状态，仅临时运行签名独立应用进行单显示器短时目视试验；任何异常立即用控制窗口停止，复核进程退出及原视频壁纸状态。之后再分别验证 Space、外接屏变化、睡眠和错误路径，不能靠一次普通窗口截图替代。
+下一步先记录用户目视反馈。若画面不可见或结果不明，应先增补不影响桌面的诊断并按新证据修正窗口层级，再经当次许可复验。若可见，也只推进图标、Space、外接屏、睡眠和 phonto 共存的分项试验；不能靠一次普通窗口截图或进程退出替代。

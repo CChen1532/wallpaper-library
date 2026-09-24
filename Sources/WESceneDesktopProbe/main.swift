@@ -195,6 +195,7 @@ private final class TrialLifecycle {
     private let packageLabel = NSTextField(labelWithString: "尚未选择场景包")
     private let textureField = NSTextField()
     private let displayPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let consentButton = NSButton(checkboxWithTitle: "已获当次许可，可短时覆盖所选桌面", target: nil, action: nil)
     private let startButton = NSButton(title: "开始 5 秒桌面试验", target: nil, action: nil)
     private let stopButton = NSButton(title: "停止并清理", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "隔离开发试验；不是正式 Scene 壁纸")
@@ -222,6 +223,9 @@ private final class TrialLifecycle {
         textureField.placeholderString = "包内视频纹理路径，例如 materials/name.tex"
         displayPopup.setAccessibilityLabel("试验显示器")
         populateDisplays()
+        consentButton.target = self
+        consentButton.action = #selector(consentChanged)
+        consentButton.state = .off
         startButton.target = self
         startButton.action = #selector(startTrial)
         startButton.isEnabled = false
@@ -230,12 +234,12 @@ private final class TrialLifecycle {
         stopButton.isEnabled = false
         statusLabel.textColor = .secondaryLabelColor
 
-        let note = NSTextField(labelWithString: "会短时覆盖所选桌面背景；不修改系统壁纸或 phonto。未经当次许可勿启动。")
+        let note = NSTextField(labelWithString: "启动控制窗口不会改变桌面；手动确认后才会短时覆盖所选背景。不修改系统壁纸或 phonto。")
         note.lineBreakMode = .byWordWrapping
         let actions = NSStackView(views: [startButton, stopButton])
         actions.orientation = .horizontal
         actions.spacing = 12
-        let stack = NSStackView(views: [note, row, textureField, displayPopup, actions, statusLabel])
+        let stack = NSStackView(views: [note, row, textureField, displayPopup, consentButton, actions, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -266,8 +270,15 @@ private final class TrialLifecycle {
             return snapshot.id
         }
         if displayIDs.indices.contains(previous) { displayPopup.selectItem(at: previous) }
-        startButton.isEnabled = packageURL != nil && !displayIDs.isEmpty && work == nil
+        updateStartAvailability()
     }
+
+    private func updateStartAvailability() {
+        startButton.isEnabled = packageURL != nil && !displayIDs.isEmpty &&
+                                consentButton.state == .on && work == nil
+    }
+
+    @objc private func consentChanged() { updateStartAvailability() }
 
     private func observeEnvironment() {
         let appCenter = NotificationCenter.default
@@ -300,12 +311,12 @@ private final class TrialLifecycle {
             guard response == .OK, let url = panel.url else { return }
             self?.packageURL = url
             self?.packageLabel.stringValue = url.lastPathComponent
-            self?.startButton.isEnabled = !(self?.displayIDs.isEmpty ?? true)
+            self?.updateStartAvailability()
         }
     }
 
     @objc private func startTrial() {
-        guard work == nil, let packageURL else { return }
+        guard work == nil, consentButton.state == .on, let packageURL else { return }
         let texture = textureField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !texture.isEmpty, !texture.hasPrefix("/"), !texture.contains(".."),
               !texture.contains("\\") else {
@@ -324,6 +335,7 @@ private final class TrialLifecycle {
         do { try lifecycle.start() }
         catch { statusLabel.stringValue = error.localizedDescription; return }
         startButton.isEnabled = false
+        consentButton.isEnabled = false
         textureField.isEnabled = false
         displayPopup.isEnabled = false
         stopButton.isEnabled = true
@@ -421,8 +433,9 @@ private final class TrialLifecycle {
             }
             catch { FileHandle.standardError.write("\(error)\n".data(using: .utf8)!); Darwin.exit(1) }
         }
-        guard CommandLine.arguments == [CommandLine.arguments[0], "--desktop-trial"] else {
-            FileHandle.standardError.write("桌面试验默认禁用；必须显式传入 --desktop-trial，且运行前取得用户当次许可。\n".data(using: .utf8)!)
+        guard CommandLine.arguments.count == 1 ||
+              CommandLine.arguments == [CommandLine.arguments[0], "--desktop-trial"] else {
+            FileHandle.standardError.write("桌面试验不接受其他参数；控制窗口不会自动创建桌面显示面。\n".data(using: .utf8)!)
             Darwin.exit(2)
         }
         let app = NSApplication.shared
