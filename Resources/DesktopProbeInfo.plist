@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.wallpaper.scene-desktop-probe</string>
+<key>CFBundleName</key><string>Scene 桌面试验（隔离）</string>
+<key>CFBundleDisplayName</key><string>Scene 桌面试验（隔离）</string>
+<key>CFBundleExecutable</key><string>WESceneDesktopProbe</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSDesktopFolderUsageDescription</key><string>经用户选择后只读打开 Wallpaper Engine 场景包，用于短时隔离桌面试验；不会更改系统壁纸设置。</string>
+</dict></plist>
