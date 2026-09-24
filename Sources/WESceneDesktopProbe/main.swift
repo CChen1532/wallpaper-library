@@ -17,6 +17,30 @@ private enum TrialStopCause: String {
     case displayChanged, activeSpaceChanged, systemSleep, screensSleep
 }
 
+/// Ordering a desktop-level window can itself emit a Space notification.
+/// Arm the transition check only after the surface has settled briefly.
+private struct TrialSpaceGate {
+    private(set) var readyAt: TimeInterval?
+
+    mutating func surfaceWillOpen(at uptime: TimeInterval) {
+        readyAt = uptime + 1.0
+    }
+
+    func shouldStop(at uptime: TimeInterval) -> Bool {
+        guard let readyAt else { return true }
+        return uptime >= readyAt
+    }
+
+    static func selfTest() throws {
+        var gate = TrialSpaceGate()
+        guard gate.shouldStop(at: 10) else { throw DesktopTrialError.invalid("未建面阶段Space停止门失效") }
+        gate.surfaceWillOpen(at: 10)
+        guard !gate.shouldStop(at: 10.9), gate.shouldStop(at: 11), gate.shouldStop(at: 12) else {
+            throw DesktopTrialError.invalid("Space启动抑制窗口边界错误")
+        }
+    }
+}
+
 /// The desktop app exits promptly after a trial. Keep a small, path-free record
 /// so a GUI launch does not lose its last completed stage or failure category.
 private struct TrialDiagnosticSnapshot: Codable {
@@ -342,6 +366,7 @@ private final class TrialLifecycle {
     private var diagnostics: TrialDiagnostics?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private let lifecycle = TrialLifecycle()
+    private var spaceGate = TrialSpaceGate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
@@ -435,6 +460,8 @@ private final class TrialLifecycle {
 
     private func environmentChanged(_ name: Notification.Name) {
         if work == nil { populateDisplays(); return }
+        if name == NSWorkspace.activeSpaceDidChangeNotification,
+           !spaceGate.shouldStop(at: ProcessInfo.processInfo.systemUptime) { return }
         let cause: TrialStopCause
         switch name {
         case NSWorkspace.activeSpaceDidChangeNotification: cause = .activeSpaceChanged
@@ -530,6 +557,7 @@ private final class TrialLifecycle {
             }
             let limits = try WESceneFrameDeliveryLimits(durationSeconds: 5, pollHz: 10,
                                                         maxDimension: 640, maxFrames: 50)
+            spaceGate.surfaceWillOpen(at: ProcessInfo.processInfo.systemUptime)
             let surface = try DesktopTrialSurface(screen: screen, snapshot: snapshot)
             diagnostics?.record("surfaceCreated", surfaceWindowNumber: surface.windowNumber)
             let frameSink = DesktopTrialSink(surface: surface)
@@ -590,6 +618,7 @@ private final class TrialLifecycle {
         if CommandLine.arguments == [CommandLine.arguments[0], "--selftest"] {
             do {
                 try TrialLifecycle.selfTest()
+                try TrialSpaceGate.selfTest()
                 try TrialRasterImage.selfTest()
                 try TrialDiagnostics.selfTest()
                 print("桌面试验RGBA颜色、方向、透明度与边界自检通过；未创建窗口")
