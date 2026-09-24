@@ -78,11 +78,30 @@ private func selfTest() throws {
     require(FocusDisplaySelector.choose(frontmostPID: 8, windows: windows,
                                         screens: screens, cursorDisplayID: 1) == 1,
             "无焦点窗口时应回退至鼠标所在屏")
-    var dwell = FocusDisplayDwell(currentDisplayID: 1)
-    require(dwell.observe(3) == nil && dwell.observe(3) == 3 &&
-            dwell.observe(1) == nil && dwell.observe(3) == nil,
-            "跨屏目标应消抖，且目标改变须重新计数")
-    print("selftest: lifecycle, display move, focus routing, failed activation, closed stdin, and cleanup passed")
+    var handoff = FocusDisplayHandoff(currentDisplayID: 1)
+    require(handoff.observe(3, at: 10) == nil &&
+            handoff.observe(3, at: 11.499) == nil &&
+            handoff.observe(3, at: 11.5) == 3,
+            "新焦点未稳定1.5秒不得移动；到达边界时应移动")
+    require(handoff.observe(1, at: 12) == nil &&
+            handoff.observe(3, at: 13) == nil &&
+            handoff.observe(1, at: 14) == nil &&
+            handoff.observe(1, at: 15.499) == nil &&
+            handoff.observe(1, at: 15.5) == 1,
+            "焦点返回或重选后须重新计时")
+    require(handoff.observe(3, at: 16) == nil &&
+            handoff.observe(nil, at: 16.7) == nil &&
+            handoff.observe(3, at: 17) == nil &&
+            handoff.observe(3, at: 18.499) == nil &&
+            handoff.observe(3, at: 18.5) == 3,
+            "焦点未知时应取消待交接目标")
+    require(handoff.observe(1, at: 19) == nil &&
+            handoff.observe(2, at: 19.5) == nil &&
+            handoff.observe(2, at: 20.999) == nil &&
+            handoff.observe(2, at: 21) == 2 &&
+            handoff.observe(2, at: 22) == nil,
+            "改选第三屏应重新计时且不能重复移动")
+    print("selftest: lifecycle, display move, 1.5s focus handoff, failed activation, closed stdin, and cleanup passed")
 }
 
 private func verifyRuntime(_ path: String, requireFocusFollow: Bool = false) throws {
@@ -166,17 +185,19 @@ private func trial(_ arguments: [String], durationSeconds: Int,
     let deadline = start + Double(durationSeconds)
     var nextSample = start
     var nextFocusCheck = start
-    var focusDwell = FocusDisplayDwell(currentDisplayID: initialDisplayID)
+    var focusHandoff = FocusDisplayHandoff(currentDisplayID: initialDisplayID)
     while ProcessInfo.processInfo.systemUptime < deadline {
         if let status = child.terminationStatus {
             throw MirageSceneBridgeError.failed("Mirage Scene 在试验期间提前退出（\(status)）")
         }
         let now = ProcessInfo.processInfo.systemUptime
         if followFocus && now >= nextFocusCheck {
-            if let target = focusDwell.observe(FocusDisplaySelector.currentDisplay()) {
+            let targetDisplay = FocusDisplaySelector.currentDisplay()
+            let observedAt = ProcessInfo.processInfo.systemUptime
+            if let target = focusHandoff.observe(targetDisplay, at: observedAt) {
                 try child.move(to: target)
                 try child.waitForMove(to: target, timeout: 2)
-                print("focus_route: display=\(target)")
+                print("focus_route: display=\(target) old_display_hold>=\(FocusDisplayHandoff.holdDuration)s")
                 fflush(stdout)
             }
             nextFocusCheck = ProcessInfo.processInfo.systemUptime + 0.25

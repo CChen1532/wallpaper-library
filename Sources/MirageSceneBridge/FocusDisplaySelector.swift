@@ -107,26 +107,31 @@ public enum FocusDisplaySelector {
     }
 }
 
-/// Two matching polls are required before moving the only renderer window.
-public struct FocusDisplayDwell {
+/// Keep rendering on the previous display until the new focus has remained
+/// stable for 1.5 seconds. Reverting or changing targets cancels the handoff.
+public struct FocusDisplayHandoff {
+    public static let holdDuration: TimeInterval = 1.5
     public private(set) var currentDisplayID: UInt32
     private var pendingDisplayID: UInt32?
-    private var pendingCount = 0
+    private var pendingSince: TimeInterval?
 
     public init(currentDisplayID: UInt32) { self.currentDisplayID = currentDisplayID }
 
-    public mutating func observe(_ target: UInt32?) -> UInt32? {
-        guard let target, target != currentDisplayID else {
+    public mutating func observe(_ target: UInt32?, at uptime: TimeInterval) -> UInt32? {
+        guard uptime.isFinite, let target, target != currentDisplayID else {
             pendingDisplayID = nil
-            pendingCount = 0
+            pendingSince = nil
             return nil
         }
-        if pendingDisplayID == target { pendingCount += 1 }
-        else { pendingDisplayID = target; pendingCount = 1 }
-        guard pendingCount >= 2 else { return nil }
+        if pendingDisplayID != target {
+            pendingDisplayID = target
+            pendingSince = uptime
+            return nil
+        }
+        guard let pendingSince, uptime - pendingSince >= Self.holdDuration else { return nil }
         currentDisplayID = target
         pendingDisplayID = nil
-        pendingCount = 0
+        self.pendingSince = nil
         return target
     }
 }
