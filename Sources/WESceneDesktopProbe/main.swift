@@ -12,9 +12,165 @@ private enum DesktopTrialError: Error, LocalizedError {
     }
 }
 
-private enum TrialStopCause: String {
+private enum TrialStopCause: String, Sendable {
     case user, controlWindowClosed, applicationQuit
     case displayChanged, activeSpaceChanged, systemSleep, screensSleep
+    case watchdogNoFrames, watchdogDeadline, watchdogStopTimeout
+}
+
+/// The timer lives on its own queue, so an awaited frame poll cannot delay its checks.
+/// AppKit cleanup is requested on the main actor; a final process exit removes the
+/// window if that actor also stops responding.
+private struct TrialWatchdogClock {
+    enum Action: Equatable { case none, noFrames, deadline, forceCleanup, hardExit }
+    private enum Phase { case running, stopping, forcing, finished }
+    private var phase: Phase = .running
+    private let startedAt: TimeInterval
+    private var lastFrameAt: TimeInterval
+    private var stopAt: TimeInterval?
+    private var forceAt: TimeInterval?
+
+    init(startedAt: TimeInterval) {
+        self.startedAt = startedAt
+        lastFrameAt = startedAt
+    }
+
+    mutating func frame(at uptime: TimeInterval) {
+        if phase == .running { lastFrameAt = uptime }
+    }
+
+    mutating func stopRequested(at uptime: TimeInterval) {
+        guard phase == .running else { return }
+        phase = .stopping
+        stopAt = uptime
+    }
+
+    mutating func finish() { phase = .finished }
+
+    mutating func advance(at uptime: TimeInterval, duration: TimeInterval) -> Action {
+        switch phase {
+        case .running:
+            if uptime - startedAt >= duration + 5 {
+                stopRequested(at: uptime)
+                return .deadline
+            }
+            if uptime - lastFrameAt >= 5 {
+                stopRequested(at: uptime)
+                return .noFrames
+            }
+        case .stopping:
+            if let stopAt, uptime - stopAt >= 2 {
+                phase = .forcing
+                forceAt = uptime
+                return .forceCleanup
+            }
+        case .forcing:
+            if let forceAt, uptime - forceAt >= 2 {
+                phase = .finished
+                return .hardExit
+            }
+        case .finished: break
+        }
+        return .none
+    }
+
+    static func selfTest() throws {
+        var stalled = TrialWatchdogClock(startedAt: 0)
+        stalled.frame(at: 4)
+        guard stalled.advance(at: 8.9, duration: 300) == .none,
+              stalled.advance(at: 9, duration: 300) == .noFrames,
+              stalled.advance(at: 10.9, duration: 300) == .none,
+              stalled.advance(at: 11, duration: 300) == .forceCleanup,
+              stalled.advance(at: 13, duration: 300) == .hardExit else {
+            throw DesktopTrialError.invalid("无帧与强制清理看门狗边界错误")
+        }
+        var deadline = TrialWatchdogClock(startedAt: 0)
+        deadline.frame(at: 301)
+        guard deadline.advance(at: 304.9, duration: 300) == .none,
+              deadline.advance(at: 305, duration: 300) == .deadline else {
+            throw DesktopTrialError.invalid("桌面试验硬时限边界错误")
+        }
+        var stopped = TrialWatchdogClock(startedAt: 0)
+        stopped.stopRequested(at: 1)
+        stopped.finish()
+        guard stopped.advance(at: 100, duration: 5) == .none else {
+            throw DesktopTrialError.invalid("已完成试验仍触发看门狗")
+        }
+    }
+}
+
+private final class TrialWatchdog: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "local.wallpaper.scene-desktop-probe.watchdog",
+                                      qos: .userInitiated)
+    private let duration: TimeInterval
+    private var clock: TrialWatchdogClock
+    private var timer: DispatchSourceTimer?
+    private let onStop: @Sendable (TrialStopCause) -> Void
+    private let onForceCleanup: @Sendable () -> Void
+    private let onHardExit: @Sendable () -> Void
+
+    init(duration: TimeInterval, onStop: @escaping @Sendable (TrialStopCause) -> Void,
+         onForceCleanup: @escaping @Sendable () -> Void,
+         onHardExit: @escaping @Sendable () -> Void = { Darwin.exit(3) }) {
+        self.duration = duration
+        clock = TrialWatchdogClock(startedAt: ProcessInfo.processInfo.systemUptime)
+        self.onStop = onStop
+        self.onForceCleanup = onForceCleanup
+        self.onHardExit = onHardExit
+    }
+
+    func start() {
+        queue.async { [self] in
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250))
+            timer.setEventHandler { [weak self] in self?.tick() }
+            self.timer = timer
+            timer.resume()
+        }
+    }
+
+    func frameDelivered() {
+        queue.async { [self] in clock.frame(at: ProcessInfo.processInfo.systemUptime) }
+    }
+
+    func stopRequested() {
+        queue.async { [self] in clock.stopRequested(at: ProcessInfo.processInfo.systemUptime) }
+    }
+
+    func finish() {
+        queue.async { [self] in
+            clock.finish()
+            timer?.cancel()
+            timer = nil
+        }
+    }
+
+    private func tick() {
+        switch clock.advance(at: ProcessInfo.processInfo.systemUptime, duration: duration) {
+        case .none: break
+        case .noFrames: onStop(.watchdogNoFrames)
+        case .deadline: onStop(.watchdogDeadline)
+        case .forceCleanup: onForceCleanup()
+        case .hardExit: onHardExit()
+        }
+    }
+
+    static func selfTest() throws {
+        let stop = DispatchSemaphore(value: 0)
+        let force = DispatchSemaphore(value: 0)
+        let hard = DispatchSemaphore(value: 0)
+        let watchdog = TrialWatchdog(duration: 300, onStop: { cause in
+            if cause == .watchdogNoFrames { stop.signal() }
+        }, onForceCleanup: { force.signal() }, onHardExit: { hard.signal() })
+        watchdog.start()
+        guard stop.wait(timeout: .now() + 6) == .success,
+              force.wait(timeout: .now() + 3) == .success,
+              hard.wait(timeout: .now() + 3) == .success else {
+            watchdog.finish()
+            throw DesktopTrialError.invalid("独立看门狗计时或停止升级未触发")
+        }
+        watchdog.finish()
+    }
 }
 
 /// Ordering a desktop-level window can itself emit a Space notification.
@@ -70,6 +226,7 @@ private struct TrialDiagnosticSnapshot: Codable {
     let runID: UUID
     let startedAt: Date
     let displayID: UInt32
+    var requestedDurationSeconds: Double?
     var stage: String
     var surfaceWindowNumber: Int?
     var stopRequest: String?
@@ -81,6 +238,7 @@ private struct TrialDiagnosticSnapshot: Codable {
     var pollAttempts: Int?
     var deliveredFrames: Int?
     var distinctFrames: Int?
+    var completedLoops: Int?
     var deliveryStopReason: String?
     var elapsedSeconds: Double?
     var failureCategory: String?
@@ -97,10 +255,11 @@ private final class TrialDiagnostics {
     private let url: URL
     private var snapshot: TrialDiagnosticSnapshot
 
-    init(url: URL, displayID: UInt32) throws {
+    init(url: URL, displayID: UInt32, durationSeconds: Double = 5) throws {
         self.url = url
         snapshot = TrialDiagnosticSnapshot(schemaVersion: 1, runID: UUID(),
                                            startedAt: Date(), displayID: displayID,
+                                           requestedDurationSeconds: durationSeconds,
                                            stage: "selected")
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
@@ -126,6 +285,31 @@ private final class TrialDiagnostics {
         snapshot.occlusionVisibleSamples = samples.visible
         snapshot.occlusionHiddenSamples = samples.occluded
         snapshot.visibleToHiddenTransitions = samples.visibleToOccluded
+        persistBestEffort()
+    }
+
+    func recordProgress(deliveredFrames: Int, distinctFrames: Int,
+                        occlusion: TrialOcclusionSamples) {
+        snapshot.deliveredFrames = deliveredFrames
+        snapshot.distinctFrames = distinctFrames
+        snapshot.occlusionVisibleSamples = occlusion.visible
+        snapshot.occlusionHiddenSamples = occlusion.occluded
+        snapshot.visibleToHiddenTransitions = occlusion.visibleToOccluded
+        persistBestEffort()
+    }
+
+    func recordLoops(_ loops: Int) {
+        snapshot.completedLoops = loops
+        persistBestEffort()
+    }
+
+    func forcedCleanup(deliveredFrames: Int?, distinctFrames: Int?) {
+        snapshot.stage = "failed"
+        snapshot.stopCause = TrialStopCause.watchdogStopTimeout.rawValue
+        snapshot.failureCategory = "WatchdogStopTimeout"
+        snapshot.deliveredFrames = deliveredFrames
+        snapshot.distinctFrames = distinctFrames
+        snapshot.finishedAt = Date()
         persistBestEffort()
     }
 
@@ -221,6 +405,18 @@ private final class TrialDiagnostics {
               occlusionReport.occlusionHiddenSamples == 1,
               occlusionReport.visibleToHiddenTransitions == 1 else {
             throw DesktopTrialError.invalid("桌面遮挡诊断摘要写入失败")
+        }
+        let longReport = try TrialDiagnostics(url: url, displayID: 11, durationSeconds: 300)
+        longReport.recordProgress(deliveredFrames: 25, distinctFrames: 24, occlusion: occlusion)
+        longReport.recordLoops(2)
+        longReport.forcedCleanup(deliveredFrames: 25, distinctFrames: 24)
+        let forced = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
+        guard forced.requestedDurationSeconds == 300,
+              forced.stage == "failed", forced.stopCause == "watchdogStopTimeout",
+              forced.failureCategory == "WatchdogStopTimeout", forced.deliveredFrames == 25,
+              forced.distinctFrames == 24, forced.completedLoops == 2,
+              forced.finishedAt != nil else {
+            throw DesktopTrialError.invalid("长时诊断进度或强制清理记录失败")
         }
         print("桌面试验无窗口诊断摘要写入、结果与失败分类自检通过")
     }
@@ -362,6 +558,7 @@ private final class TrialLifecycle {
         window.hasShadow = false
         window.backgroundColor = .black
         window.isOpaque = true
+        window.alphaValue = 0
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.frame = NSRect(origin: .zero, size: snapshot.frame.size)
         window.contentView = imageView
@@ -371,10 +568,11 @@ private final class TrialLifecycle {
 
     func present(_ frame: WESceneRealtimeSceneFrame) throws {
         let preview = frame.preview
-        guard window != nil else { throw DesktopTrialError.invalid("桌面试验显示面已关闭") }
+        guard let window else { throw DesktopTrialError.invalid("桌面试验显示面已关闭") }
         imageView.image = try TrialRasterImage.make(width: preview.width,
                                                     height: preview.height,
                                                     rgba: preview.rgba)
+        window.alphaValue = 1
     }
 
     func close() {
@@ -387,12 +585,19 @@ private final class TrialLifecycle {
 
 @MainActor private final class DesktopTrialSink: WESceneFrameSink {
     private var surface: DesktopTrialSurface?
+    private let watchdog: TrialWatchdog
+    private let onProgress: (Int, Int, TrialOcclusionSamples) -> Void
     private var digests: Set<Data> = []
     private(set) var delivered = 0
     private(set) var occlusionSamples = TrialOcclusionSamples()
     var distinctFrames: Int { digests.count }
 
-    init(surface: DesktopTrialSurface) { self.surface = surface }
+    init(surface: DesktopTrialSurface, watchdog: TrialWatchdog,
+         onProgress: @escaping (Int, Int, TrialOcclusionSamples) -> Void) {
+        self.surface = surface
+        self.watchdog = watchdog
+        self.onProgress = onProgress
+    }
 
     func accept(_ frame: WESceneRealtimeSceneFrame) throws {
         guard let surface else { throw DesktopTrialError.invalid("试验显示面已拆除") }
@@ -400,6 +605,8 @@ private final class TrialLifecycle {
         occlusionSamples.record(isVisible: surface.isOcclusionVisible)
         digests.insert(Data(SHA256.hash(data: frame.preview.rgba)))
         delivered += 1
+        watchdog.frameDelivered()
+        if delivered % 25 == 0 { onProgress(delivered, distinctFrames, occlusionSamples) }
     }
 
     func finish() {
@@ -413,8 +620,9 @@ private final class TrialLifecycle {
     private let packageLabel = NSTextField(labelWithString: "尚未选择场景包")
     private let textureField = NSTextField()
     private let displayPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let consentButton = NSButton(checkboxWithTitle: "已获当次许可，可短时覆盖所选桌面", target: nil, action: nil)
+    private let consentButton = NSButton(checkboxWithTitle: "已获当次许可，可覆盖所选桌面", target: nil, action: nil)
     private let startButton = NSButton(title: "开始 5 秒桌面试验", target: nil, action: nil)
+    private let longStartButton = NSButton(title: "开始 5 分钟桌面试验", target: nil, action: nil)
     private let stopButton = NSButton(title: "停止并清理", target: nil, action: nil)
     private let spaceMonitorButton = NSButton(title: "监听 Space 通知 20 秒", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "隔离开发试验；不是正式 Scene 壁纸")
@@ -423,6 +631,8 @@ private final class TrialLifecycle {
     private var work: Task<Void, Never>?
     private var delivery: WESceneFrameDelivery?
     private var diagnostics: TrialDiagnostics?
+    private var watchdog: TrialWatchdog?
+    private var activeSink: DesktopTrialSink?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private let lifecycle = TrialLifecycle()
     private var spaceGate = TrialSpaceGate()
@@ -430,10 +640,10 @@ private final class TrialLifecycle {
     private var spaceMonitorCount = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 360),
                               styleMask: [.titled, .closable, .miniaturizable],
                               backing: .buffered, defer: false)
-        window.title = "Scene 桌面试验控制 · 最多 5 秒"
+        window.title = "Scene 桌面试验控制 · 最多 5 分钟"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -450,8 +660,11 @@ private final class TrialLifecycle {
         consentButton.action = #selector(consentChanged)
         consentButton.state = .off
         startButton.target = self
-        startButton.action = #selector(startTrial)
+        startButton.action = #selector(startShortTrial)
         startButton.isEnabled = false
+        longStartButton.target = self
+        longStartButton.action = #selector(startLongTrial)
+        longStartButton.isEnabled = false
         stopButton.target = self
         stopButton.action = #selector(stopFromButton)
         stopButton.isEnabled = false
@@ -459,9 +672,9 @@ private final class TrialLifecycle {
         spaceMonitorButton.action = #selector(startSpaceMonitor)
         statusLabel.textColor = .secondaryLabelColor
 
-        let note = NSTextField(labelWithString: "启动控制窗口不会改变桌面；手动确认后才会短时覆盖所选背景。不修改系统壁纸或 phonto。")
+        let note = NSTextField(labelWithString: "启动控制窗口不会改变桌面；手动确认后才会有界覆盖所选背景。不修改系统壁纸或 phonto。")
         note.lineBreakMode = .byWordWrapping
-        let actions = NSStackView(views: [startButton, stopButton])
+        let actions = NSStackView(views: [startButton, longStartButton, stopButton])
         actions.orientation = .horizontal
         actions.spacing = 12
         let stack = NSStackView(views: [note, row, textureField, displayPopup, consentButton,
@@ -500,8 +713,10 @@ private final class TrialLifecycle {
     }
 
     private func updateStartAvailability() {
-        startButton.isEnabled = packageURL != nil && !displayIDs.isEmpty &&
-                                consentButton.state == .on && work == nil && !spaceMonitorActive
+        let available = packageURL != nil && !displayIDs.isEmpty &&
+                        consentButton.state == .on && work == nil && !spaceMonitorActive
+        startButton.isEnabled = available
+        longStartButton.isEnabled = available
     }
 
     @objc private func consentChanged() { updateStartAvailability() }
@@ -565,7 +780,7 @@ private final class TrialLifecycle {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.message = "选择单个 scene.pkg；只读加载，桌面试验最多 5 秒"
+        panel.message = "选择单个 scene.pkg；只读加载，桌面试验最多 5 分钟"
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             self?.packageURL = url
@@ -574,7 +789,10 @@ private final class TrialLifecycle {
         }
     }
 
-    @objc private func startTrial() {
+    @objc private func startShortTrial() { startTrial(durationSeconds: 5) }
+    @objc private func startLongTrial() { startTrial(durationSeconds: 300) }
+
+    private func startTrial(durationSeconds: Double) {
         guard work == nil, consentButton.state == .on, let packageURL else { return }
         let texture = textureField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !texture.isEmpty, !texture.hasPrefix("/"), !texture.contains(".."),
@@ -591,7 +809,11 @@ private final class TrialLifecycle {
             populateDisplays()
             return
         }
-        do { diagnostics = try TrialDiagnostics(url: TrialDiagnostics.defaultURL, displayID: snapshot.id) }
+        do {
+            diagnostics = try TrialDiagnostics(url: TrialDiagnostics.defaultURL,
+                                               displayID: snapshot.id,
+                                               durationSeconds: durationSeconds)
+        }
         catch {
             statusLabel.stringValue = "无法写入试验诊断摘要：\(error.localizedDescription)"
             return
@@ -599,13 +821,15 @@ private final class TrialLifecycle {
         do { try lifecycle.start() }
         catch { statusLabel.stringValue = error.localizedDescription; return }
         startButton.isEnabled = false
+        longStartButton.isEnabled = false
         consentButton.isEnabled = false
         textureField.isEnabled = false
         displayPopup.isEnabled = false
         stopButton.isEnabled = true
-        statusLabel.stringValue = "正在只读加载；试验显示面建立后最多交付 5 秒…"
+        statusLabel.stringValue = "正在只读加载；试验显示面建立后最多交付 \(Int(durationSeconds)) 秒…"
         work = Task { [weak self] in
-            await self?.perform(packageURL: packageURL, texture: texture, snapshot: snapshot)
+            await self?.perform(packageURL: packageURL, texture: texture,
+                                snapshot: snapshot, durationSeconds: durationSeconds)
         }
     }
 
@@ -613,6 +837,7 @@ private final class TrialLifecycle {
 
     private func requestStop(reason: String, cause: TrialStopCause) {
         guard lifecycle.requestStop() else { return }
+        watchdog?.stopRequested()
         diagnostics?.record("stopRequested", stopRequest: reason, stopCause: cause)
         statusLabel.stringValue = reason
         stopButton.isEnabled = false
@@ -620,7 +845,18 @@ private final class TrialLifecycle {
         if let delivery { Task { await delivery.requestStop() } }
     }
 
-    private func perform(packageURL: URL, texture: String, snapshot: TrialDisplaySnapshot) async {
+    private func forceCleanup() {
+        guard lifecycle.requestStop() || activeSink != nil else { return }
+        activeSink?.finish()
+        diagnostics?.forcedCleanup(deliveredFrames: activeSink?.delivered,
+                                   distinctFrames: activeSink?.distinctFrames)
+        activeSink = nil
+        watchdog?.finish()
+        finish(exitCode: 3)
+    }
+
+    private func perform(packageURL: URL, texture: String, snapshot: TrialDisplaySnapshot,
+                         durationSeconds: Double) async {
         var source: WESceneRealtimeSceneSession?
         var sink: DesktopTrialSink?
         var deliveryOwnsResources = false
@@ -638,24 +874,45 @@ private final class TrialLifecycle {
             try Task.checkCancellation()
             let opened = try await WESceneRealtimeSceneSession.open(packageData: data, videoTexturePath: texture)
             source = opened
+            try await opened.setLooping(true)
             diagnostics?.record("sceneOpened")
             try Task.checkCancellation()
             guard let screen = NSScreen.screens.first(where: { snapshot.matches($0) }) else {
                 throw DesktopTrialError.invalid("显示器布局变化，试验未启动")
             }
-            let limits = try WESceneFrameDeliveryLimits(durationSeconds: 5, pollHz: 10,
-                                                        maxDimension: 640, maxFrames: 50)
+            let limits = try WESceneFrameDeliveryLimits(durationSeconds: durationSeconds,
+                                                        pollHz: 10, maxDimension: 640,
+                                                        maxFrames: Int(durationSeconds * 10))
             spaceGate.surfaceWillOpen(at: ProcessInfo.processInfo.systemUptime)
             let surface = try DesktopTrialSurface(screen: screen, snapshot: snapshot)
             diagnostics?.record("surfaceCreated", surfaceWindowNumber: surface.windowNumber)
-            let frameSink = DesktopTrialSink(surface: surface)
+            let watchdog = TrialWatchdog(duration: durationSeconds,
+                onStop: { [weak self] cause in
+                    Task { @MainActor [weak self] in
+                        self?.requestStop(reason: "桌面看门狗触发（\(cause.rawValue)），正在清理…",
+                                          cause: cause)
+                    }
+                }, onForceCleanup: { [weak self] in
+                    Task { @MainActor [weak self] in self?.forceCleanup() }
+                })
+            self.watchdog = watchdog
+            let frameSink = DesktopTrialSink(surface: surface, watchdog: watchdog) { [weak self] frames, distinct, occlusion in
+                self?.diagnostics?.recordProgress(deliveredFrames: frames,
+                                                   distinctFrames: distinct,
+                                                   occlusion: occlusion)
+            }
             sink = frameSink
+            activeSink = frameSink
             let delivery = WESceneFrameDelivery(source: opened, sink: frameSink, limits: limits)
             self.delivery = delivery
             deliveryOwnsResources = true
             diagnostics?.record("delivering")
+            watchdog.start()
             let summary = try await delivery.run()
             self.delivery = nil
+            watchdog.finish()
+            activeSink = nil
+            diagnostics?.recordLoops(await opened.completedLoops())
             diagnostics?.recordOcclusion(frameSink.occlusionSamples)
             try Task.checkCancellation()
             guard summary.deliveredFrames >= 2, frameSink.distinctFrames >= 2 else {
@@ -670,6 +927,9 @@ private final class TrialLifecycle {
             finish(exitCode: 0)
         } catch {
             self.delivery = nil
+            watchdog?.finish()
+            activeSink = nil
+            if let source { diagnostics?.recordLoops(await source.completedLoops()) }
             if !deliveryOwnsResources { await source?.close() }
             if let sink { diagnostics?.recordOcclusion(sink.occlusionSamples) }
             diagnostics?.fail(error, deliveredFrames: sink?.delivered,
@@ -694,6 +954,7 @@ private final class TrialLifecycle {
 
     private func finish(exitCode: Int32) {
         guard lifecycle.finish() else { return }
+        watchdog?.finish()
         for (center, token) in observers { center.removeObserver(token) }
         observers.removeAll()
         controlWindow?.delegate = nil
@@ -709,6 +970,8 @@ private final class TrialLifecycle {
             do {
                 try TrialLifecycle.selfTest()
                 try TrialSpaceGate.selfTest()
+                try TrialWatchdogClock.selfTest()
+                try TrialWatchdog.selfTest()
                 try TrialOcclusionSamples.selfTest()
                 try TrialRasterImage.selfTest()
                 try TrialDiagnostics.selfTest()

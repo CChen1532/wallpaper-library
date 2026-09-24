@@ -86,6 +86,15 @@ func runFrameDeliveryChecks(_ c: inout Checker) async throws {
         rejectsInvalidLimits = false
     } catch { rejectsInvalidLimits = true }
     c.check(rejectsInvalidLimits, "非有限帧交付时长拒绝")
+    let longLimits = try WESceneFrameDeliveryLimits(durationSeconds: 300, pollHz: 10,
+                                                     maxDimension: 640, maxFrames: 3000)
+    c.check(longLimits.durationSeconds == 300 && longLimits.maxFrames == 3000,
+            "五分钟桌面试验帧交付边界可用")
+    let rejectsOverlong = (try? WESceneFrameDeliveryLimits(durationSeconds: 300.1, pollHz: 10,
+                                                           maxDimension: 640, maxFrames: 3000)) == nil
+    let rejectsExtraFrame = (try? WESceneFrameDeliveryLimits(durationSeconds: 300, pollHz: 10,
+                                                             maxDimension: 640, maxFrames: 3001)) == nil
+    c.check(rejectsOverlong && rejectsExtraFrame, "超过五分钟或三千帧的交付限额拒绝")
 
     let limits = try WESceneFrameDeliveryLimits(durationSeconds: 1, pollHz: 10,
                                                 maxDimension: 1, maxFrames: 2)

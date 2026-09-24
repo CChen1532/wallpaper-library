@@ -22,9 +22,9 @@ public struct WESceneFrameDeliveryLimits: Sendable {
     public let maxFrames: Int
 
     public init(durationSeconds: Double, pollHz: Int, maxDimension: Int, maxFrames: Int) throws {
-        guard durationSeconds.isFinite, (0.1...15).contains(durationSeconds),
+        guard durationSeconds.isFinite, (0.1...300).contains(durationSeconds),
               (2...30).contains(pollHz), (1...960).contains(maxDimension),
-              (1...300).contains(maxFrames) else {
+              (1...3000).contains(maxFrames) else {
             throw ProbeError.invalid("无窗口帧交付限额无效")
         }
         self.durationSeconds = durationSeconds
