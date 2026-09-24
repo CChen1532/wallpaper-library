@@ -43,7 +43,7 @@ public struct MirageSceneRuntime {
     }
 
     public func trialArguments(scenePackage: URL, displayID: UInt32,
-                               durationSeconds: Int = 5) throws -> [String] {
+                               durationSeconds: Int = 5, followFocus: Bool = false) throws -> [String] {
         guard displayID != 0 else { throw MirageSceneBridgeError.invalid("显示器 ID 必须非零") }
         guard durationSeconds == 5 || durationSeconds == 60 else {
             throw MirageSceneBridgeError.invalid("仅允许 5 秒或 60 秒的隔离试验")
@@ -54,9 +54,11 @@ public struct MirageSceneRuntime {
               let bytes = values.fileSize, bytes > 0, bytes <= 256 * 1024 * 1024 else {
             throw MirageSceneBridgeError.invalid("仅接受不超过 256 MiB 的普通 scene.pkg")
         }
-        return ["--display-id", String(displayID), "--fps", "30", "--muted", "--no-spectrum",
+        var arguments = ["--display-id", String(displayID), "--fps", "30", "--muted", "--no-spectrum",
                 "--control-stdin", "--deferred-show", "--run-seconds", String(durationSeconds + 90),
                 assets.path, scenePackage.path]
+        if followFocus { arguments.insert("--follow-focus", at: arguments.count - 2) }
+        return arguments
     }
 
     public func environment() -> [String: String] {
@@ -80,6 +82,7 @@ public final class MirageSceneChild: @unchecked Sendable {
     private let condition = NSCondition()
     private var pending = Data()
     private var observed: Set<String> = []
+    private var lastMovedDisplayID: UInt32?
     private var exitCode: Int32?
     private var errorTail = ""
     private var started = false
@@ -156,6 +159,31 @@ public final class MirageSceneChild: @unchecked Sendable {
         try input.fileHandleForWriting.write(contentsOf: data)
     }
 
+    public func move(to displayID: UInt32) throws {
+        guard displayID != 0, process.isRunning else {
+            throw MirageSceneBridgeError.invalid("目标显示器无效或渲染进程已退出")
+        }
+        let data = Data("{\"cmd\":\"moveDisplay\",\"displayID\":\(displayID)}\n".utf8)
+        try input.fileHandleForWriting.write(contentsOf: data)
+    }
+
+    public func waitForMove(to displayID: UInt32, timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while lastMovedDisplayID != displayID {
+            if observed.contains("display-move-failed") {
+                throw MirageSceneBridgeError.failed("渲染窗口跨屏移动失败：\(errorTail)")
+            }
+            if let exitCode {
+                throw MirageSceneBridgeError.failed("渲染器在跨屏移动时退出（\(exitCode)）：\(errorTail)")
+            }
+            if !condition.wait(until: deadline) {
+                throw MirageSceneBridgeError.failed("等待渲染窗口跨屏移动超时：\(displayID)")
+            }
+        }
+    }
+
     public func stop() {
         guard started else { return }
         if process.isRunning {
@@ -214,6 +242,9 @@ public final class MirageSceneChild: @unchecked Sendable {
             if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                let event = object["event"] as? String, event.count <= 80 {
                 observed.insert(event)
+                if event == "display-moved", let number = object["display_id"] as? NSNumber {
+                    lastMovedDisplayID = number.uint32Value
+                }
                 condition.broadcast()
             }
         }

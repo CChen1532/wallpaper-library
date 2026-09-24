@@ -5,20 +5,28 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mode="${1:-default}"
-[[ "$#" -le 1 && ( "$mode" == 'default' || "$mode" == '--single-space' ) ]] || {
-    printf 'Usage: %s [--single-space]\n' "$0" >&2; exit 2;
+[[ "$#" -le 1 && ( "$mode" == 'default' || "$mode" == '--single-space' || "$mode" == '--focus-follow' ) ]] || {
+    printf 'Usage: %s [--single-space|--focus-follow]\n' "$0" >&2; exit 2;
 }
-if [[ "$mode" == '--single-space' ]]; then
-    mirage_root="$PWD/dist/MirageSingleSpaceSource"
-    target='dist/MirageSingleSpaceRuntime'
-    patch="$PWD/patches/mirage-single-space.patch"
+if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ]]; then
+    if [[ "$mode" == '--single-space' ]]; then
+        mirage_root="$PWD/dist/MirageSingleSpaceSource"
+        target='dist/MirageSingleSpaceRuntime'
+        patch="$PWD/patches/mirage-single-space.patch"
+        expected_files='SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm'
+    else
+        mirage_root="$PWD/dist/MirageFocusFollowSource"
+        target='dist/MirageFocusFollowRuntime'
+        patch="$PWD/patches/mirage-focus-follow.patch"
+        expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+    fi
     [[ -d "$mirage_root" && ! -L "$mirage_root" && -f "$patch" ]] || {
-        printf 'Isolated single-Space source or patch is missing\n' >&2; exit 2;
+        printf 'Isolated source or patch is missing\n' >&2; exit 2;
     }
     git -C "$mirage_root" apply --reverse --check "$patch" || {
-        printf 'Single-Space patch is not applied\n' >&2; exit 2;
+        printf 'Isolated patch is not applied\n' >&2; exit 2;
     }
-    [[ "$(git -C "$mirage_root" diff --name-only)" == 'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm' ]] || {
+    [[ "$(git -C "$mirage_root" diff --name-only)" == "$expected_files" ]] || {
         printf 'Isolated source has unexpected tracked changes\n' >&2; exit 2;
     }
 else
@@ -37,10 +45,12 @@ brew_vulkan_loader="$brew_root/opt/vulkan-loader/lib/libvulkan.1.dylib"
 [[ -x "$source_renderer" && -d "$mirage_root/assets" && -f "$brew_icd" && -f "$brew_moltenvk" && -f "$brew_vulkan_loader" ]] || {
     printf 'Source renderer, assets, Vulkan Loader, or MoltenVK is missing\n' >&2; exit 2;
 }
-if [[ "$mode" == '--single-space' ]]; then
-    [[ "$source_renderer" -nt "$mirage_root/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm" ]] || {
-        printf 'Single-Space renderer is older than the patched desktop host; rebuild first\n' >&2; exit 2;
-    }
+if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ]]; then
+    while IFS= read -r changed_file; do
+        [[ "$source_renderer" -nt "$mirage_root/$changed_file" ]] || {
+            printf 'Renderer is older than patched source; rebuild first: %s\n' "$changed_file" >&2; exit 2;
+        }
+    done <<< "$expected_files"
 fi
 [[ ! -e "$target" && ! -L "$target" ]] || { printf 'Runtime already exists: %s\n' "$target" >&2; exit 2; }
 
