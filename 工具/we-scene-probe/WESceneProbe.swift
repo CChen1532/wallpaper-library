@@ -4,13 +4,22 @@ import CryptoKit
 private actor OffscreenDigestSink: WESceneFrameSink {
     private var digests: [String] = []
     private var finished = false
+    private var size: (Int, Int)?
+    private var frameMode: String?
 
     func accept(_ frame: WESceneRealtimeSceneFrame) throws {
         guard !finished else { throw ProbeError.invalid("无窗口接收端已关闭") }
+        if size == nil {
+            size = (frame.preview.width, frame.preview.height)
+            frameMode = try JSONDecoder().decode(PreviewSummary.self,
+                                                 from: frame.preview.diagnosticsJSON).frameMode
+        }
         digests.append(SHA256.hash(data: frame.preview.rgba).map { String(format: "%02x", $0) }.joined())
     }
     func finish() { finished = true }
-    func result() -> ([String], Bool) { (digests, finished) }
+    func result() -> ([String], Bool, Int, Int, String) {
+        (digests, finished, size?.0 ?? 0, size?.1 ?? 0, frameMode ?? "none")
+    }
 }
 
 // MARK: - 命令
@@ -37,6 +46,7 @@ func usage() {
       we-scene-probe loop-probe <scene.pkg> <materials/name.tex>  静音无窗口验证轮询驱动的自动片尾循环
       we-scene-probe stability-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge]  3-120秒有界无窗口合成统计
       we-scene-probe delivery-probe <scene.pkg> <materials/name.tex> <seconds> [poll-hz] [max-edge] [max-frames]  单路有界无窗口交付，不控制桌面
+      we-scene-probe metal-compare <scene.pkg> <materials/name.tex> [max-edge]  同帧对照CPU与Metal受限合成，不控制桌面
     """)
 }
 
@@ -52,12 +62,12 @@ do {
 
     case "delivery-probe":
         guard (5...8).contains(args.count), let duration = Double(args[4]),
-              duration.isFinite, (1...5).contains(duration) else { usage(); exit(2) }
+              duration.isFinite, (1...30).contains(duration) else { usage(); exit(2) }
         let pollHz = args.count >= 6 ? (Int(args[5]) ?? 0) : 5
         let maxEdge = args.count >= 7 ? (Int(args[6]) ?? 0) : 640
         let maxFrames = args.count == 8 ? (Int(args[7]) ?? 0) : 30
-        guard (2...10).contains(pollHz), (1...960).contains(maxEdge),
-              (2...50).contains(maxFrames) else { usage(); exit(2) }
+        guard (2...30).contains(pollHz), (1...2560).contains(maxEdge),
+              (2...900).contains(maxFrames) else { usage(); exit(2) }
         let limits = try WESceneFrameDeliveryLimits(durationSeconds: duration, pollHz: pollHz,
                                                     maxDimension: maxEdge, maxFrames: maxFrames)
         let packageURL = URL(fileURLWithPath: args[2])
@@ -75,13 +85,15 @@ do {
         let sink = OffscreenDigestSink()
         let delivery = WESceneFrameDelivery(source: session, sink: sink, limits: limits)
         let summary = try await delivery.run()
-        let (digests, finished) = await sink.result()
+        let (digests, finished, outputWidth, outputHeight, frameMode) = await sink.result()
         let cache = await session.cacheStats()
         let report: [String: Any] = ["schemaVersion": 1, "probeMode": "boundedOffscreenFrameDelivery",
                                      "desktopAttached": false, "playableScene": false, "faithful": false,
                                      "pollAttempts": summary.pollAttempts,
                                      "deliveredFrames": summary.deliveredFrames,
                                      "distinctFrames": Set(digests).count,
+                                     "outputWidth": outputWidth, "outputHeight": outputHeight,
+                                     "frameMode": frameMode,
                                      "elapsedSeconds": summary.elapsedSeconds,
                                      "stopReason": summary.stopReason.rawValue,
                                      "sinkFinished": finished,
@@ -89,6 +101,59 @@ do {
         print(String(decoding: try JSONSerialization.data(withJSONObject: report,
             options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
         if Set(digests).count < 2 || !finished || cache.residentBytes != 0 { exit(3) }
+
+    case "metal-compare":
+        guard (4...5).contains(args.count), SceneMetalCompositor.available() else { usage(); exit(2) }
+        let maxEdge = args.count == 5 ? (Int(args[4]) ?? 0) : 960
+        guard (1...2560).contains(maxEdge) else { usage(); exit(2) }
+        let packageData = try Data(contentsOf: URL(fileURLWithPath: args[2]), options: .mappedIfSafe)
+        guard packageData.count <= 64 * 1024 * 1024 else { throw ProbeError.invalid("对照样本超过64MiB") }
+        let package = try parsePkg(packageData)
+        let video = try await WESceneRealtimeVideoSession.open(packageData: packageData,
+                                                                videoTexturePath: args[3])
+        try await video.play()
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        var observed: WESceneRealtimeVideoFrame?
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let frame = try await video.poll() { observed = frame; break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard let observed else { throw ProbeError.invalid("3秒内没有取得视频帧") }
+        let injected = WESceneVideoTextureFrame(width: observed.width, height: observed.height,
+            rgba: observed.rgba, durationSeconds: video.durationSeconds,
+            requestedSeconds: observed.itemSeconds, actualSeconds: observed.displaySeconds,
+            texturePath: args[3])
+        let cpu = try SceneCompositor(package: package, videoFrame: injected,
+            videoFrameKind: .windowlessProbe).render(maxDimension: maxEdge)
+        let plan = try SceneCompositor(package: package, videoFrame: injected,
+            videoFrameKind: .windowlessProbe).prepare(maxDimension: maxEdge)
+        let gpu = try SceneMetalCompositor(plan: plan).render(videoRGBA: observed.rgba,
+            itemSeconds: observed.itemSeconds, displaySeconds: observed.displaySeconds,
+            durationSeconds: video.durationSeconds, texturePath: args[3])
+        guard cpu.width == gpu.width, cpu.height == gpu.height, cpu.rgba.count == gpu.rgba.count else {
+            throw ProbeError.invalid("CPU与Metal画幅不一致")
+        }
+        var totalDifference = 0
+        var largestDifference = 0
+        var changedChannels = 0
+        for index in cpu.rgba.indices {
+            let difference = abs(Int(cpu.rgba[index]) - Int(gpu.rgba[index]))
+            totalDifference += difference
+            largestDifference = max(largestDifference, difference)
+            if difference > 2 { changedChannels += 1 }
+        }
+        let report: [String: Any] = ["schemaVersion": 1, "desktopAttached": false,
+            "width": cpu.width, "height": cpu.height,
+            "meanAbsoluteChannelDifference": Double(totalDifference) / Double(cpu.rgba.count),
+            "maxChannelDifference": largestDifference,
+            "channelsOverTwo": changedChannels, "totalChannels": cpu.rgba.count]
+        print(String(decoding: try JSONSerialization.data(withJSONObject: report,
+            options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+        guard Double(totalDifference) / Double(cpu.rgba.count) < 0.02,
+              Double(changedChannels) / Double(cpu.rgba.count) < 0.001 else {
+            throw ProbeError.invalid("Metal 与 CPU 基础图差异超过受限对照阈值")
+        }
+        await video.close()
 
     case "pkg":
         guard args.count >= 3 else { usage(); exit(2) }

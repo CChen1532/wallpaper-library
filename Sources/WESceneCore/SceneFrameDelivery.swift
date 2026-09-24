@@ -23,8 +23,8 @@ public struct WESceneFrameDeliveryLimits: Sendable {
 
     public init(durationSeconds: Double, pollHz: Int, maxDimension: Int, maxFrames: Int) throws {
         guard durationSeconds.isFinite, (0.1...300).contains(durationSeconds),
-              (2...30).contains(pollHz), (1...960).contains(maxDimension),
-              (1...3000).contains(maxFrames) else {
+              (2...30).contains(pollHz), (1...2560).contains(maxDimension),
+              (1...9000).contains(maxFrames) else {
             throw ProbeError.invalid("无窗口帧交付限额无效")
         }
         self.durationSeconds = durationSeconds
@@ -45,6 +45,23 @@ public struct WESceneFrameDeliverySummary: Sendable {
     public let deliveredFrames: Int
     public let elapsedSeconds: Double
     public let stopReason: WESceneFrameDeliveryStopReason
+}
+
+/// Schedule polls from their start time. Rendering time counts toward the
+/// interval, so a 60 ms frame at 30 Hz does not incur another 33 ms wait.
+struct WEScenePollPacer {
+    private var nextPollAt: TimeInterval
+    private let interval: TimeInterval
+
+    init(startedAt: TimeInterval, pollHz: Int) {
+        nextPollAt = startedAt
+        interval = 1 / Double(pollHz)
+    }
+
+    mutating func waitSeconds(afterPollAt now: TimeInterval, remaining: TimeInterval) -> TimeInterval {
+        nextPollAt = max(nextPollAt + interval, now)
+        return max(0, min(nextPollAt - now, remaining))
+    }
 }
 
 /// One-shot, bounded bridge for a future display sink. It is not a desktop player.
@@ -80,6 +97,7 @@ public actor WESceneFrameDelivery {
             try Task.checkCancellation()
             try await source.play()
             started = ProcessInfo.processInfo.systemUptime
+            var pacer = WEScenePollPacer(startedAt: started, pollHz: limits.pollHz)
             while true {
                 try Task.checkCancellation()
                 if stopRequested { reason = .requested; break }
@@ -95,8 +113,11 @@ public actor WESceneFrameDelivery {
                 }
                 let remaining = limits.durationSeconds - (ProcessInfo.processInfo.systemUptime - started)
                 if remaining > 0 {
-                    let delay = min(1 / Double(limits.pollHz), remaining)
-                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    let delay = pacer.waitSeconds(afterPollAt: ProcessInfo.processInfo.systemUptime,
+                                                  remaining: remaining)
+                    if delay > 0 {
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    }
                 }
             }
             let elapsed = ProcessInfo.processInfo.systemUptime - started

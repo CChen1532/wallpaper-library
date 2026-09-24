@@ -71,7 +71,7 @@ private struct RasterLayer {
     let parent: String?
 }
 
-private struct ColorKeyEffect {
+struct ColorKeyEffect {
     let red: Double
     let green: Double
     let blue: Double
@@ -88,6 +88,30 @@ private struct ColorKeyEffect {
         let blend = t * t * (3 - 2 * t)
         return alpha * (1 - blend) + blend
     }
+}
+
+struct ScenePreparedLayer {
+    let texture: DecodedTexture?
+    let textureWidth: Int
+    let textureHeight: Int
+    let cropWidth: Int
+    let cropHeight: Int
+    let size: Point2
+    let inverse: Affine2
+    let alpha: Double
+    let colorKey: ColorKeyEffect?
+}
+
+struct ScenePreparedFramePlan {
+    let width: Int
+    let height: Int
+    let sceneWidth: Int
+    let sceneHeight: Int
+    let clearRGBA: [UInt8]
+    let layers: [ScenePreparedLayer]
+    let diagnostics: [PreviewDiagnostic]
+    let drawn: [String]
+    let skipped: [String]
 }
 
 enum SceneVideoFrameKind: Equatable {
@@ -386,6 +410,85 @@ final class SceneCompositor {
                 canvas[destination+3] = UInt8(min(255, max(0, Int((outAlpha*255).rounded()))))
             }
         }
+    }
+
+    /// Resolve scene structure and static textures once for the optional Metal path.
+    /// This keeps the same restricted layer/effect rules as the CPU approximation.
+    func prepare(maxDimension: Int) throws -> ScenePreparedFramePlan {
+        guard (1...4096).contains(maxDimension) else { throw ProbeError.invalid("预览最大边长必须在1...4096") }
+        let root = try json("scene.json")
+        guard let general = root["general"] as? [String: Any],
+              let projection = general["orthogonalprojection"] as? [String: Any],
+              let sceneWidth = projection["width"] as? Int,
+              let sceneHeight = projection["height"] as? Int,
+              let objects = root["objects"] as? [Any],
+              sceneWidth > 0, sceneHeight > 0, sceneWidth <= 16384, sceneHeight <= 16384 else {
+            throw ProbeError.invalid("缺少有效 orthogonalprojection/objects")
+        }
+        let ratio = min(1.0, Double(maxDimension) / Double(max(sceneWidth, sceneHeight)))
+        let width = max(1, Int((Double(sceneWidth) * ratio).rounded()))
+        let height = max(1, Int((Double(sceneHeight) * ratio).rounded()))
+        _ = try checkedRGBAByteCount(width: width, height: height)
+        var clearRGBA: [UInt8] = [0, 0, 0, 0]
+        if (general["clearenabled"] as? Bool) == true, let color = general["clearcolor"] {
+            let rgb = try vector(color, fallback: Point2(x: 0, y: 0), layer: "$scene", field: "clearcolor")
+            let parts = (color as? String)?.split(whereSeparator: { $0.isWhitespace }) ?? []
+            let blue = parts.count >= 3 ? (Double(parts[2]) ?? 0) : 0
+            let values = [rgb.x, rgb.y, blue]
+            guard values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw ProbeError.invalid("clearcolor非法") }
+            clearRGBA = values.map { UInt8(($0 * 255).rounded()) } + [255]
+        }
+        try flatten(objects, prefix: "$.objects", inherited: nil)
+        var prepared: [ScenePreparedLayer] = []
+        for index in layers.indices {
+            let layer = layers[index]
+            guard layer.object["image"] != nil else {
+                if layer.object["particle"] != nil || layer.object["text"] != nil ||
+                    layer.object["effects"] != nil || layer.object["sound"] != nil {
+                    note("unsupportedLayer", layer.location, "该对象类型未静态合成")
+                }
+                continue
+            }
+            do {
+                if let effects = layer.object["effects"] as? [[String: Any]], !effects.isEmpty {
+                    let files = effects.compactMap { $0["file"] as? String }.prefix(3).map { String($0.prefix(160)) }
+                    let suffix = files.isEmpty ? "" : ": " + files.joined(separator: ", ")
+                    if effects.count != 1 || effects[0]["file"] as? String != "effects/colorkey/effect.json" {
+                        note("effectsOmitted", layer.location, "效果器未渲染，仅显示基础图\(suffix)")
+                    }
+                }
+                let blendMode = layer.object["colorBlendMode"] as? Int ?? 0
+                guard blendMode == 0 else { throw ProbeError.unsupported("图层混合模式 \(blendMode)") }
+                let (transform, alpha, show) = try world(index)
+                guard show, alpha > 0 else { continue }
+                let (texture, size) = try texture(for: layer)
+                let key = try colorKey(for: layer)
+                if key != nil { note("colorKeyApproximation", layer.location, "按已识别单pass参数GPU抠色；非完整效果链或桌面播放") }
+                else if let effects = layer.object["effects"] as? [[String: Any]],
+                        effects.count == 1, effects[0]["file"] as? String == "effects/colorkey/effect.json" {
+                    note("colorKeyDisabled", layer.location, "colorkey 已禁用，按原图绘制")
+                }
+                guard let inverse = transform.inverse() else { throw ProbeError.invalid("图层变换不可逆（零缩放）") }
+                let cropWidth = min(texture.width, texture.imageWidth)
+                let cropHeight = min(texture.height, texture.imageHeight)
+                guard cropWidth > 0, cropHeight > 0 else { throw ProbeError.invalid("纹理裁剪尺寸非法") }
+                let isVideo = texture.embeddedFormat == .mp4
+                prepared.append(ScenePreparedLayer(texture: isVideo ? nil : texture,
+                    textureWidth: texture.width, textureHeight: texture.height,
+                    cropWidth: cropWidth, cropHeight: cropHeight,
+                    size: size, inverse: inverse, alpha: alpha, colorKey: key))
+                drawn.append(layer.location)
+            } catch {
+                skipped.append(layer.location)
+                note("layerSkipped", layer.location, String(describing: error))
+            }
+        }
+        if videoFrame != nil && !videoFrameApplied {
+            throw ProbeError.unsupported("所选视频纹理未被可合成图层引用")
+        }
+        return ScenePreparedFramePlan(width: width, height: height, sceneWidth: sceneWidth,
+            sceneHeight: sceneHeight, clearRGBA: clearRGBA, layers: prepared,
+            diagnostics: diagnostics, drawn: drawn, skipped: skipped)
     }
 
     func render(maxDimension: Int = 1600) throws -> WESceneStaticPreview {

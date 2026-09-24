@@ -424,7 +424,7 @@ private final class TrialDiagnostics {
 
 private enum TrialRasterImage {
     static func make(width: Int, height: Int, rgba: Data) throws -> NSImage {
-        guard (1...640).contains(width), (1...640).contains(height),
+        guard (1...1920).contains(width), (1...1920).contains(height),
               rgba.count == width * height * 4,
               let provider = CGDataProvider(data: rgba as CFData),
               let image = CGImage(width: width, height: height,
@@ -454,7 +454,7 @@ private enum TrialRasterImage {
               red.redComponent > 0.98, green.greenComponent > 0.98,
               blue.blueComponent > 0.98, abs(half.alphaComponent - 0.5) < 0.02,
               (try? make(width: 2, height: 2, rgba: Data([0]))) == nil,
-              (try? make(width: 641, height: 1, rgba: Data(repeating: 0, count: 641 * 4))) == nil else {
+              (try? make(width: 1921, height: 1, rgba: Data(repeating: 0, count: 1921 * 4))) == nil else {
             throw DesktopTrialError.invalid("RGBA颜色、方向、透明度或边界自检失败")
         }
     }
@@ -881,8 +881,8 @@ private final class TrialLifecycle {
                 throw DesktopTrialError.invalid("显示器布局变化，试验未启动")
             }
             let limits = try WESceneFrameDeliveryLimits(durationSeconds: durationSeconds,
-                                                        pollHz: 10, maxDimension: 640,
-                                                        maxFrames: Int(durationSeconds * 10))
+                                                        pollHz: 30, maxDimension: 1920,
+                                                        maxFrames: Int(durationSeconds * 30))
             spaceGate.surfaceWillOpen(at: ProcessInfo.processInfo.systemUptime)
             let surface = try DesktopTrialSurface(screen: screen, snapshot: snapshot)
             diagnostics?.record("surfaceCreated", surfaceWindowNumber: surface.windowNumber)

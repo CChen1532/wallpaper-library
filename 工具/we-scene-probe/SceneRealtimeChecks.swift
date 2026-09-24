@@ -79,6 +79,11 @@ private actor FakeSceneFrameSink: WESceneFrameSink {
 
 func runFrameDeliveryChecks(_ c: inout Checker) async throws {
     print("\n[8] 无窗口帧交付边界")
+    var pacer = WEScenePollPacer(startedAt: 10, pollHz: 10)
+    c.check(abs(pacer.waitSeconds(afterPollAt: 10.06, remaining: 1) - 0.04) < 0.0001 &&
+            pacer.waitSeconds(afterPollAt: 10.25, remaining: 1) == 0 &&
+            abs(pacer.waitSeconds(afterPollAt: 10.26, remaining: 1) - 0.09) < 0.0001,
+            "轮询节拍计入处理耗时且慢帧后不连续追帧")
     let rejectsInvalidLimits: Bool
     do {
         _ = try WESceneFrameDeliveryLimits(durationSeconds: .infinity, pollHz: 5,
@@ -86,15 +91,15 @@ func runFrameDeliveryChecks(_ c: inout Checker) async throws {
         rejectsInvalidLimits = false
     } catch { rejectsInvalidLimits = true }
     c.check(rejectsInvalidLimits, "非有限帧交付时长拒绝")
-    let longLimits = try WESceneFrameDeliveryLimits(durationSeconds: 300, pollHz: 10,
-                                                     maxDimension: 640, maxFrames: 3000)
-    c.check(longLimits.durationSeconds == 300 && longLimits.maxFrames == 3000,
-            "五分钟桌面试验帧交付边界可用")
-    let rejectsOverlong = (try? WESceneFrameDeliveryLimits(durationSeconds: 300.1, pollHz: 10,
-                                                           maxDimension: 640, maxFrames: 3000)) == nil
-    let rejectsExtraFrame = (try? WESceneFrameDeliveryLimits(durationSeconds: 300, pollHz: 10,
-                                                             maxDimension: 640, maxFrames: 3001)) == nil
-    c.check(rejectsOverlong && rejectsExtraFrame, "超过五分钟或三千帧的交付限额拒绝")
+    let longLimits = try WESceneFrameDeliveryLimits(durationSeconds: 300, pollHz: 30,
+                                                     maxDimension: 1920, maxFrames: 9000)
+    c.check(longLimits.durationSeconds == 300 && longLimits.maxFrames == 9000,
+            "五分钟高画质桌面试验帧交付边界可用")
+    let rejectsOverlong = (try? WESceneFrameDeliveryLimits(durationSeconds: 300.1, pollHz: 30,
+                                                           maxDimension: 1920, maxFrames: 9000)) == nil
+    let rejectsExtraFrame = (try? WESceneFrameDeliveryLimits(durationSeconds: 300, pollHz: 30,
+                                                             maxDimension: 1920, maxFrames: 9001)) == nil
+    c.check(rejectsOverlong && rejectsExtraFrame, "超过五分钟或九千帧的交付限额拒绝")
 
     let limits = try WESceneFrameDeliveryLimits(durationSeconds: 1, pollHz: 10,
                                                 maxDimension: 1, maxFrames: 2)
