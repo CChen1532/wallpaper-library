@@ -41,6 +41,28 @@ private struct TrialSpaceGate {
     }
 }
 
+private struct TrialOcclusionSamples {
+    private(set) var visible = 0
+    private(set) var occluded = 0
+    private(set) var visibleToOccluded = 0
+    private var lastVisible: Bool?
+
+    mutating func record(isVisible: Bool) {
+        if isVisible { visible += 1 } else { occluded += 1 }
+        if lastVisible == true && !isVisible { visibleToOccluded += 1 }
+        lastVisible = isVisible
+    }
+
+    static func selfTest() throws {
+        var samples = TrialOcclusionSamples()
+        for state in [false, true, true, false, false, true] { samples.record(isVisible: state) }
+        guard samples.visible == 3, samples.occluded == 3,
+              samples.visibleToOccluded == 1 else {
+            throw DesktopTrialError.invalid("桌面显示面遮挡采样统计失败")
+        }
+    }
+}
+
 /// The desktop app exits promptly after a trial. Keep a small, path-free record
 /// so a GUI launch does not lose its last completed stage or failure category.
 private struct TrialDiagnosticSnapshot: Codable {
@@ -53,6 +75,9 @@ private struct TrialDiagnosticSnapshot: Codable {
     var stopRequest: String?
     var stopCause: String?
     var ignoredStartupSpaceNotifications: Int?
+    var occlusionVisibleSamples: Int?
+    var occlusionHiddenSamples: Int?
+    var visibleToHiddenTransitions: Int?
     var pollAttempts: Int?
     var deliveredFrames: Int?
     var distinctFrames: Int?
@@ -94,6 +119,13 @@ private final class TrialDiagnostics {
     func recordIgnoredStartupSpaceNotification() {
         snapshot.ignoredStartupSpaceNotifications =
             (snapshot.ignoredStartupSpaceNotifications ?? 0) + 1
+        persistBestEffort()
+    }
+
+    func recordOcclusion(_ samples: TrialOcclusionSamples) {
+        snapshot.occlusionVisibleSamples = samples.visible
+        snapshot.occlusionHiddenSamples = samples.occluded
+        snapshot.visibleToHiddenTransitions = samples.visibleToOccluded
         persistBestEffort()
     }
 
@@ -180,6 +212,15 @@ private final class TrialDiagnostics {
         let ignored = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
         guard ignored.ignoredStartupSpaceNotifications == 2, ignored.stage == "selected" else {
             throw DesktopTrialError.invalid("启动Space通知计数或阶段边界错误")
+        }
+        var occlusion = TrialOcclusionSamples()
+        for state in [true, false] { occlusion.record(isVisible: state) }
+        ignoredReport.recordOcclusion(occlusion)
+        let occlusionReport = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
+        guard occlusionReport.occlusionVisibleSamples == 1,
+              occlusionReport.occlusionHiddenSamples == 1,
+              occlusionReport.visibleToHiddenTransitions == 1 else {
+            throw DesktopTrialError.invalid("桌面遮挡诊断摘要写入失败")
         }
         print("桌面试验无窗口诊断摘要写入、结果与失败分类自检通过")
     }
@@ -306,6 +347,7 @@ private final class TrialLifecycle {
     private var window: NSWindow?
     private let imageView = NSImageView()
     var windowNumber: Int { window?.windowNumber ?? 0 }
+    var isOcclusionVisible: Bool { window?.occlusionState.contains(.visible) ?? false }
 
     init(screen: NSScreen, snapshot: TrialDisplaySnapshot) throws {
         guard snapshot.matches(screen) else {
@@ -347,6 +389,7 @@ private final class TrialLifecycle {
     private var surface: DesktopTrialSurface?
     private var digests: Set<Data> = []
     private(set) var delivered = 0
+    private(set) var occlusionSamples = TrialOcclusionSamples()
     var distinctFrames: Int { digests.count }
 
     init(surface: DesktopTrialSurface) { self.surface = surface }
@@ -354,6 +397,7 @@ private final class TrialLifecycle {
     func accept(_ frame: WESceneRealtimeSceneFrame) throws {
         guard let surface else { throw DesktopTrialError.invalid("试验显示面已拆除") }
         try surface.present(frame)
+        occlusionSamples.record(isVisible: surface.isOcclusionVisible)
         digests.insert(Data(SHA256.hash(data: frame.preview.rgba)))
         delivered += 1
     }
@@ -612,6 +656,7 @@ private final class TrialLifecycle {
             diagnostics?.record("delivering")
             let summary = try await delivery.run()
             self.delivery = nil
+            diagnostics?.recordOcclusion(frameSink.occlusionSamples)
             try Task.checkCancellation()
             guard summary.deliveredFrames >= 2, frameSink.distinctFrames >= 2 else {
                 throw DesktopTrialError.invalid("试验未取得足够不同画面；不能视为桌面动态验收")
@@ -626,6 +671,7 @@ private final class TrialLifecycle {
         } catch {
             self.delivery = nil
             if !deliveryOwnsResources { await source?.close() }
+            if let sink { diagnostics?.recordOcclusion(sink.occlusionSamples) }
             diagnostics?.fail(error, deliveredFrames: sink?.delivered,
                               distinctFrames: sink?.distinctFrames)
             FileHandle.standardError.write("隔离桌面试验失败：\(error)\n".data(using: .utf8)!)
@@ -663,6 +709,7 @@ private final class TrialLifecycle {
             do {
                 try TrialLifecycle.selfTest()
                 try TrialSpaceGate.selfTest()
+                try TrialOcclusionSamples.selfTest()
                 try TrialRasterImage.selfTest()
                 try TrialDiagnostics.selfTest()
                 print("桌面试验RGBA颜色、方向、透明度与边界自检通过；未创建窗口")
