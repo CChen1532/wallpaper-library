@@ -12,8 +12,8 @@ public enum MirageSceneBridgeError: LocalizedError {
     }
 }
 
-/// A pinned Mirage.app bundle supplies the renderer, shader assets, Vulkan ICD,
-/// and dylibs together. The GPL source is the v1.1.4 submodule in ThirdParty.
+/// A pinned Mirage runtime tree supplies the renderer, shader assets, Vulkan
+/// ICD, and dylibs together. The GPL source is the v1.1.4 submodule in ThirdParty.
 public struct MirageSceneRuntime {
     public let app: URL
     public let executable: URL
@@ -28,11 +28,12 @@ public struct MirageSceneRuntime {
         let assets = resources.appendingPathComponent("assets", isDirectory: true)
         let icd = resources.appendingPathComponent("Renderers/vulkan/icd.d/MoltenVK_icd.json")
         let frameworks = contents.appendingPathComponent("Frameworks", isDirectory: true)
+        let vulkanLoader = frameworks.appendingPathComponent("libvulkan.1.dylib")
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: executable.path),
               fm.fileExists(atPath: assets.path), fm.fileExists(atPath: icd.path),
-              fm.fileExists(atPath: frameworks.path) else {
-            throw MirageSceneBridgeError.invalid("Mirage Scene 运行包缺少渲染器、assets、MoltenVK 或 Frameworks")
+              fm.fileExists(atPath: frameworks.path), fm.fileExists(atPath: vulkanLoader.path) else {
+            throw MirageSceneBridgeError.invalid("Mirage Scene 运行包缺少渲染器、assets、MoltenVK 或 Vulkan Loader")
         }
         self.app = app
         self.executable = executable
@@ -94,6 +95,12 @@ public final class MirageSceneChild: @unchecked Sendable {
             condition.unlock()
             throw MirageSceneBridgeError.invalid("渲染进程只能启动一次")
         }
+        // A renderer may close stdin while Process still reports it running.
+        // EPIPE must reach Swift as an error instead of terminating the host.
+        guard Darwin.fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            condition.unlock()
+            throw MirageSceneBridgeError.failed("无法为渲染器控制管道禁用 SIGPIPE")
+        }
         started = true
         condition.unlock()
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -105,7 +112,10 @@ public final class MirageSceneChild: @unchecked Sendable {
         process.terminationHandler = { [weak self] child in
             self?.finished(code: child.terminationStatus)
         }
-        do { try process.run() }
+        do {
+            try process.run()
+            try? input.fileHandleForReading.close()
+        }
         catch {
             output.fileHandleForReading.readabilityHandler = nil
             errors.fileHandleForReading.readabilityHandler = nil

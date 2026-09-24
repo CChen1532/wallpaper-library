@@ -47,7 +47,19 @@ private func selfTest() throws {
     } catch is MirageSceneBridgeError {
         failed.stop()
     }
-    print("selftest: lifecycle, JSON control, failure detection, and child cleanup passed")
+    let closedScript = folder.appendingPathComponent("closed-stdin.sh")
+    try "exec 0<&-\nprintf '%s\\n' '{\"event\":\"scene-ready\"}'\nsleep 2\n"
+        .write(to: closedScript, atomically: true, encoding: .utf8)
+    let closed = MirageSceneChild(executable: URL(fileURLWithPath: "/bin/sh"), arguments: [closedScript.path])
+    try closed.start()
+    try closed.wait(for: "scene-ready", timeout: 2)
+    do {
+        try closed.send("activate")
+        fail("关闭的控制管道未返回写入错误")
+    } catch {
+        closed.stop()
+    }
+    print("selftest: lifecycle, JSON control, failed activation, closed stdin, and cleanup passed")
 }
 
 private func verifyRuntime(_ path: String) throws {
@@ -69,7 +81,7 @@ private func verifyRuntime(_ path: String) throws {
 private func trial(_ arguments: [String]) throws {
     guard arguments.count == 5, arguments[4] == "--consent",
           let displayID = UInt32(arguments[3]) else {
-        fail("试验格式：--trial <Mirage.app> <scene.pkg> <displayID> --consent")
+        fail("试验格式：--trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
     }
     let runtime = try MirageSceneRuntime(app: URL(fileURLWithPath: arguments[1], isDirectory: true))
     let scene = URL(fileURLWithPath: arguments[2])
@@ -113,7 +125,7 @@ do {
     case "--trial":
         try trial(Array(arguments.dropFirst()))
     default:
-        fail("可用命令：--selftest | --verify-runtime <Mirage.app> | --trial <Mirage.app> <scene.pkg> <displayID> --consent")
+        fail("可用命令：--selftest | --verify-runtime <Mirage运行目录> | --trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
     }
 } catch {
     fail(error.localizedDescription)
