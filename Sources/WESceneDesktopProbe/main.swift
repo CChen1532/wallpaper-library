@@ -12,6 +12,11 @@ private enum DesktopTrialError: Error, LocalizedError {
     }
 }
 
+private enum TrialStopCause: String {
+    case user, controlWindowClosed, applicationQuit
+    case displayChanged, activeSpaceChanged, systemSleep, screensSleep
+}
+
 /// The desktop app exits promptly after a trial. Keep a small, path-free record
 /// so a GUI launch does not lose its last completed stage or failure category.
 private struct TrialDiagnosticSnapshot: Codable {
@@ -22,6 +27,7 @@ private struct TrialDiagnosticSnapshot: Codable {
     var stage: String
     var surfaceWindowNumber: Int?
     var stopRequest: String?
+    var stopCause: String?
     var pollAttempts: Int?
     var deliveredFrames: Int?
     var distinctFrames: Int?
@@ -52,10 +58,11 @@ private final class TrialDiagnostics {
     }
 
     func record(_ stage: String, surfaceWindowNumber: Int? = nil,
-                stopRequest: String? = nil) {
+                stopRequest: String? = nil, stopCause: TrialStopCause? = nil) {
         snapshot.stage = stage
         if let surfaceWindowNumber { snapshot.surfaceWindowNumber = surfaceWindowNumber }
         if let stopRequest { snapshot.stopRequest = stopRequest }
+        if let stopCause { snapshot.stopCause = stopCause.rawValue }
         persistBestEffort()
     }
 
@@ -128,6 +135,13 @@ private final class TrialDiagnostics {
         let stopped = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
         guard stopped.stage == "stopped", stopped.failureCategory == "CancellationError" else {
             throw DesktopTrialError.invalid("桌面试验主动停止分类自检失败")
+        }
+        let spaceReport = try TrialDiagnostics(url: url, displayID: 9)
+        spaceReport.record("stopRequested", stopRequest: "Space 切换", stopCause: .activeSpaceChanged)
+        spaceReport.fail(CancellationError(), deliveredFrames: 1, distinctFrames: 1)
+        let spaceStopped = try decoder.decode(TrialDiagnosticSnapshot.self, from: Data(contentsOf: url))
+        guard spaceStopped.stage == "stopped", spaceStopped.stopCause == "activeSpaceChanged" else {
+            throw DesktopTrialError.invalid("Space 停止原因未保留到终态")
         }
         print("桌面试验无窗口诊断摘要写入、结果与失败分类自检通过")
     }
@@ -413,15 +427,22 @@ private final class TrialLifecycle {
             (workspaceCenter, NSWorkspace.screensDidSleepNotification)
         ] {
             let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.environmentChanged(name.rawValue) }
+                Task { @MainActor in self?.environmentChanged(name) }
             }
             observers.append((center, token))
         }
     }
 
-    private func environmentChanged(_ reason: String) {
+    private func environmentChanged(_ name: Notification.Name) {
         if work == nil { populateDisplays(); return }
-        requestStop(reason: "环境变化（\(reason)），正在停止并清理…")
+        let cause: TrialStopCause
+        switch name {
+        case NSWorkspace.activeSpaceDidChangeNotification: cause = .activeSpaceChanged
+        case NSApplication.didChangeScreenParametersNotification: cause = .displayChanged
+        case NSWorkspace.willSleepNotification: cause = .systemSleep
+        default: cause = .screensSleep
+        }
+        requestStop(reason: "环境变化（\(name.rawValue)），正在停止并清理…", cause: cause)
     }
 
     @objc private func choosePackage() {
@@ -473,11 +494,11 @@ private final class TrialLifecycle {
         }
     }
 
-    @objc private func stopFromButton() { requestStop(reason: "用户请求停止，正在清理…") }
+    @objc private func stopFromButton() { requestStop(reason: "用户请求停止，正在清理…", cause: .user) }
 
-    private func requestStop(reason: String) {
+    private func requestStop(reason: String, cause: TrialStopCause) {
         guard lifecycle.requestStop() else { return }
-        diagnostics?.record("stopRequested", stopRequest: reason)
+        diagnostics?.record("stopRequested", stopRequest: reason, stopCause: cause)
         statusLabel.stringValue = reason
         stopButton.isEnabled = false
         work?.cancel()
@@ -544,12 +565,12 @@ private final class TrialLifecycle {
 
     func windowWillClose(_ notification: Notification) {
         if work == nil { finish(exitCode: 0) }
-        else { requestStop(reason: "控制窗口关闭，正在清理桌面试验…") }
+        else { requestStop(reason: "控制窗口关闭，正在清理桌面试验…", cause: .controlWindowClosed) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard work != nil else { return .terminateNow }
-        requestStop(reason: "应用退出请求，正在清理桌面试验…")
+        requestStop(reason: "应用退出请求，正在清理桌面试验…", cause: .applicationQuit)
         return .terminateCancel
     }
 
