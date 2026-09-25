@@ -68,6 +68,7 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var restorationPending = false
     @Published private(set) var recoveringBackdrop = false
     @Published private(set) var automaticBackdropActive = false
+    @Published private(set) var automaticBackdropImage: URL?
     private let backdropFactory: @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling
     private var worker: Task<Void, Never>?
     private var generation = UUID()
@@ -142,7 +143,7 @@ struct SceneLaunchConfiguration: Sendable {
                 try Task.checkCancellation()
                 if let backdrop {
                     try backdrop.activate(displayID: configuration.displayID) { try child.snapshot(to: $0) }
-                    await self?.backdropActivated(token: token)
+                    await self?.backdropActivated(token: token, image: backdrop.previewURL)
                 }
                 try Task.checkCancellation()
                 try child.send("activate")
@@ -162,6 +163,7 @@ struct SceneLaunchConfiguration: Sendable {
                         try child.move(to: move)
                         try await Self.waitUntil(timeout: 2) { try child.moveAcknowledged(to: move) }
                         try backdrop?.activate(displayID: move) { try child.snapshot(to: $0) }
+                        await self?.backdropActivated(token: token, image: backdrop?.previewURL)
                         await self?.moved(to: move, token: token)
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -193,9 +195,10 @@ struct SceneLaunchConfiguration: Sendable {
         displayID = nil
     }
 
-    private func backdropActivated(token: UUID) {
+    private func backdropActivated(token: UUID, image: URL?) {
         guard token == generation else { return }
         automaticBackdropActive = true
+        automaticBackdropImage = image
     }
     private func activated(token: UUID) {
         guard token == generation, phase == .starting else { return }
@@ -210,6 +213,7 @@ struct SceneLaunchConfiguration: Sendable {
         error = failure
         restorationPending = pending
         automaticBackdropActive = false
+        automaticBackdropImage = nil
         // stop() owns the final transition while awaiting cleanup.
         guard phase != .stopping else { return }
         worker = nil

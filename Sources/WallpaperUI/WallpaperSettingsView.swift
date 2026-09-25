@@ -23,6 +23,11 @@ struct WallpaperSettingsView: View {
                     .disabled(model.isWorking || scenePlayer.isActive)
                 Text("播放场景时，将当前显示器各桌面的底图临时设为场景画面；停止、换片或退出时自动恢复。")
                     .font(.callout).foregroundStyle(.secondary)
+                if let url = scenePlayer.automaticBackdropImage, let image = NSImage(contentsOf: url) {
+                    LabeledContent("当前壁纸底图", value: scenePlayer.title)
+                    Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 150)
+                        .accessibilityLabel("当前场景实际截图：" + scenePlayer.title)
+                }
                 if scenePlayer.isActive {
                     Text(scenePlayer.automaticBackdropActive ? "过渡底图已匹配；停止后可修改开关。" : "停止当前场景后可修改开关。")
                         .font(.callout).foregroundStyle(.secondary)
@@ -40,7 +45,7 @@ struct WallpaperSettingsView: View {
             } header: {
                 Text("Space 切换")
             } footer: {
-                Text("默认开启。过渡期间使用静帧，桌面中的场景仍持续动态播放。")
+                Text("每张壁纸独立截图、独立保存；换片重新截图，不复用其他壁纸底图。")
             }
             Section("关于") {
                 Button("显示器与运行状态", action: showDiagnostics)

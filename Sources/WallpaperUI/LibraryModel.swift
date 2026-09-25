@@ -67,6 +67,8 @@ import Combine
                 expectedBytes: expectedBytes, displayID: displayID,
                 preferences: scenePreferences.preferences(for: root.appendingPathComponent(name).appendingPathComponent("scene.pkg")))
             configuration.backdrop = try backdropConfiguration()
+            let sourcePackage = configuration.package
+            configuration.backdrop?.sourcePackage = sourcePackage
             await playPreparedScene(configuration)
         } catch { self.error = error.localizedDescription }
     }

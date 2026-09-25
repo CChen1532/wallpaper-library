@@ -1,5 +1,8 @@
 import Foundation
 import Darwin
+import AppKit
+import ImageIO
+import UniformTypeIdentifiers
 
 @main struct ScenePlaybackChecks {
     @MainActor static func main() async throws {
@@ -270,7 +273,7 @@ import Darwin
               "切换到同名B时加载B设置并保留A")
         await settingsModel.stopScene()
         // Automatic backdrop lifecycle uses an isolated fixture, never macOS settings.
-        let backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
+        var backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
         let backdrop = BackdropFixture()
         let backdropFocus = FocusFixture()
         let automatic = ScenePlayer(focusProvider: { backdropFocus.displayID }, backdropFactory: { _ in backdrop })
@@ -323,8 +326,24 @@ import Darwin
             sys.stdin.buffer.read()
         save('restored')
         """#.write(to: backdropConfig.helper, atomically: true, encoding: .utf8)
+        backdropConfig.sourcePackage = root.appendingPathComponent("wallpaper-A/scene.pkg")
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 12,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let fixturePNG = bitmap.representation(using: .png, properties: [:])!
+        let capturedA = try SceneBackdropCapture.capture(package: backdropConfig.sourcePackage!, state: backdropConfig.state) {
+            try fixturePNG.write(to: $0)
+        }
+        let capturedB = try SceneBackdropCapture.capture(package: root.appendingPathComponent("wallpaper-B/scene.pkg"), state: backdropConfig.state) {
+            try fixturePNG.write(to: $0)
+        }
+        check(capturedA.deletingLastPathComponent().deletingLastPathComponent() != capturedB.deletingLastPathComponent().deletingLastPathComponent(), "不同壁纸的底图目录完全隔离")
+        check(try Data(contentsOf: capturedA).prefix(8) == Data([137,80,78,71,13,10,26,10]), "底图实际编码为PNG而非只修改后缀")
+        do {
+            _ = try SceneBackdropCapture.capture(package: backdropConfig.sourcePackage!, state: backdropConfig.state) { try Data("broken".utf8).write(to: $0) }
+            preconditionFailure("bad image accepted")
+        } catch { check(true, "截图无效时拒绝应用且不复用其他壁纸") }
         let realLease = SceneBackdropLease(configuration: backdropConfig)
-        try realLease.activate(displayID: 1) { try Data("fixture".utf8).write(to: $0) }
+        try realLease.activate(displayID: 1) { try fixturePNG.write(to: $0) }
         check(backdropConfig.recoveryPending, "底图进程准备好后恢复账本仍保留")
         try realLease.finish()
         check(!backdropConfig.recoveryPending, "关闭UI管道会等待子进程复原后返回")

@@ -5,6 +5,7 @@ struct SceneBackdropConfiguration: Sendable {
     let helper: URL
     let inventory: URL
     let state: URL
+    var sourcePackage: URL?
 
     static func bundled() throws -> Self {
         let resources = (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
@@ -32,15 +33,19 @@ struct SceneBackdropConfiguration: Sendable {
 
 protocol SceneBackdropControlling: AnyObject, Sendable {
     var recoveryPending: Bool { get }
+    var previewURL: URL? { get }
     func activate(displayID: UInt32, capture: (URL) throws -> Void) throws
     func checkHealth() throws
     func finish() throws
 }
 
+extension SceneBackdropControlling { var previewURL: URL? { nil } }
+
 /// A worker owns this object. Only the bounded output buffer is touched by the
 /// pipe callback. Keeping stdin open grants a lease; EOF requests restoration.
 final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
     private let configuration: SceneBackdropConfiguration
+    private(set) var previewURL: URL?
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -86,16 +91,16 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
     }
 
     func activate(displayID: UInt32, capture: (URL) throws -> Void) throws {
-        let image = FileManager.default.temporaryDirectory
-            .appendingPathComponent("scene-backdrop-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: image) }
-        try capture(image)
+        guard let package = configuration.sourcePackage else {
+            throw BackendError.message("缺少当前壁纸身份，拒绝使用其他壁纸底图")
+        }
+        let image = try SceneBackdropCapture.capture(package: package, state: configuration.state, render: capture)
         try launch(["lease", image.path, "--spaces", "all", "--display", String(displayID)])
         let deadline = ProcessInfo.processInfo.systemUptime + 15
         while true {
             try Task.checkCancellation()
             try checkHealth()
-            if text.contains("BACKDROP_READY\n") { return }
+            if text.contains("BACKDROP_READY\n") { previewURL = image; return }
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 throw BackendError.message("自动底图准备超时")
             }
