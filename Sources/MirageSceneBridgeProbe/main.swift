@@ -53,6 +53,8 @@ private func selfTest() throws {
                            token: "failure-token")
         fail("静帧失败回复未被识别")
     } catch is MirageSceneBridgeError { }
+    try child.send("deactivate")
+    try child.wait(for: "deactivated", timeout: 2)
     child.stop()
     require(child.terminationStatus == 0, "假渲染器未收到退出命令")
     let failureScript = folder.appendingPathComponent("failed-renderer.sh")
@@ -265,7 +267,22 @@ private func trial(_ arguments: [String], durationSeconds: Int,
         Thread.sleep(forTimeInterval: max(0, min(1, min(remainingToSample, remainingToEnd, remainingToFocus))))
     }
     if collectPerformance { try samplePerformance(pid: child.processIdentifier, elapsedSeconds: durationSeconds) }
+    let hideCommandAt = ProcessInfo.processInfo.systemUptime
+    try child.send("deactivate")
+    // The renderer acknowledges only after WindowServer reports the window
+    // hidden. This is still not a measurement of the first original-wallpaper
+    // frame, which needs a separate visible-frame observation.
+    try child.wait(for: "deactivated", timeout: 1.5)
+    let hiddenAckAt = ProcessInfo.processInfo.systemUptime
+    print(String(format: "handoff: command_to_hidden_ack_ms=%.1f deadline_to_hidden_ack_ms=%.1f ack_within_500ms=%@",
+                 (hiddenAckAt - hideCommandAt) * 1_000,
+                 (hiddenAckAt - deadline) * 1_000,
+                 hiddenAckAt - deadline <= 0.5 ? "true" : "false"))
+    fflush(stdout)
     child.stop()
+    let stoppedAt = ProcessInfo.processInfo.systemUptime
+    print(String(format: "handoff: hidden_ack_to_process_exit_ms=%.1f",
+                 (stoppedAt - hiddenAckAt) * 1_000))
     require(child.terminationStatus == 0, "渲染器未正常退出")
     print("trial: stopped cleanly")
 }
