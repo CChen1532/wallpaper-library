@@ -178,7 +178,7 @@ private func captureStill(_ arguments: [String]) throws {
     print("still: saved \(width)x\(height) to \(target.path); system desktop image unchanged")
 }
 
-private func verifyRuntime(_ path: String, requireFocusFollow: Bool = false) throws {
+private func verifyRuntime(_ path: String, requireFocusFollow: Bool = false, requireInputControls: Bool = false) throws {
     let runtime = try MirageSceneRuntime(app: URL(fileURLWithPath: path, isDirectory: true))
     let process = Process()
     process.executableURL = runtime.executable
@@ -192,7 +192,8 @@ private func verifyRuntime(_ path: String, requireFocusFollow: Bool = false) thr
     let help = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     require(process.terminationStatus == 0 && help.contains("--control-stdin") &&
             help.contains("--deferred-show") &&
-            (!requireFocusFollow || help.contains("--follow-focus")), "渲染器控制接口不匹配")
+            (!requireFocusFollow || help.contains("--follow-focus")) &&
+            (!requireInputControls || (help.contains("--no-mouse") && help.contains("--no-mouse-buttons"))), "渲染器控制接口不匹配")
     print("runtime: renderer, assets, Vulkan ICD, frameworks, and CLI contract verified")
 }
 
@@ -326,6 +327,8 @@ do {
         try verifyRuntime(arguments[2])
     case "--verify-follow-runtime" where arguments.count == 3:
         try verifyRuntime(arguments[2], requireFocusFollow: true)
+    case "--verify-input-runtime" where arguments.count == 3:
+        try verifyRuntime(arguments[2], requireFocusFollow: true, requireInputControls: true)
     case "--focus-diagnose" where arguments.count == 2:
         let ids = NSScreen.screens.compactMap {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
@@ -344,7 +347,7 @@ do {
         try trial(Array(arguments.dropFirst()), durationSeconds: 60,
                   collectPerformance: true, followFocus: true)
     default:
-        fail("可用命令：--selftest | --focus-diagnose | --verify-runtime/--verify-follow-runtime <Mirage运行目录> | --capture-still <Mirage运行目录> <scene.pkg> <displayID> <新文件.heic> [--position-x 0..1] | --trial/--space-trial/--perf-trial/--follow-trial <Mirage运行目录> <scene.pkg> <displayID> [--position-x 0..1] --consent")
+        fail("可用命令：--selftest | --focus-diagnose | --verify-runtime/--verify-follow-runtime/--verify-input-runtime <Mirage运行目录> | --capture-still <Mirage运行目录> <scene.pkg> <displayID> <新文件.heic> [--position-x 0..1] | --trial/--space-trial/--perf-trial/--follow-trial <Mirage运行目录> <scene.pkg> <displayID> [--position-x 0..1] --consent")
     }
 } catch {
     fail(error.localizedDescription)

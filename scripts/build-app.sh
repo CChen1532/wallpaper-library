@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 swift build --disable-sandbox -c release
 scene_runtime="${SCENE_RUNTIME_SOURCE:-$PWD/dist/MirageFocusFollowRuntime}"
-.build/release/MirageSceneBridgeProbe --verify-follow-runtime "$scene_runtime"
+.build/release/MirageSceneBridgeProbe --verify-input-runtime "$scene_runtime"
 mkdir -p dist
 staging="$(mktemp -d 'dist/.wallpaper-app.XXXXXX')"
 trap 'rm -rf "$staging"' EXIT
@@ -14,7 +14,8 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
 python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-.build/release/MirageSceneBridgeProbe --verify-follow-runtime "$app/Contents/Resources/SceneRuntime"
+.build/release/MirageSceneBridgeProbe --verify-input-runtime "$app/Contents/Resources/SceneRuntime"
+python3 scripts/check-scene-input.py "$app/Contents/Resources/SceneRuntime/Contents/Resources/Renderers/SceneWallpaper"
 # Keep the previous app available until the staged build has passed validation.
 if [[ -e dist/WallpaperUI.app ]]; then
     backup="dist/WallpaperUI-before-scene-$(date +%Y%m%d-%H%M%S).app"

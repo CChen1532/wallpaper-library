@@ -72,7 +72,13 @@ public struct MirageSceneRuntime: Sendable {
     /// Continuous app-owned playback. Parent EOF/watchdog and explicit stop own
     /// the lifetime; the development probe's short timeout is not reused here.
     public func playbackArguments(scenePackage: URL, displayID: UInt32, fps: Int = 30,
-                                  horizontalCropPosition: Double = 0.5) throws -> [String] {
+                                  horizontalCropPosition: Double = 0.5,
+                                  mouseEnabled: Bool = true, mouseButtonsEnabled: Bool = true,
+                                  inputHz: Int = 60, soundEnabled: Bool = false,
+                                  audioResponseEnabled: Bool = false) throws -> [String] {
+        guard [30, 60, 120].contains(inputHz) else {
+            throw MirageSceneBridgeError.invalid("鼠标采样频率请选择 30、60 或 120 Hz")
+        }
         guard [30, 60].contains(fps) else {
             throw MirageSceneBridgeError.invalid("场景帧率请选择 30 或 60 FPS")
         }
@@ -82,6 +88,12 @@ public struct MirageSceneRuntime: Sendable {
             arguments.removeSubrange(index...index + 1)
         }
         if let index = arguments.firstIndex(of: "--fps") { arguments[index + 1] = String(fps) }
+        if soundEnabled { arguments.removeAll { $0 == "--muted" } }
+        if audioResponseEnabled { arguments.removeAll { $0 == "--no-spectrum" } }
+        var input = ["--input-hz", String(inputHz)]
+        if !mouseEnabled { input.append("--no-mouse") }
+        if !mouseButtonsEnabled { input.append("--no-mouse-buttons") }
+        arguments.insert(contentsOf: input, at: arguments.count - 2)
         return arguments
     }
 

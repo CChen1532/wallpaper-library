@@ -81,7 +81,7 @@ import Darwin
         let backend = SceneTestBackend()
         let model = LibraryModel(backend: backend, scenePlayer: coordinated,
                                  sceneRuntimeURL: root.appendingPathComponent("missing-runtime"))
-        await model.playScene(root: root, name: "../outside", title: "bad", expectedBytes: 1, fps: 30, cropMode: "auto")
+        await model.playScene(root: root, name: "../outside", title: "bad", expectedBytes: 1, preferences: .init())
         check(await backend.actions.isEmpty && model.error != nil, "输入预检失败不停止现有视频")
         await backend.setFailOff(true)
         await model.playPreparedScene(configuration("off-failed"))
@@ -130,11 +130,90 @@ import Darwin
         try FileManager.default.createDirectory(at: sceneFolder, withIntermediateDirectories: true)
         try Data([1, 2, 3]).write(to: sceneFolder.appendingPathComponent("scene.pkg"))
         let prepared = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
-            title: "clock", expectedBytes: 3, displayID: 1, fps: 60, cropMode: "auto")
+            title: "clock", expectedBytes: 3, displayID: 1, preferences: ScenePreferences(fps: 60))
         check(!prepared.arguments.contains("--run-seconds") && prepared.arguments.contains("--follow-focus"), "第一版持续播放不继承60秒试验限制")
         let fpsIndex = prepared.arguments.firstIndex(of: "--fps")!
         let cropIndex = prepared.arguments.firstIndex(of: "--position-x")!
         check(prepared.arguments[fpsIndex + 1] == "60" && prepared.arguments[cropIndex + 1] == "1.0", "帧率和1000000001完整时钟裁切参数生效")
+
+        // Preference persistence, normalization and immutable launch snapshots.
+        let suiteName = "ScenePreferencesChecks-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        check(ScenePreferences.load(from: defaults) == ScenePreferences(), "新设置保持原有播放默认值")
+        defaults.set(17, forKey: ScenePreferences.Key.fps)
+        defaults.set(0, forKey: ScenePreferences.Key.inputHz)
+        defaults.set("unknown", forKey: ScenePreferences.Key.crop)
+        check(ScenePreferences.load(from: defaults) == ScenePreferences(), "无效偏好回退到有效帧率采样与裁切")
+        defaults.set(false, forKey: ScenePreferences.Key.mouse)
+        defaults.set(false, forKey: ScenePreferences.Key.buttons)
+        defaults.set(120, forKey: ScenePreferences.Key.inputHz)
+        defaults.set(false, forKey: ScenePreferences.Key.followsDisplay)
+        defaults.set(true, forKey: ScenePreferences.Key.sound)
+        defaults.set(true, forKey: ScenePreferences.Key.audioResponse)
+        let requested = ScenePreferences.load(from: defaults)
+        let configured = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
+            title: "clock", expectedBytes: 3, displayID: 1, preferences: requested)
+        check(configured.arguments.contains("--no-mouse") && configured.arguments.contains("--no-mouse-buttons"), "关闭鼠标与点击转换为真实渲染器参数")
+        check(configured.arguments[configured.arguments.firstIndex(of: "--input-hz")! + 1] == "120", "保存的采样频率传入渲染器")
+        check(!configured.arguments.contains("--muted") && !configured.arguments.contains("--no-spectrum"), "声音与音频响应分别控制渲染器参数")
+        check(!configured.preferences.followsDisplay && configured.arguments.contains("--follow-focus"), "关闭跨屏跟随后仍保留跨Space窗口能力")
+        defaults.set(true, forKey: ScenePreferences.Key.mouse)
+        check(!configured.preferences.mouseEnabled && ScenePreferences.load(from: defaults).mouseEnabled, "修改保存值不改变运行会话快照")
+        var invalid = ScenePreferences()
+        invalid.inputHz = 0
+        do {
+            _ = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
+                title: "clock", expectedBytes: 3, displayID: 1, preferences: invalid)
+            preconditionFailure("invalid sampling accepted")
+        } catch { check(true, "无效采样频率在停止旧场景前被拒绝") }
+
+        let fixedFocus = FocusFixture()
+        let fixed = ScenePlayer(focusProvider: { fixedFocus.displayID })
+        var fixedConfig = configuration("fixed")
+        fixedConfig.preferences.followsDisplay = false
+        try fixed.start(fixedConfig)
+        try await wait { fixed.phase == .playing }
+        fixedFocus.displayID = 3
+        try await Task.sleep(for: .milliseconds(1800))
+        check(fixed.displayID == 1 && !log("fixed").contains("moveDisplay"), "关闭跟随后焦点变化不会移动场景")
+        await fixed.stop()
+        check(fixed.activePreferences == nil, "停止后清理已应用设置快照")
+
+        // Exercise UI's reapply path through input validation and the real coordinator.
+        let settingsLog = renderer.deletingLastPathComponent().appendingPathComponent("settings.log")
+        try #"""
+        #!/bin/sh
+        log="$(dirname "$0")/settings.log"
+        printf 'start\n' >> "$log"
+        printf '%s\n' "$@" >> "$log"
+        printf '%s\n' '{"event":"scene-ready"}' '{"event":"first-frame-presented"}'
+        while IFS= read -r command; do
+          case "$command" in
+            '{"cmd":"activate"}') printf '%s\n' '{"event":"activated"}' ;;
+            '{"cmd":"deactivate"}') printf '%s\n' '{"event":"deactivated"}' ;;
+            '{"cmd":"quit"}') exit 0 ;;
+          esac
+        done
+        """#.write(to: renderer, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: renderer.path)
+        let settingsBackend = SceneTestBackend()
+        let settingsPlayer = ScenePlayer(focusProvider: { 1 })
+        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer, sceneRuntimeURL: runtimeRoot)
+        await settingsModel.applyScenePreferences(requested)
+        check(await settingsBackend.actions.isEmpty, "未播放时应用设置不会启动壁纸")
+        await settingsModel.playScene(root: root, name: "1000000001", title: "clock", expectedBytes: 3)
+        try await wait { settingsPlayer.phase == .playing }
+        await settingsBackend.setOffDelay(true)
+        let applying = Task { await settingsModel.applyScenePreferences(requested) }
+        try await wait { settingsModel.busy }
+        await settingsModel.applyScenePreferences(.init())
+        await applying.value
+        try await wait { settingsPlayer.phase == .playing }
+        let launches = try String(contentsOf: settingsLog, encoding: .utf8).components(separatedBy: "\n").filter { $0 == "start" }.count
+        check(launches == 2 && settingsPlayer.activePreferences == requested, "应用设置只重播一次且拒绝重复点击")
+        check(await settingsBackend.actions.count == 2, "应用设置沿用引擎互斥协调器")
+        await settingsModel.stopScene()
         print("\(count) Scene integration checks passed")
     }
 

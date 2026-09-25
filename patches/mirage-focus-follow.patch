@@ -13,7 +13,7 @@ index f72a1d0..22ab671 100644
 +bool  SceneRendererMacDesktopMoveToDisplay(void* handle, std::uint32_t display_id);
  bool  SceneRendererMacDesktopPrepareMetalFX(void* handle);
 diff --git a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
-index 7e081f8..25c9cde 100644
+index 7e081f8..cd7c2b9 100644
 --- a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
 +++ b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm
 @@ -56,2 +56,3 @@ @implementation SRHostRef
@@ -26,11 +26,26 @@ index 7e081f8..25c9cde 100644
 +        (host->window.level != CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1 ||
 +         !host->window.ignoresMouseEvents)) return false;
      NSScreen* screen = ResolveScreen(host->display_id);
-@@ -689,2 +693,3 @@ void StopApplicationOnMainThread() {
+@@ -624,2 +628,7 @@ void PollInput(MacDesktopHost* host) {
+ 
++    // Keep screen/geometry maintenance independent from scene input. Settings
++    // are launch snapshots, so a disabled session never has held mouse state.
++    if (host->callbacks.mouse_move == nullptr && host->callbacks.mouse_enter == nullptr &&
++        host->callbacks.mouse_button == nullptr) return;
++
+     const NSPoint mouse = NSEvent.mouseLocation;
+@@ -635,2 +644,6 @@ void PollInput(MacDesktopHost* host) {
+ 
++    if (host->callbacks.mouse_button == nullptr) {
++        host->last_buttons = 0;
++        return;
++    }
+     const NSUInteger buttons = NSEvent.pressedMouseButtons;
+@@ -689,2 +702,3 @@ void StopApplicationOnMainThread() {
          host->display_id = display_id;
 +        host->follow_focus = config != nullptr && config->follow_focus;
  
-@@ -703,5 +708,6 @@ void StopApplicationOnMainThread() {
+@@ -703,5 +717,6 @@ void StopApplicationOnMainThread() {
          window.level                 = CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1;
 -        window.collectionBehavior    = NSWindowCollectionBehaviorCanJoinAllSpaces |
 -                                    NSWindowCollectionBehaviorStationary |
@@ -40,7 +55,7 @@ index 7e081f8..25c9cde 100644
 +                                    (host->follow_focus
 +                                         ? NSWindowCollectionBehaviorCanJoinAllSpaces : 0);
          const bool diagnostic = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR") != nullptr;
-@@ -878,2 +884,35 @@ void StopApplicationOnMainThread() {
+@@ -878,2 +893,35 @@ void StopApplicationOnMainThread() {
  
 +extern "C" bool SceneRendererMacDesktopMoveToDisplay(void* handle,
 +                                                       std::uint32_t display_id) {
@@ -119,14 +134,19 @@ index 778c779..2e58504 100644
 +    std::function<void(std::uint32_t)> m_on_move;
      std::atomic<bool>     m_running { false };
 diff --git a/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp b/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
-index cae3ccf..a23bdc9 100644
+index cae3ccf..d31c165 100644
 --- a/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
 +++ b/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
-@@ -155,2 +155,3 @@ struct Options {
+@@ -153,4 +153,8 @@ struct Options {
+     bool                      muted { false };
++    bool                      mouse_enabled { true };
++    bool                      mouse_buttons_enabled { true };
++    bool                      print_input_config { false };
+     bool                      control_stdin { false };
      bool                      deferred_show { false };
 +    bool                      follow_focus { false };
      bool                      spectrum_enabled { true };
-@@ -183,2 +184,14 @@ void EmitLifecycleEvent(const AppState* state, std::string_view event) {
+@@ -183,2 +187,14 @@ void EmitLifecycleEvent(const AppState* state, std::string_view event) {
  
 +void EmitDisplayMove(const AppState* state, std::uint32_t display_id, bool ok) {
 +    const auto elapsed = state == nullptr
@@ -141,16 +161,45 @@ index cae3ccf..a23bdc9 100644
 +}
 +
  void EmitAudioDemand(bool needed) {
-@@ -257,2 +270,3 @@ void PrintUsage(const char* argv0) {
+@@ -252,2 +268,5 @@ void PrintUsage(const char* argv0) {
+         << "      --input-hz N            Desktop mouse polling rate (default 60)\n"
++        << "      --no-mouse              Disable all scene mouse input\n"
++        << "      --no-mouse-buttons      Disable scene mouse button input\n"
++        << "      --print-input-config    Print input policy without starting renderer\n"
+         << "      --screen N              Screen index to cover (default 0 = main)\n"
+@@ -257,2 +276,3 @@ void PrintUsage(const char* argv0) {
          << "      --deferred-show         Keep the window transparent until activated\n"
 +        << "      --follow-focus          Allow one window to follow Spaces and displays\n"
          << "      --no-spectrum           Disable audio response\n"
-@@ -345,2 +359,4 @@ bool ParseArgs(int argc, char** argv, Options& out) {
+@@ -345,2 +365,4 @@ bool ParseArgs(int argc, char** argv, Options& out) {
              out.deferred_show = true;
 +        } else if (arg == "--follow-focus") {
 +            out.follow_focus = true;
          } else if (arg == "--no-spectrum") {
-@@ -524,2 +540,7 @@ int main(int argc, char** argv) {
+@@ -404,2 +426,8 @@ bool ParseArgs(int argc, char** argv, Options& out) {
+             if (! out.mouse_position) return false;
++        } else if (arg == "--no-mouse") {
++            out.mouse_enabled = false;
++        } else if (arg == "--no-mouse-buttons") {
++            out.mouse_buttons_enabled = false;
++        } else if (arg == "--print-input-config") {
++            out.print_input_config = true;
+         } else if (arg == "--input-hz") {
+@@ -512,2 +540,13 @@ int main(int argc, char** argv) {
+ 
++    const bool mouse_enabled = options.mouse_enabled;
++    const bool mouse_buttons_enabled = mouse_enabled && options.mouse_buttons_enabled;
++    if (options.print_input_config) {
++        std::cout << std::boolalpha
++                  << "{\"mouse_move\":" << mouse_enabled
++                  << ",\"mouse_enter\":" << mouse_enabled
++                  << ",\"mouse_buttons\":" << mouse_buttons_enabled
++                  << ",\"input_hz\":" << std::min(options.input_hz, 240u) << "}\n";
++        return 0;
++    }
++
+     setenv("MVK_CONFIG_PRESENT_WITH_COMMAND_BUFFER", "1", /*overwrite=*/0);
+@@ -524,2 +563,7 @@ int main(int argc, char** argv) {
  
 +    if (options.follow_focus && (!options.control_stdin || !options.deferred_show)) {
 +        std::cerr << "--follow-focus requires --control-stdin and --deferred-show\n";
@@ -158,11 +207,19 @@ index cae3ccf..a23bdc9 100644
 +    }
 +
      SceneRendererMacDesktopConfig desktop_config {
-@@ -530,2 +551,3 @@ int main(int argc, char** argv) {
+@@ -530,7 +574,8 @@ int main(int argc, char** argv) {
          .deferred_show = options.deferred_show,
 +        .follow_focus = options.follow_focus,
      };
-@@ -751,2 +773,6 @@ int main(int argc, char** argv) {
+     SceneRendererMacDesktopCallbacks callbacks {
+-        .mouse_move   = MouseMoveCallback,
+-        .mouse_button = MouseButtonCallback,
+-        .mouse_enter  = MouseEnterCallback,
++        .mouse_move   = mouse_enabled ? MouseMoveCallback : nullptr,
++        .mouse_button = mouse_buttons_enabled ? MouseButtonCallback : nullptr,
++        .mouse_enter  = mouse_enabled ? MouseEnterCallback : nullptr,
+         .closed       = nullptr,
+@@ -751,2 +796,6 @@ int main(int argc, char** argv) {
                  });
 +            },
 +            [desktop, &state](std::uint32_t display_id) {

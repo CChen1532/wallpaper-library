@@ -14,10 +14,10 @@ struct SceneLaunchConfiguration: Sendable {
     let package: URL
     let title: String
     let displayID: UInt32
+    var preferences = ScenePreferences()
 
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
-                        expectedBytes: Int64, displayID: UInt32, fps: Int,
-                        cropMode: String) throws -> Self {
+                        expectedBytes: Int64, displayID: UInt32, preferences: ScenePreferences = .init()) throws -> Self {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\") else {
             throw BackendError.message("场景目录名称无效")
         }
@@ -34,7 +34,7 @@ struct SceneLaunchConfiguration: Sendable {
             throw BackendError.message("场景包已变化，请刷新场景目录")
         }
         let position: Double
-        switch cropMode {
+        switch preferences.cropMode {
         case "auto": position = name == "1000000001" ? 1 : 0.5
         case "left": position = 0
         case "center": position = 0.5
@@ -43,10 +43,15 @@ struct SceneLaunchConfiguration: Sendable {
         }
         let runtime = try MirageSceneRuntime(app: runtimeURL)
         let arguments = try runtime.playbackArguments(scenePackage: package, displayID: displayID,
-                                                      fps: fps, horizontalCropPosition: position)
+                                                      fps: preferences.fps, horizontalCropPosition: position,
+                                                      mouseEnabled: preferences.mouseEnabled,
+                                                      mouseButtonsEnabled: preferences.mouseButtonsEnabled,
+                                                      inputHz: preferences.inputHz,
+                                                      soundEnabled: preferences.soundEnabled,
+                                                      audioResponseEnabled: preferences.audioResponseEnabled)
         return Self(executable: runtime.executable, arguments: arguments,
                     environment: runtime.environment(), package: package,
-                    title: title, displayID: displayID)
+                    title: title, displayID: displayID, preferences: preferences)
     }
 }
 
@@ -58,6 +63,7 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var package: URL?
     @Published private(set) var displayID: UInt32?
     @Published private(set) var error: String?
+    @Published private(set) var activePreferences: ScenePreferences?
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private let focusProvider: @MainActor @Sendable () -> UInt32?
@@ -84,6 +90,7 @@ struct SceneLaunchConfiguration: Sendable {
         let token = UUID()
         generation = token
         phase = .starting
+        activePreferences = configuration.preferences
         title = configuration.title
         package = configuration.package
         displayID = configuration.displayID
@@ -107,9 +114,10 @@ struct SceneLaunchConfiguration: Sendable {
                 while !Task.isCancelled {
                     // A successful activation is historical; still check liveness.
                     _ = try child.eventReceived("activated")
-                    let target = await focus()
+                    let target = configuration.preferences.followsDisplay ? await focus() : nil
                     try Task.checkCancellation()
-                    if let move = handoff.observe(target, at: ProcessInfo.processInfo.systemUptime) {
+                    if configuration.preferences.followsDisplay,
+                       let move = handoff.observe(target, at: ProcessInfo.processInfo.systemUptime) {
                         try child.move(to: move)
                         try await Self.waitUntil(timeout: 2) { try child.moveAcknowledged(to: move) }
                         await self?.moved(to: move, token: token)
@@ -137,6 +145,7 @@ struct SceneLaunchConfiguration: Sendable {
         worker = nil
         phase = .stopped
         package = nil
+        activePreferences = nil
         displayID = nil
         error = nil
     }
@@ -157,6 +166,7 @@ struct SceneLaunchConfiguration: Sendable {
         error = failure
         phase = failure == nil ? .stopped : .failed
         package = nil
+        activePreferences = nil
         displayID = nil
     }
     nonisolated private static func waitUntil(timeout: TimeInterval, predicate: () throws -> Bool) async throws {

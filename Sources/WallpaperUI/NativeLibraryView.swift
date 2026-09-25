@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import WESceneCore
 
-private enum LibraryPage: Hashable { case videos, scenes, rotation }
+enum LibraryPage: String, Hashable { case videos, scenes, rotation, settings }
 private struct SceneCatalogPayload: Decodable {
     struct Entry: Decodable, Identifiable {
         struct Capability: Decodable {
@@ -23,10 +23,8 @@ private struct SceneCatalogPayload: Decodable {
 struct NativeLibraryView: View {
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
-    @State private var page: LibraryPage? = .scenes
+    @AppStorage("libraryPage") private var page = LibraryPage.scenes
     @AppStorage("sceneLibraryPath") private var savedSceneRoot = ""
-    @AppStorage("sceneFPS") private var sceneFPS = 30
-    @AppStorage("sceneCropMode") private var sceneCropMode = "auto"
     @State private var search = ""
     @State private var minutes = 60
     @State private var mode = "rand"
@@ -67,37 +65,36 @@ struct NativeLibraryView: View {
     }
     var body: some View {
         NavigationSplitView {
-            List(selection: $page) {
+            List(selection: Binding<LibraryPage?>(get: { page }, set: { if let value = $0 { page = value } })) {
                 Section("资料库") {
                     Label("场景壁纸", systemImage: "square.3.layers.3d").badge(sceneEntries.count).tag(LibraryPage.scenes)
                     Label("视频壁纸", systemImage: "play.rectangle").badge(model.items.count).tag(LibraryPage.videos)
                 }
-                Section("桌面") { Label("自动轮播", systemImage: "arrow.triangle.2.circlepath").tag(LibraryPage.rotation) }
+                Section("管理") {
+                    Label("自动轮播", systemImage: "arrow.triangle.2.circlepath").tag(LibraryPage.rotation)
+                    Label("设置", systemImage: "gearshape").tag(LibraryPage.settings)
+                }
             }.listStyle(.sidebar).navigationTitle("壁纸库")
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
-                .safeAreaInset(edge: .bottom) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Image(systemName: "rectangle.inset.filled").font(.system(size: 22, weight: .light))
-                            .foregroundStyle(.secondary)
-                        Text("让桌面，生动起来。")
-                            .font(.system(size: 13, weight: .medium))
-                        Text("你的私人动态壁纸库")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
-                }
+
         } detail: {
             VStack(spacing: 0) {
                 if let issue = model.stateIssue { issueBanner("状态暂不可用：" + issue) }
                 if let issue = model.libraryIssue { issueBanner("素材读取失败：" + issue) }
-                if page == .rotation { rotationSettings }
+                if page == .settings {
+                    WallpaperSettingsView {
+                        showDiagnostics = true; Task { await model.refreshDiagnostics() }
+                    }
+                }
+                else if page == .rotation { rotationSettings }
                 else if page == .scenes { sceneLibrary }
                 else { videoLibrary }
-                Divider(); desktopControls
+                if page != .settings { Divider(); desktopControls }
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .navigationTitle(page == .rotation ? "自动轮播" : page == .scenes ? "场景壁纸" : "视频壁纸")
-            .navigationSubtitle(page == .rotation ? "让风景按时焕新" : "本地资料库")
-            .searchable(text: $search, placement: .toolbar, prompt: page == .scenes ? "搜索场景" : "搜索视频")
+            .navigationTitle(page == .settings ? "设置" : page == .rotation ? "自动轮播" : page == .scenes ? "场景壁纸" : "视频壁纸")
+            .modifier(LibrarySearch(text: $search, enabled: page == .scenes || page == .videos,
+                                    prompt: page == .scenes ? "搜索场景" : "搜索视频"))
             .toolbar {
                 ToolbarItemGroup {
                     if page == .scenes {
@@ -112,11 +109,11 @@ struct NativeLibraryView: View {
                           Button(action: beginScenePreview) { Label("受限静态预览", systemImage: "photo") }
                             .disabled(selectedPreviewScene == nil || sceneLoading || scenePreviewLoading)
                         } label: { Label("更多", systemImage: "ellipsis.circle") }
-                    } else {
+                    } else if page == .videos {
                         Button(action: importVideos) { Label("导入视频", systemImage: "plus") }.help("导入 MP4 视频").keyboardShortcut("o", modifiers: .command).disabled(model.isWorking || !model.capabilities.canImport)
                         Button { Task { await model.refreshLibrary() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.help("刷新资料库").keyboardShortcut("r", modifiers: .command).disabled(model.isWorking)
                     }
-                    if page != .scenes { Menu {
+                    if page == .videos { Menu {
                         Button("打开视频文件夹", systemImage: "folder") { if let url = model.capabilities.libraryDirectory { NSWorkspace.shared.open(url) } }.disabled(model.capabilities.libraryDirectory == nil)
                         Button("显示器与运行状态", systemImage: "desktopcomputer") { showDiagnostics = true; Task { await model.refreshDiagnostics() } }
                     } label: { Label("更多", systemImage: "ellipsis.circle") }.help("更多操作") }
@@ -149,29 +146,21 @@ struct NativeLibraryView: View {
     }
     private let galleryColumns = [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)]
 
-    private func galleryHeading(_ title: String, subtitle: String, count: Int, preview: Bool = false) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 25, weight: .semibold)).tracking(-0.6)
-                Text(subtitle).font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            if preview {
-                Text("预览版").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(.quaternary.opacity(0.45), in: Capsule())
-            }
-            Text("\(count) 款").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-        }.padding(.horizontal, 24).padding(.top, 25).padding(.bottom, 22)
+    private func galleryHeading(count: Int, preview: Bool = false) -> some View {
+        HStack(spacing: 10) {
+            Text("\(count) 项").font(.callout).foregroundStyle(.secondary)
+            Spacer()
+            if preview { Text("预览版").font(.caption).foregroundStyle(.secondary) }
+        }.padding(.horizontal, 22).padding(.vertical, 14)
     }
 
     private var videoLibrary: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                galleryHeading("流动的风景", subtitle: "收藏片刻，循环成日常。", count: filtered.count)
+                galleryHeading(count: filtered.count)
                 if model.loading { ProgressView("正在读取视频…").padding() }
                 if !model.loading && filtered.isEmpty {
-                    ContentUnavailableView(search.isEmpty ? "添加你的第一段视频" : "没有匹配的视频", systemImage: "film.stack", description: Text(search.isEmpty ? "导入 MP4，让视频在桌面背景持续播放。" : "试试其他关键词。"))
+                    ContentUnavailableView(search.isEmpty ? "没有视频" : "没有匹配的视频", systemImage: "film.stack", description: Text(search.isEmpty ? "导入 MP4 视频以添加壁纸。" : "试试其他关键词。"))
                         .frame(maxHeight: .infinity)
                 } else {
                     ScrollViewReader { proxy in
@@ -197,7 +186,7 @@ struct NativeLibraryView: View {
             Divider()
             Group {
                 if let item = model.selectedWallpaper { videoDetails(item) }
-                else { inspectorPlaceholder("选择一段风景", subtitle: "点选视频，查看详情并设为桌面壁纸。", icon: "play.rectangle") }
+                else { inspectorPlaceholder("未选择视频", subtitle: "点选视频，查看详情并设为桌面壁纸。", icon: "play.rectangle") }
             }.frame(width: 280)
         }
     }
@@ -205,7 +194,7 @@ struct NativeLibraryView: View {
     private var sceneLibrary: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                galleryHeading("桌面，自成风景", subtitle: "光影与细节，在桌面缓缓展开。", count: filteredScenes.count, preview: true)
+                galleryHeading(count: filteredScenes.count, preview: true)
                 if !model.sceneRuntimeAvailable { issueBanner("场景运行组件缺失，请使用包含 Scene 的完整构建。") }
                 if let error = scenePlayer.error { issueBanner(error) }
                 if let sceneError { issueBanner("场景读取失败：" + sceneError) }
@@ -214,7 +203,7 @@ struct NativeLibraryView: View {
                     ContentUnavailableView {
                         Label("添加场景壁纸", systemImage: "square.3.layers.3d")
                     } description: {
-                        Text("选择包含场景的素材文件夹，开始布置你的桌面。")
+                        Text("选择包含场景的素材文件夹。")
                     } actions: {
                         Button("选择文件夹", action: chooseSceneDirectory).buttonStyle(.borderedProminent)
                     }.frame(maxHeight: .infinity)
@@ -244,7 +233,7 @@ struct NativeLibraryView: View {
             Divider()
             Group {
                 if let item = selectedScene { sceneDetails(item) }
-                else { inspectorPlaceholder("选择一幅风景", subtitle: "点选场景，查看详情并设为桌面壁纸。", icon: "square.3.layers.3d") }
+                else { inspectorPlaceholder("未选择场景", subtitle: "点选场景，查看详情并设为桌面壁纸。", icon: "square.3.layers.3d") }
             }.frame(width: 280)
         }
     }
@@ -313,41 +302,27 @@ struct NativeLibraryView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("场景封面").padding(10) }
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(item.title ?? item.name).font(.system(size: 19, weight: .semibold)).tracking(-0.35).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text(item.title ?? item.name).font(.system(size: 17, weight: .semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     Label("动态场景", systemImage: "square.3.layers.3d").font(.caption).foregroundStyle(.secondary)
                 }
                 Button {
                     guard let sceneRoot else { return }
                     Task { await model.playScene(root: sceneRoot, name: item.name, title: item.title ?? item.name,
-                                                  expectedBytes: item.packageBytes, fps: sceneFPS, cropMode: sceneCropMode) }
+                                                  expectedBytes: item.packageBytes, preferences: ScenePreferences.load()) }
                 } label: { Label("设为场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
                     .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0 || item.packageBytes > 256 * 1024 * 1024)
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("播放设置").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("帧率上限").font(.callout)
-                        Picker("帧率上限", selection: $sceneFPS) {
-                            Text("30 FPS").tag(30)
-                            Text("60 FPS").tag(60)
-                        }.pickerStyle(.segmented).labelsHidden()
-                    }
-                    Picker("画面位置", selection: $sceneCropMode) {
-                        Text("自动适配").tag("auto")
-                        Text("居中").tag("center")
-                        Text("靠左").tag("left")
-                        Text("靠右").tag("right")
-                    }.font(.callout)
-                    Text("修改后，重新设为壁纸即可生效。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                Button { page = .settings } label: {
+                    Label("播放与交互设置", systemImage: "gearshape").frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.borderless).font(.callout)
+                Divider()
                 VStack(spacing: 10) {
                     inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
                     inspectorMetadata("素材编号", item.name)
                 }
                 DisclosureGroup("预览版播放说明", isExpanded: $showPlaybackNotes) {
-                    Text("场景跟随当前桌面与显示器。跨屏切换时，原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。场景静音，睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
+                    Text("场景跟随当前桌面与显示器。跨屏切换时，原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
                 }.font(.caption).tint(.secondary)
                 if let sceneRoot {
@@ -480,7 +455,7 @@ struct NativeLibraryView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("视频封面").padding(10) }
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(item.title).font(.system(size: 19, weight: .semibold)).tracking(-0.35).textSelection(.enabled)
+                    Text(item.title).font(.system(size: 17, weight: .semibold)).textSelection(.enabled)
                     Label("动态视频", systemImage: "play.rectangle").font(.caption).foregroundStyle(.secondary)
                 }
                 Button { Task { await model.perform(.play(item.id)) } } label: {
@@ -563,7 +538,7 @@ struct NativeLibraryView: View {
         if model.stateIssue != nil { return "暂时无法读取桌面播放状态" }
         if model.state.running, let path = model.state.currentPath { return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent }
         if model.state.rotating { return "自动轮播已开启 · 等待下一次切换" }
-        return "选一幅喜欢的风景，留在桌面。"
+        return "未播放壁纸"
     }
     private func control(_ icon: String, _ title: String, _ action: Action) -> some View {
         Button { Task { await model.perform(action) } } label: {
@@ -687,10 +662,10 @@ private struct GalleryCard<Cover: View>: View {
             caption
         }
         .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(borderColor, lineWidth: selected ? 2.0 : 1.0))
-        .shadow(color: Color.black.opacity(hovered ? 0.10 : 0.035), radius: hovered ? CGFloat(9) : CGFloat(4), x: 0, y: hovered ? CGFloat(4) : CGFloat(2))
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(borderColor, lineWidth: selected ? 1.5 : 0.5))
+        .shadow(color: Color.black.opacity(hovered ? 0.055 : 0.015), radius: hovered ? CGFloat(5) : CGFloat(2), x: 0, y: 1)
+        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
     private var artwork: some View {
         cover().aspectRatio(16 / 10, contentMode: .fit)
@@ -723,5 +698,15 @@ private struct GalleryCard<Cover: View>: View {
                 if warning { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange) }
             }.font(.system(size: 11))
         }.padding(13)
+    }
+}
+
+private struct LibrarySearch: ViewModifier {
+    @Binding var text: String
+    let enabled: Bool
+    let prompt: String
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.searchable(text: $text, placement: .toolbar, prompt: Text(prompt)) }
+        else { content }
     }
 }

@@ -48,7 +48,7 @@ import Combine
     }
 
     func playScene(root: URL, name: String, title: String, expectedBytes: Int64,
-                   fps: Int, cropMode: String) async {
+                   preferences: ScenePreferences = .init()) async {
         guard !isWorking else { return }
         do {
             guard let displayID = scenePlayer.preferredDisplayID() else {
@@ -57,8 +57,18 @@ import Combine
             // Validate all local inputs before changing the current video engine.
             let configuration = try SceneLaunchConfiguration.prepare(
                 runtimeURL: sceneRuntimeURL, root: root, name: name, title: title,
-                expectedBytes: expectedBytes, displayID: displayID, fps: fps, cropMode: cropMode)
+                expectedBytes: expectedBytes, displayID: displayID, preferences: preferences)
             await playPreparedScene(configuration)
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func applyScenePreferences(_ preferences: ScenePreferences) async {
+        guard !isWorking, scenePlayer.isActive, let package = scenePlayer.package else { return }
+        do {
+            let bytes = try package.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            let folder = package.deletingLastPathComponent()
+            await playScene(root: folder.deletingLastPathComponent(), name: folder.lastPathComponent,
+                            title: scenePlayer.title, expectedBytes: Int64(bytes), preferences: preferences)
         } catch { self.error = error.localizedDescription }
     }
 

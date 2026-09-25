@@ -53,12 +53,21 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     @NSApplicationDelegateAdaptor(WallpaperAppDelegate.self) private var delegate
     @StateObject private var model = AppServices.model
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
+    @AppStorage("libraryPage") private var page = LibraryPage.scenes
+    @Environment(\.openWindow) private var openWindow
     var body: some Scene {
         Window("视频壁纸", id: "library") {
             NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer)
                 .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
         }.defaultSize(width: 1200, height: 800)
             .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("设置…") {
+                        page = .settings
+                        openWindow(id: "library")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }.keyboardShortcut(",", modifiers: .command)
+                }
                 CommandGroup(after: .sidebar) {
                     Menu("外观") {
                         Picker("外观", selection: $appearance) {
