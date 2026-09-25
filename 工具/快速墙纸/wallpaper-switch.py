@@ -116,24 +116,36 @@ def prepare(document, display_uuid, space_uuids, image, all_spaces_visible=False
             raise ValueError('全空间墙纸配置不是已验证的 idle 形式，拒绝改动')
         spaces = document['Spaces']
         displays = document.get('Displays')
-        if not isinstance(spaces, dict) or not isinstance(displays, dict) or set(displays) != {display_uuid}:
-            raise ValueError('全空间切换只支持当前单显示器配置')
+        if not isinstance(spaces, dict) or not isinstance(displays, dict) or display_uuid not in displays:
+            raise ValueError('当前显示器没有可恢复的墙纸记录')
         if not set(space_uuids).issubset(spaces):
             raise ValueError('目标 Space 已变化，拒绝改动')
         for space in spaces.values():
-            if not isinstance(space, dict) or not isinstance(space.get('Default'), dict) or not isinstance(space.get('Displays'), dict) or set(space['Displays']) != {display_uuid}:
+            if (not isinstance(space, dict) or not isinstance(space.get('Default'), dict) or
+                    not isinstance(space.get('Displays'), dict) or display_uuid not in space['Displays'] or
+                    not set(space['Displays']).issubset(displays)):
                 raise ValueError('全空间切换遇到未知 Space 显示器结构')
+            for display_node in space['Displays'].values():
+                if not isinstance(display_node, dict):
+                    raise ValueError('全空间切换遇到未知显示器墙纸节点')
         system = entry(document, ['SystemDefault'])
-        display = entry(document, ['Displays', display_uuid])
-        return [
+        patches = [
             {'path': [], 'field': 'Spaces', 'before': selected(document, 'Spaces'),
              'after': {'present': True, 'value': {}}},
             {'path': ['SystemDefault'], 'before': selected(system), 'after': copy.deepcopy(after)},
-            {'path': ['Displays', display_uuid], 'before': selected(display), 'after': copy.deepcopy(after)},
+        ]
+        # macOS can retain records for an inactive historical display even
+        # when NSScreen reports one active screen. Preserve each known record.
+        for uuid in sorted(displays):
+            display = entry(document, ['Displays', uuid])
+            patches.append({'path': ['Displays', uuid], 'before': selected(display),
+                            'after': copy.deepcopy(after)})
+        patches += [
             {'path': ['AllSpacesAndDisplays'], 'field': 'Type',
              'before': selected(global_entry, 'Type'), 'after': {'present': True, 'value': 'individual'}},
             {'path': ['AllSpacesAndDisplays'], 'before': selected(global_entry), 'after': copy.deepcopy(after)},
         ]
+        return patches
     patches = []
     for space in space_uuids:
         path = ['Spaces', space, 'Displays', display_uuid]
@@ -160,59 +172,75 @@ def same_image(current, expected):
 
 
 def registered_spaces(current, original, scene):
-    """Accept the intermediate state produced by setDesktopImageURL.
+    """Recover surviving Spaces after setDesktopImageURL normalizes the store.
 
-    On this macOS build it exits all-space mode and recreates the same Space
-    UUIDs with the current scene image. Anything else remains a conflict.
+    macOS can prune an old Space or inactive display while registering the
+    scene. Restore only selectors on surviving, known nodes; never recreate a
+    deleted Space or display, and never erase a newly created one.
     """
     if not current['present'] or not original['present']:
-        return False
+        return None
     now, before = current['value'], original['value']
-    if not isinstance(now, dict) or not isinstance(before, dict) or set(now) != set(before):
-        return False
+    if not isinstance(now, dict) or not isinstance(before, dict) or not set(now).issubset(before):
+        return None
     normalized = copy.deepcopy(now)
-    for uuid, space in before.items():
+    target = {uuid: copy.deepcopy(before[uuid]) for uuid in now}
+    for uuid, space in now.items():
         try:
-            paths = [['Default']] + [['Displays', display] for display in space['Displays']]
+            old_displays = before[uuid]['Displays']
+            new_displays = space['Displays']
+            if (not isinstance(old_displays, dict) or not isinstance(new_displays, dict) or
+                    not set(new_displays).issubset(old_displays)):
+                return None
+            target[uuid]['Displays'] = {key: copy.deepcopy(old_displays[key]) for key in new_displays}
+            paths = [['Default']] + [['Displays', display] for display in new_displays]
             for path in paths:
-                old_node = entry(space, path)
+                old_node = entry(target[uuid], path)
                 new_node = entry(normalized[uuid], path)
                 value, previous = selected(new_node), selected(old_node)
                 if semantic(value) != semantic(previous):
                     if not same_image(value, scene):
-                        return False
+                        return None
                     put(new_node, previous)
         except (KeyError, TypeError, ValueError):
-            return False
-    return semantic(normalized) == semantic(before)
+            return None
+    if semantic(normalized) != semantic(target):
+        return None
+    return {'present': True, 'value': target}
 
 
 def removed_display_from_all_spaces(document, original, patches):
-    """Recreate the display node that Settings deletes in all-Space mode.
+    """Recreate known display nodes that Settings deletes in all-Space mode.
 
     This is only safe while the one-display global scene still matches our
     journal. The original node comes from the checksummed pre-apply backup.
     """
-    display_patches = [p for p in patches if len(p['path']) == 2 and p['path'][0] == 'Displays']
-    if len(display_patches) != 1 or original is None:
+    display_patches = {p['path'][1]: p for p in patches
+                       if len(p['path']) == 2 and p['path'][0] == 'Displays'}
+    if not display_patches or original is None:
         return document
-    display_patch = display_patches[0]
-    display = display_patch['path'][1]
     displays = document.get('Displays')
-    if not isinstance(displays, dict) or display in displays:
+    if not isinstance(displays, dict):
+        raise ValueError('全空间显示器记录格式变化，保留恢复记录')
+    if not set(displays).issubset(display_patches):
+        raise ValueError('出现未备份的显示器记录，保留恢复记录')
+    missing = set(display_patches) - set(displays)
+    if not missing:
         return document
     scene = next((p['after'] for p in patches if p['path'] == ['AllSpacesAndDisplays']
                   and p.get('field', 'Desktop') == 'Desktop'), None)
     global_node = document.get('AllSpacesAndDisplays', {})
     before_displays = original.get('Displays', {})
-    if (displays != {} or document.get('Spaces') != {} or scene is None or
+    if (document.get('Spaces') != {} or scene is None or
             not isinstance(global_node, dict) or global_node.get('Type') != 'individual' or
             not same_image(selected(global_node), scene) or
-            not isinstance(before_displays, dict) or set(before_displays) != {display} or
-            selected(before_displays[display]) != display_patch['before']):
+            not isinstance(before_displays, dict) or set(before_displays) != set(display_patches) or
+            not set(displays).issubset(before_displays) or
+            any(selected(before_displays[uuid]) != display_patches[uuid]['before'] for uuid in missing)):
         raise ValueError('全空间开关之外的显示器记录变化，保留恢复记录')
     result = copy.deepcopy(document)
-    result['Displays'][display] = copy.deepcopy(before_displays[display])
+    for uuid in missing:
+        result['Displays'][uuid] = copy.deepcopy(before_displays[uuid])
     return result
 
 
@@ -220,6 +248,7 @@ def merge(document, patches, restore=False, original=None):
     if restore:
         document = removed_display_from_all_spaces(document, original, patches)
     result = copy.deepcopy(document)
+    targets = []
     # Preflight EVERY field before changing any field.
     for patch in patches:
         field = patch.get('field', 'Desktop')
@@ -232,11 +261,15 @@ def merge(document, patches, restore=False, original=None):
             if field == 'Spaces' and patch['path'] == []:
                 scene = next((p['after'] for p in patches if
                               p['path'] == ['AllSpacesAndDisplays'] and p.get('field', 'Desktop') == 'Desktop'), None)
-                allowed = allowed or (scene is not None and registered_spaces(current, target, scene))
+                recovered = registered_spaces(current, target, scene) if scene is not None else None
+                if recovered is not None:
+                    allowed = True
+                    target = recovered
         if not allowed:
             raise ValueError('该桌面壁纸已被其他操作改变，拒绝覆盖；恢复记录保留：' + '/'.join(patch['path']))
-    for patch in patches:
-        put(entry(result, patch['path']), patch['before'] if restore else patch['after'],
+        targets.append(target)
+    for patch, target in zip(patches, targets):
+        put(entry(result, patch['path']), target,
             patch.get('field', 'Desktop'))
     return result
 

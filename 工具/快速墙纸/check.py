@@ -148,4 +148,69 @@ with tempfile.TemporaryDirectory() as folder:
     except ValueError:
         pass
     assert plistlib.loads(store.read_bytes()) == changed
+    # An inactive display can remain in Index.plist while only one NSScreen is
+    # active. Settings may delete only that historical node during the toggle.
+    historical = copy.deepcopy(document)
+    historical['Displays']['inactive'] = {'Desktop': copy.deepcopy(original)}
+    for key in ('a', 'b'):
+        historical['Spaces'][key]['Displays']['inactive'] = copy.deepcopy(node)
+    state4 = root / 'state4'; state4.mkdir()
+    store.write_bytes(m.encoded(historical))
+    with_history = m.Switcher(store, state4, lambda: None)
+    with_history.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    assert set(changed['Displays']) == {'display', 'inactive'}
+    changed['Displays'].pop('inactive')
+    store.write_bytes(m.encoded(changed))
+    with_history.restore()
+    assert plistlib.loads(store.read_bytes()) == historical
+    with_history.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    changed['Displays'].pop('inactive')
+    changed['Displays']['foreign'] = {'Desktop': {'user': 'new display'}}
+    store.write_bytes(m.encoded(changed))
+    try:
+        with_history.restore()
+        raise AssertionError('new display overwritten')
+    except ValueError:
+        pass
+    assert plistlib.loads(store.read_bytes()) == changed
+    changed['Displays'].pop('foreign')
+    store.write_bytes(m.encoded(changed))
+    with_history.restore()
+    assert plistlib.loads(store.read_bytes()) == historical
+    # Registering a scene can also prune a historical Space and each Space's
+    # inactive-display child. Restore the surviving selectors without
+    # resurrecting the pruned nodes.
+    with_history.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    scene = with_history.read_session()['patches'][-1]['after']['value']
+    changed['Spaces'] = copy.deepcopy(historical['Spaces'])
+    changed['Spaces'].pop('other')
+    for space in changed['Spaces'].values():
+        space['Displays'].pop('inactive', None)
+        space['Default']['Desktop'] = copy.deepcopy(scene)
+        space['Displays']['display']['Desktop'] = copy.deepcopy(scene)
+    changed['AllSpacesAndDisplays'] = copy.deepcopy(historical['AllSpacesAndDisplays'])
+    store.write_bytes(m.encoded(changed))
+    with_history.restore()
+    expected = copy.deepcopy(historical)
+    expected['Spaces'].pop('other')
+    for space in expected['Spaces'].values():
+        space['Displays'].pop('inactive', None)
+    assert plistlib.loads(store.read_bytes()) == expected
+    with_history.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    changed['Displays']['foreign'] = {'Desktop': {'user': 'new display'}}
+    store.write_bytes(m.encoded(changed))
+    try:
+        with_history.restore()
+        raise AssertionError('new display with original nodes overwritten')
+    except ValueError:
+        pass
+    assert plistlib.loads(store.read_bytes()) == changed
+    changed['Displays'].pop('foreign')
+    store.write_bytes(m.encoded(changed))
+    with_history.restore()
+    assert plistlib.loads(store.read_bytes()) == expected
 print('Offline recovery checks passed: scoped writes, aerial restore, unrelated edits, idempotence, conflicts, concurrent writes, refresh failure.')

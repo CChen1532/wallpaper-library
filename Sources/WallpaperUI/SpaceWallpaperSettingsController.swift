@@ -3,9 +3,9 @@ import ApplicationServices
 import Foundation
 
 /// Drives only the macOS Wallpaper pane's identified all-Spaces switch.
-/// Its action (unlike editing Index.plist alone) updates Mission Control's
-/// thumbnails on the tested macOS 15 build. Accessibility permission is
-/// required once for the signed WallpaperUI app.
+/// A manual trial of this system action updated Mission Control's thumbnails
+/// where editing Index.plist alone did not. Accessibility permission is
+/// required for the signed WallpaperUI app.
 enum SpaceWallpaperSettingsController {
     @MainActor static func activate(displayID: UInt32, imageURL: URL) async throws {
         let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -19,6 +19,10 @@ enum SpaceWallpaperSettingsController {
         guard NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == imageURL.standardizedFileURL else {
             throw BackendError.message("系统未登记当前场景静帧，自动底图已取消")
         }
+        // setDesktopImageURL returns before WallpaperAgent has rebuilt its
+        // per-Space selections. Pressing the Settings switch during that
+        // rewrite can be undone by the later registration write.
+        try await waitForRegistration(imageURL: imageURL)
         guard let pane = URL(string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension"),
               NSWorkspace.shared.open(pane) else {
             throw BackendError.message("无法打开系统墙纸设置，自动底图已取消")
@@ -36,11 +40,21 @@ enum SpaceWallpaperSettingsController {
         guard remaining > 0 else { return nil }
         remaining -= 1
         if attribute(element, "AXIdentifier") as? String == "ShowOnAllDisplays" { return element }
-        for key in [kAXWindowsAttribute as String, kAXChildrenAttribute as String, "AXContents"] {
+        for key in [kAXChildrenAttribute as String, "AXContents"] {
             guard let children = attribute(element, key) as? [AXUIElement] else { continue }
             for child in children {
                 if let found = findSwitch(child, remaining: &remaining) { return found }
             }
+        }
+        return nil
+    }
+
+    private static func allSpacesSwitch(in app: NSRunningApplication) -> AXUIElement? {
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        guard let windows = attribute(root, kAXWindowsAttribute as String) as? [AXUIElement] else { return nil }
+        var remaining = 4000
+        for window in windows {
+            if let control = findSwitch(window, remaining: &remaining) { return control }
         }
         return nil
     }
@@ -54,15 +68,15 @@ enum SpaceWallpaperSettingsController {
         return nil
     }
 
-    private static func systemStateMatches(_ imageURL: URL) -> Bool {
+    private static func wallpaperDocument() -> [String: Any]? {
         let store = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
-        guard let data = try? Data(contentsOf: store),
-              let document = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let spaces = document["Spaces"] as? [String: Any], spaces.isEmpty,
-              let all = document["AllSpacesAndDisplays"] as? [String: Any],
-              all["Type"] as? String == "individual",
-              let desktop = all["Desktop"] as? [String: Any],
+        guard let data = try? Data(contentsOf: store) else { return nil }
+        return try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+    }
+
+    private static func imageMatches(_ desktop: Any?, _ imageURL: URL) -> Bool {
+        guard let desktop = desktop as? [String: Any],
               let content = desktop["Content"] as? [String: Any],
               let choices = content["Choices"] as? [[String: Any]], choices.count == 1,
               let files = choices[0]["Files"] as? [[String: String]], files.count == 1,
@@ -70,28 +84,69 @@ enum SpaceWallpaperSettingsController {
         return url.standardizedFileURL == imageURL.standardizedFileURL
     }
 
+    private static func registrationMatches(_ imageURL: URL) -> Bool {
+        guard let document = wallpaperDocument(),
+              let spaces = document["Spaces"] as? [String: Any], !spaces.isEmpty,
+              let all = document["AllSpacesAndDisplays"] as? [String: Any],
+              all["Type"] as? String == "idle" else { return false }
+        return spaces.values.allSatisfy { value in
+            guard let space = value as? [String: Any],
+                  let selection = space["Default"] as? [String: Any] else { return false }
+            return imageMatches(selection["Desktop"], imageURL)
+        }
+    }
+
+    private static func waitForRegistration(imageURL: URL) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        var consecutiveMatches = 0
+        while true {
+            try Task.checkCancellation()
+            consecutiveMatches = registrationMatches(imageURL) ? consecutiveMatches + 1 : 0
+            if consecutiveMatches >= 3 { return }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        throw BackendError.message("系统尚未完成场景静帧登记，正在恢复原壁纸")
+    }
+
+    private static func systemStateMatches(_ imageURL: URL) -> Bool {
+        guard let document = wallpaperDocument(),
+              let spaces = document["Spaces"] as? [String: Any], spaces.isEmpty,
+              let all = document["AllSpacesAndDisplays"] as? [String: Any],
+              all["Type"] as? String == "individual" else { return false }
+        return imageMatches(all["Desktop"], imageURL)
+    }
+
     private static func setAllSpacesOn(imageURL: URL) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 12
-        var pressed = false
-        while ProcessInfo.processInfo.systemUptime < deadline {
+        // Navigation and the switch action may consume most of the first
+        // deadline. Give the system a separate confirmation window after the
+        // press, and do not require Settings to keep showing the same pane.
+        let discoveryDeadline = ProcessInfo.processInfo.systemUptime + 20
+        while ProcessInfo.processInfo.systemUptime < discoveryDeadline {
             try Task.checkCancellation()
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first {
-                let root = AXUIElementCreateApplication(app.processIdentifier)
-                var remaining = 4000
-                if let control = findSwitch(root, remaining: &remaining), let value = switchValue(control) {
-                    if !pressed {
-                        guard value == false else {
-                            throw BackendError.message("系统墙纸开关未因登记静帧而关闭，拒绝重复切换")
-                        }
-                        guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
-                            throw BackendError.message("无法操作系统墙纸的全空间开关")
-                        }
-                        pressed = true
-                    } else if value && systemStateMatches(imageURL) {
-                        return
+                if let control = allSpacesSwitch(in: app), let value = switchValue(control) {
+                    guard value == false else {
+                        throw BackendError.message("系统墙纸开关未因登记静帧而关闭，拒绝重复切换")
                     }
+                    guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
+                        throw BackendError.message("无法操作系统墙纸的全空间开关")
+                    }
+                    try await waitForSystemState(imageURL: imageURL)
+                    return
                 }
             }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        throw BackendError.message("无法定位系统墙纸的全空间开关，正在恢复原壁纸")
+    }
+
+    private static func waitForSystemState(imageURL: URL) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 12
+        while true {
+            try Task.checkCancellation()
+            if systemStateMatches(imageURL) { return }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { break }
             try await Task.sleep(for: .milliseconds(200))
         }
         throw BackendError.message("系统没有确认全空间底图，正在恢复原壁纸")
