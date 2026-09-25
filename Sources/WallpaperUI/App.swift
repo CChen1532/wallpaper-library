@@ -12,12 +12,51 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
-@main struct WallpaperApp: App {
-    @StateObject private var model = LibraryModel()
+@MainActor private enum AppServices { static let model = LibraryModel() }
+
+@MainActor final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
+    private var polling: Task<Void, Never>?
+    private var sleepObserver: NSObjectProtocol?
+    private var lockObserver: NSObjectProtocol?
+    private var terminating = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        polling = Task {
+            while !Task.isCancelled {
+                await AppServices.model.refreshState()
+                do { try await Task.sleep(for: .seconds(3)) } catch { break }
+            }
+        }
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                Task { @MainActor in await AppServices.model.stopScene() }
+            }
+        lockObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { _ in
+                Task { @MainActor in await AppServices.model.stopScene() }
+            }
+    }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminating else { return .terminateLater }
+        terminating = true
+        polling?.cancel()
+        Task {
+            await AppServices.model.shutdownScene()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+}
+
+@main @MainActor struct WallpaperApp: App {
+    @NSApplicationDelegateAdaptor(WallpaperAppDelegate.self) private var delegate
+    @StateObject private var model = AppServices.model
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     var body: some Scene {
-        WindowGroup("视频壁纸") {
-            NativeLibraryView().environmentObject(model).preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
+        Window("视频壁纸", id: "library") {
+            NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer)
+                .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
         }.defaultSize(width: 1200, height: 800)
             .commands {
                 CommandGroup(after: .sidebar) {
@@ -29,11 +68,35 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                     Divider()
                     Button("紧凑窗口") { resizeWindow(width: 980, height: 680) }
                     Button("标准窗口") { resizeWindow(width: 1200, height: 800) }
+                    Divider()
+                    Button("停止所有壁纸") { Task { await model.perform(.off) } }
+                        .keyboardShortcut(".", modifiers: [.command, .option])
                 }
             }
+        MenuBarExtra("视频壁纸", systemImage: "desktopcomputer") {
+            WallpaperMenu().environmentObject(model).environmentObject(model.scenePlayer)
+        }
     }
     private func resizeWindow(width: CGFloat, height: CGFloat) {
         guard let window = NSApp.keyWindow, window.sheetParent == nil, window.attachedSheet == nil else { return }
         window.setContentSize(NSSize(width: width, height: height))
+    }
+}
+
+private struct WallpaperMenu: View {
+    @EnvironmentObject var model: LibraryModel
+    @EnvironmentObject var scenePlayer: ScenePlayer
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Text(scenePlayer.isActive ? scenePlayer.statusText : model.state.running ? "视频正在桌面播放" : "壁纸已停止")
+        if scenePlayer.isActive { Text(scenePlayer.title) }
+        Button("打开资料库") {
+            openWindow(id: "library")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        Button("停止所有壁纸") { Task { await model.perform(.off) } }
+            .disabled(model.busy || scenePlayer.phase == .stopping)
+        Divider()
+        Button("退出视频壁纸") { NSApp.terminate(nil) }
     }
 }

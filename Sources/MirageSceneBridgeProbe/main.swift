@@ -14,7 +14,7 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
 
 /// The 1000000001 fixture places its clock against the right edge of a
 /// 3840x2160 canvas. Centered cover cropping cuts it off on the built-in screen.
-/// Keep this fixture calibration in the isolated probe, not the production UI.
+/// The app's automatic crop option uses this same sample calibration in v1.
 private func defaultHorizontalCropPosition(scenePackagePath: String) -> Double {
     let folder = URL(fileURLWithPath: scenePackagePath).deletingLastPathComponent().lastPathComponent
     return folder == "1000000001" ? 1 : 0.5

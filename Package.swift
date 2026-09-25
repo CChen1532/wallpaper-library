@@ -6,7 +6,7 @@ let package = Package(name: "WallpaperUI", platforms: [.macOS(.v14)], products: 
     .executable(name: "WESceneDesktopProbe", targets: ["WESceneDesktopProbe"]),
     .executable(name: "MirageSceneBridgeProbe", targets: ["MirageSceneBridgeProbe"])
 ], targets: [
-    .executableTarget(name: "WallpaperUI", dependencies: ["WESceneCore"]),
+    .executableTarget(name: "WallpaperUI", dependencies: ["WESceneCore", "MirageSceneBridge"]),
     .executableTarget(name: "WESceneVisibleProbe", dependencies: ["WESceneCore"]),
     .executableTarget(name: "WESceneDesktopProbe", dependencies: ["WESceneCore"]),
     .target(name: "WESceneCore"),

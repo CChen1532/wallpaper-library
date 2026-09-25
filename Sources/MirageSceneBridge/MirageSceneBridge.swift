@@ -14,7 +14,7 @@ public enum MirageSceneBridgeError: LocalizedError {
 
 /// A pinned Mirage runtime tree supplies the renderer, shader assets, Vulkan
 /// ICD, and dylibs together. The GPL source is the v1.1.4 submodule in ThirdParty.
-public struct MirageSceneRuntime {
+public struct MirageSceneRuntime: Sendable {
     public let app: URL
     public let executable: URL
     public let assets: URL
@@ -69,12 +69,32 @@ public struct MirageSceneRuntime {
         return arguments
     }
 
+    /// Continuous app-owned playback. Parent EOF/watchdog and explicit stop own
+    /// the lifetime; the development probe's short timeout is not reused here.
+    public func playbackArguments(scenePackage: URL, displayID: UInt32, fps: Int = 30,
+                                  horizontalCropPosition: Double = 0.5) throws -> [String] {
+        guard [30, 60].contains(fps) else {
+            throw MirageSceneBridgeError.invalid("场景帧率请选择 30 或 60 FPS")
+        }
+        var arguments = try trialArguments(scenePackage: scenePackage, displayID: displayID,
+                                           followFocus: true, horizontalCropPosition: horizontalCropPosition)
+        if let index = arguments.firstIndex(of: "--run-seconds") {
+            arguments.removeSubrange(index...index + 1)
+        }
+        if let index = arguments.firstIndex(of: "--fps") { arguments[index + 1] = String(fps) }
+        return arguments
+    }
+
     public func environment() -> [String: String] {
         var result = ProcessInfo.processInfo.environment
         result["VK_ICD_FILENAMES"] = icd.path
         result["VK_DRIVER_FILES"] = icd.path
         let existing = result["DYLD_FALLBACK_LIBRARY_PATH"]
         result["DYLD_FALLBACK_LIBRARY_PATH"] = frameworks.path + (existing.map { ":" + $0 } ?? "")
+        let fontConfig = app.appendingPathComponent("Contents/Resources/fonts/fonts.conf")
+        if FileManager.default.fileExists(atPath: fontConfig.path) {
+            result["FONTCONFIG_FILE"] = fontConfig.path
+        }
         return result
     }
 }
@@ -172,8 +192,38 @@ public final class MirageSceneChild: @unchecked Sendable {
         guard displayID != 0, process.isRunning else {
             throw MirageSceneBridgeError.invalid("目标显示器无效或渲染进程已退出")
         }
+        condition.lock()
+        lastMovedDisplayID = nil
+        observed.remove("display-move-failed")
+        condition.unlock()
         let data = Data("{\"cmd\":\"moveDisplay\",\"displayID\":\(displayID)}\n".utf8)
         try input.fileHandleForWriting.write(contentsOf: data)
+    }
+
+    /// Nonblocking status for a cancellable async host. All process commands
+    /// still belong to a single worker; the reader callbacks only record events.
+    public func eventReceived(_ event: String) throws -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        try checkLiveEventState()
+        return observed.contains(event)
+    }
+
+    public func moveAcknowledged(to displayID: UInt32) throws -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        try checkLiveEventState()
+        if observed.contains("display-move-failed") {
+            throw MirageSceneBridgeError.failed("渲染窗口跨屏移动失败：\(errorTail)")
+        }
+        return lastMovedDisplayID == displayID
+    }
+
+    private func checkLiveEventState() throws {
+        if let exitCode {
+            throw MirageSceneBridgeError.failed("场景渲染器已退出（\(exitCode)）：\(errorTail)")
+        }
+        if observed.contains("activation-failed") {
+            throw MirageSceneBridgeError.failed("场景显示失败：\(errorTail)")
+        }
     }
 
     /// Captures one renderer-owned frame without ordering the transparent

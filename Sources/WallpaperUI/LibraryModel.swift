@@ -13,9 +13,13 @@ import Combine
     @Published var diagnostics: BackendDiagnostics?
     @Published var loadingDiagnostics = false
     let backend: any WallpaperBackend
+    let scenePlayer: ScenePlayer
+    let sceneRuntimeURL: URL
+    private var shuttingDown = false
+    private var sceneRequestRevision = 0
     private var stateRevision = 0
     var capabilities: BackendCapabilities { backend.capabilities }
-    var isWorking: Bool { busy || loading }
+    var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || shuttingDown }
     var selectedWallpaper: Wallpaper? { items.first { $0.id == selected } }
     var rotationStatusText: String { stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
     var rotationIntervalText: String {
@@ -30,7 +34,59 @@ import Combine
         self.selected = visibleIDs[min(max(index + (forward ? 1 : -1), 0), visibleIDs.count - 1)]
     }
 
-    init(backend: any WallpaperBackend = PhontoBackend()) { self.backend = backend }
+    init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
+         sceneRuntimeURL: URL? = nil) {
+        self.backend = backend
+        self.scenePlayer = scenePlayer ?? ScenePlayer()
+        self.sceneRuntimeURL = sceneRuntimeURL ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
+            .appendingPathComponent("SceneRuntime", isDirectory: true)
+    }
+
+    var sceneRuntimeAvailable: Bool {
+        FileManager.default.isExecutableFile(atPath: sceneRuntimeURL
+            .appendingPathComponent("Contents/Resources/Renderers/SceneWallpaper").path)
+    }
+
+    func playScene(root: URL, name: String, title: String, expectedBytes: Int64,
+                   fps: Int, cropMode: String) async {
+        guard !isWorking else { return }
+        do {
+            guard let displayID = scenePlayer.preferredDisplayID() else {
+                throw BackendError.message("当前没有可用显示器")
+            }
+            // Validate all local inputs before changing the current video engine.
+            let configuration = try SceneLaunchConfiguration.prepare(
+                runtimeURL: sceneRuntimeURL, root: root, name: name, title: title,
+                expectedBytes: expectedBytes, displayID: displayID, fps: fps, cropMode: cropMode)
+            await playPreparedScene(configuration)
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func playPreparedScene(_ configuration: SceneLaunchConfiguration) async {
+        guard beginOperation() else { return }
+        sceneRequestRevision += 1
+        let request = sceneRequestRevision
+        defer { busy = false }
+        do {
+            await scenePlayer.stop()
+            try await backend.perform(.off)
+            guard !shuttingDown, request == sceneRequestRevision else { return }
+            try Task.checkCancellation()
+            try scenePlayer.start(configuration)
+        } catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
+        await readState()
+    }
+
+    func stopScene() async {
+        sceneRequestRevision += 1
+        await scenePlayer.stop()
+    }
+
+    func shutdownScene() async {
+        shuttingDown = true
+        await stopScene()
+    }
 
     func refreshLibrary() async {
         guard !isWorking else { return }
@@ -61,6 +117,11 @@ import Combine
         do {
             let value = try await backend.state()
             guard revision == stateRevision else { return }
+            if scenePlayer.isActive && (value.running || value.rotating) {
+                await scenePlayer.stop()
+                guard revision == stateRevision else { return }
+                error = "检测到视频播放或轮播从外部开启，已停止场景以避免重叠。"
+            }
             state = value; stateIssue = nil
         } catch is CancellationError { return }
         catch {
@@ -75,9 +136,24 @@ import Combine
         return true
     }
     func perform(_ action: Action) async {
-        guard beginOperation() else { return }
+        // Stop remains available while the scene is preparing its first frame.
+        switch action {
+        case .stop, .off:
+            guard !busy, !shuttingDown else { return }
+            busy = true; stateRevision += 1
+        default:
+            guard beginOperation() else { return }
+        }
         defer { busy = false }
-        do { try await backend.perform(action) }
+        do {
+            switch action {
+            case .play, .next, .previous, .random, .rotation, .stop, .off:
+                await scenePlayer.stop()
+            case .stopRotation: break
+            }
+            guard !shuttingDown else { return }
+            try await backend.perform(action)
+        }
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }
         await readState()
