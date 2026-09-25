@@ -45,6 +45,8 @@ struct NativeLibraryView: View {
     @State private var scenePreviewError: String?
     @State private var scenePreviewLoading = false
     @FocusState private var focusedVideo: String?
+    @FocusState private var focusedScene: String?
+    @State private var showPlaybackNotes = false
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
         sceneEntries.filter { search.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(search) || $0.name.localizedCaseInsensitiveContains(search) }
@@ -67,17 +69,21 @@ struct NativeLibraryView: View {
         NavigationSplitView {
             List(selection: $page) {
                 Section("资料库") {
-                    Label("全部视频", systemImage: "film.stack").badge(model.items.count).tag(LibraryPage.videos)
                     Label("场景壁纸", systemImage: "square.3.layers.3d").badge(sceneEntries.count).tag(LibraryPage.scenes)
+                    Label("视频壁纸", systemImage: "play.rectangle").badge(model.items.count).tag(LibraryPage.videos)
                 }
                 Section("桌面") { Label("自动轮播", systemImage: "arrow.triangle.2.circlepath").tag(LibraryPage.rotation) }
-            }.listStyle(.sidebar).navigationTitle("视频壁纸")
-                .navigationSplitViewColumnWidth(min: 175, ideal: 200, max: 250)
+            }.listStyle(.sidebar).navigationTitle("壁纸库")
+                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
                 .safeAreaInset(edge: .bottom) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("动态桌面壁纸", systemImage: "desktopcomputer")
-                        Text("视频与场景，一次播放一个。").foregroundStyle(.secondary)
-                    }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(systemName: "rectangle.inset.filled").font(.system(size: 22, weight: .light))
+                            .foregroundStyle(.secondary)
+                        Text("让桌面，生动起来。")
+                            .font(.system(size: 13, weight: .medium))
+                        Text("你的私人动态壁纸库")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
         } detail: {
             VStack(spacing: 0) {
@@ -88,8 +94,9 @@ struct NativeLibraryView: View {
                 else { videoLibrary }
                 Divider(); desktopControls
             }
-            .navigationTitle(page == .rotation ? "自动轮播" : page == .scenes ? "WE 场景" : "全部视频")
-            .navigationSubtitle(page == .rotation ? "定时切换桌面上的视频壁纸" : page == .scenes ? "Scene 第一版 · 单引擎跟随当前视角" : "\(model.items.count) 个视频")
+            .background(Color(nsColor: .windowBackgroundColor))
+            .navigationTitle(page == .rotation ? "自动轮播" : page == .scenes ? "场景壁纸" : "视频壁纸")
+            .navigationSubtitle(page == .rotation ? "让风景按时焕新" : "本地资料库")
             .searchable(text: $search, placement: .toolbar, prompt: page == .scenes ? "搜索场景" : "搜索视频")
             .toolbar {
                 ToolbarItemGroup {
@@ -140,115 +147,231 @@ struct NativeLibraryView: View {
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
     }
+    private let galleryColumns = [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)]
+
+    private func galleryHeading(_ title: String, subtitle: String, count: Int, preview: Bool = false) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.system(size: 25, weight: .semibold)).tracking(-0.6)
+                Text(subtitle).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if preview {
+                Text("预览版").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(.quaternary.opacity(0.45), in: Capsule())
+            }
+            Text("\(count) 款").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        }.padding(.horizontal, 24).padding(.top, 25).padding(.bottom, 22)
+    }
+
     private var videoLibrary: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
+                galleryHeading("流动的风景", subtitle: "收藏片刻，循环成日常。", count: filtered.count)
                 if model.loading { ProgressView("正在读取视频…").padding() }
                 if !model.loading && filtered.isEmpty {
                     ContentUnavailableView(search.isEmpty ? "添加你的第一段视频" : "没有匹配的视频", systemImage: "film.stack", description: Text(search.isEmpty ? "导入 MP4，让视频在桌面背景持续播放。" : "试试其他关键词。"))
+                        .frame(maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 195), spacing: 16)], spacing: 20) {
-                            ForEach(filtered) { item in
-                                VideoCard(item: item, selected: model.selected == item.id, playing: model.stateIssue == nil && model.state.currentPath == item.id) { model.selected = item.id; focusedVideo = item.id }
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVGrid(columns: galleryColumns, spacing: 20) {
+                                ForEach(filtered) { item in
+                                    VideoCard(item: item, selected: model.selected == item.id,
+                                              playing: model.stateIssue == nil && model.state.running && model.state.currentPath == item.id) {
+                                        model.selected = item.id; focusedVideo = item.id
+                                    }
+                                    .id(item.id)
                                     .focused($focusedVideo, equals: item.id)
                                     .onMoveCommand { direction in
-                                        switch direction {
-                                        case .left, .up: model.selectNextVideo(in: filtered.map(\.id), forward: false)
-                                        case .right, .down: model.selectNextVideo(in: filtered.map(\.id), forward: true)
-                                        default: return
-                                        }
-                                        focusedVideo = model.selected
+                                        moveVideoSelection(direction)
                                     }
-                            }
-                        }.padding(20)
+                                }
+                            }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
+                        }
+                        .onChange(of: focusedVideo) { _, id in if let id { proxy.scrollTo(id) } }
                     }
                 }
-            }.frame(minWidth: 370, maxWidth: .infinity, maxHeight: .infinity)
-            if let item = model.selectedWallpaper { videoDetails(item).frame(minWidth: 230, idealWidth: 265, maxWidth: 310, maxHeight: .infinity) }
-        }.background(Color(nsColor: .controlBackgroundColor))
+            }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            Group {
+                if let item = model.selectedWallpaper { videoDetails(item) }
+                else { inspectorPlaceholder("选择一段风景", subtitle: "点选视频，查看详情并设为桌面壁纸。", icon: "play.rectangle") }
+            }.frame(width: 280)
+        }
     }
+
     private var sceneLibrary: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("跟随当前 Space；跨屏切换时旧屏继续播放 1.5 秒。", systemImage: "rectangle.on.rectangle")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("预览版：Mission Control 切换动画可能短暂露出系统壁纸；场景静音，睡眠或退出软件时停止。")
-                .font(.caption).foregroundStyle(.secondary)
-            if !model.sceneRuntimeAvailable { issueBanner("场景运行组件缺失，请使用包含 Scene 的完整构建。") }
-            if let error = scenePlayer.error { issueBanner(error) }
-            if let sceneError { issueBanner("场景读取失败：" + sceneError) }
-            if sceneLoading { ProgressView("正在读取场景…") }
-            if sceneRoot == nil {
-                ContentUnavailableView("选择场景目录", systemImage: "square.3.layers.3d",
-                    description: Text("选择包含 scene.pkg 子目录的素材文件夹，再选中场景开始播放。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !sceneLoading && sceneEntries.isEmpty && sceneError == nil {
-                ContentUnavailableView("没有找到 scene.pkg", systemImage: "doc.text.magnifyingglass",
-                    description: Text("请检查所选目录是否包含场景子目录。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !sceneLoading && filteredScenes.isEmpty && sceneError == nil {
-                ContentUnavailableView("没有匹配的场景", systemImage: "magnifyingglass",
-                    description: Text("试试场景标题或目录编号。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                HSplitView {
-                    List(filteredScenes, selection: $selectedSceneName) { item in
-                        HStack(spacing: 12) {
-                            SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
-                                .frame(width: 112, height: 68).clipShape(RoundedRectangle(cornerRadius: 7))
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(item.title ?? item.name).font(.headline).lineLimit(2)
-                                Text("\(item.name) · " + ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if scenePlayer.package == sceneRoot?.appendingPathComponent(item.name).appendingPathComponent("scene.pkg") {
-                                    Label(scenePlayer.statusText, systemImage: "waveform").font(.caption).foregroundStyle(.tint)
-                                } else { Text("Wallpaper Engine 场景").font(.caption).foregroundStyle(.secondary) }
-                            }
-                        }.padding(.vertical, 6).tag(item.name)
-                    }.listStyle(.inset).frame(minWidth: 330)
-                    if let item = selectedScene {
-                        sceneDetails(item).frame(minWidth: 245, idealWidth: 290, maxWidth: 330)
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                galleryHeading("桌面，自成风景", subtitle: "光影与细节，在桌面缓缓展开。", count: filteredScenes.count, preview: true)
+                if !model.sceneRuntimeAvailable { issueBanner("场景运行组件缺失，请使用包含 Scene 的完整构建。") }
+                if let error = scenePlayer.error { issueBanner(error) }
+                if let sceneError { issueBanner("场景读取失败：" + sceneError) }
+                if sceneLoading { ProgressView("正在读取场景…").padding() }
+                if sceneRoot == nil {
+                    ContentUnavailableView {
+                        Label("添加场景壁纸", systemImage: "square.3.layers.3d")
+                    } description: {
+                        Text("选择包含场景的素材文件夹，开始布置你的桌面。")
+                    } actions: {
+                        Button("选择文件夹", action: chooseSceneDirectory).buttonStyle(.borderedProminent)
+                    }.frame(maxHeight: .infinity)
+                } else if !sceneLoading && sceneEntries.isEmpty && sceneError == nil {
+                    ContentUnavailableView("尚未找到场景", systemImage: "square.3.layers.3d",
+                        description: Text("请选择包含 scene.pkg 子目录的素材文件夹。"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !sceneLoading && filteredScenes.isEmpty && sceneError == nil {
+                    ContentUnavailableView("没有匹配的场景", systemImage: "magnifyingglass",
+                        description: Text("试试其他标题或目录编号。"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVGrid(columns: galleryColumns, spacing: 20) {
+                                ForEach(filteredScenes) { item in
+                                    sceneCard(item).id(item.name)
+                                        .focused($focusedScene, equals: item.name)
+                                        .onMoveCommand { direction in moveSceneSelection(direction) }
+                                }
+                            }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
+                        }
+                        .onChange(of: focusedScene) { _, id in if let id { proxy.scrollTo(id) } }
                     }
                 }
-            }
-        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            Group {
+                if let item = selectedScene { sceneDetails(item) }
+                else { inspectorPlaceholder("选择一幅风景", subtitle: "点选场景，查看详情并设为桌面壁纸。", icon: "square.3.layers.3d") }
+            }.frame(width: 280)
+        }
     }
+
+    private func sceneCard(_ item: SceneCatalogPayload.Entry) -> some View {
+        let playing = scenePlayer.isActive && scenePlayer.package == sceneRoot?.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
+        let title = item.title ?? item.name
+        return GalleryCard(title: title,
+                           subtitle: ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file),
+                           badge: "场景", selected: selectedSceneName == item.name,
+                           playing: playing, warning: item.error != nil,
+                           accessibilityKind: "场景壁纸",
+                           playbackStatus: playing ? scenePlayer.statusText : nil) {
+            selectedSceneName = item.name; focusedScene = item.name
+        } cover: {
+            SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
+        }
+    }
+
+    private func moveSceneSelection(_ direction: MoveCommandDirection) {
+        let ids = filteredScenes.map(\.name)
+        guard !ids.isEmpty else { return }
+        let index = ids.firstIndex(of: selectedSceneName ?? "") ?? 0
+        let step: Int
+        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -2; case .down: step = 2; default: return }
+        selectedSceneName = ids[min(max(index + step, 0), ids.count - 1)]
+        focusedScene = selectedSceneName
+    }
+
+    private func moveVideoSelection(_ direction: MoveCommandDirection) {
+        let ids = filtered.map(\.id)
+        guard !ids.isEmpty else { return }
+        let index = ids.firstIndex(of: model.selected ?? "") ?? 0
+        let step: Int
+        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -2; case .down: step = 2; default: return }
+        model.selected = ids[min(max(index + step, 0), ids.count - 1)]
+        focusedVideo = model.selected
+    }
+
+    private func inspectorPlaceholder(_ title: String, subtitle: String, icon: String) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: icon).font(.system(size: 32, weight: .ultraLight)).foregroundStyle(.tertiary)
+            Text(title).font(.headline)
+            Text(subtitle).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    private func inspectorHeading(_ title: String, close: @escaping () -> Void) -> some View {
+        HStack {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Spacer()
+            Button(action: close) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .frame(width: 24, height: 24).contentShape(Rectangle())
+                .help("关闭详情").accessibilityLabel("关闭详情")
+        }
+    }
+
     private func sceneDetails(_ item: SceneCatalogPayload.Entry) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
+                inspectorHeading("场景详情") { selectedSceneName = nil; focusedScene = nil }
                 SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
-                    .frame(height: 165).clipShape(RoundedRectangle(cornerRadius: 9))
-                Text(item.title ?? item.name).font(.title3.weight(.semibold)).textSelection(.enabled)
+                    .aspectRatio(4 / 3, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(alignment: .bottomLeading) { coverLabel("场景封面").padding(10) }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(item.title ?? item.name).font(.system(size: 19, weight: .semibold)).tracking(-0.35).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Label("动态场景", systemImage: "square.3.layers.3d").font(.caption).foregroundStyle(.secondary)
+                }
                 Button {
                     guard let sceneRoot else { return }
                     Task { await model.playScene(root: sceneRoot, name: item.name, title: item.title ?? item.name,
                                                   expectedBytes: item.packageBytes, fps: sceneFPS, cropMode: sceneCropMode) }
-                } label: { Label("播放场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity) }
+                } label: { Label("设为场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.packageBytes <= 0 || item.packageBytes > 256 * 1024 * 1024)
-                Text("开始播放会关闭视频和自动轮播。关闭窗口后可从菜单栏停止场景。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Divider()
-                Picker("帧率上限", selection: $sceneFPS) {
-                    Text("30 FPS").tag(30)
-                    Text("60 FPS").tag(60)
+                    .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
+                    .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0 || item.packageBytes > 256 * 1024 * 1024)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("播放设置").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("帧率上限").font(.callout)
+                        Picker("帧率上限", selection: $sceneFPS) {
+                            Text("30 FPS").tag(30)
+                            Text("60 FPS").tag(60)
+                        }.pickerStyle(.segmented).labelsHidden()
+                    }
+                    Picker("画面位置", selection: $sceneCropMode) {
+                        Text("自动适配").tag("auto")
+                        Text("居中").tag("center")
+                        Text("靠左").tag("left")
+                        Text("靠右").tag("right")
+                    }.font(.callout)
+                    Text("修改后，重新设为壁纸即可生效。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                VStack(spacing: 10) {
+                    inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
+                    inspectorMetadata("素材编号", item.name)
                 }
-                Picker("画面位置", selection: $sceneCropMode) {
-                    Text("自动适配").tag("auto")
-                    Text("居中").tag("center")
-                    Text("靠左").tag("left")
-                    Text("靠右").tag("right")
-                }
-                Text("按屏幕分辨率渲染并填满桌面。修改选项后再次播放生效；自动适配会保留当前样本右侧的完整时间。")
-                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("预览版播放说明", isExpanded: $showPlaybackNotes) {
+                    Text("场景跟随当前桌面与显示器。跨屏切换时，原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。场景静音，睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+                }.font(.caption).tint(.secondary)
                 if let sceneRoot {
                     Button("在访达中显示", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([sceneRoot.appendingPathComponent(item.name)])
-                    }
+                    }.buttonStyle(.link).font(.callout)
                 }
-            }.padding(14)
-        }
+            }.padding(20)
+        }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
+
+    private func inspectorMetadata(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value).textSelection(.enabled).multilineTextAlignment(.trailing)
+        }.font(.caption)
+    }
+
+    private func coverLabel(_ label: String) -> some View {
+        Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
+            .padding(.horizontal, 8).padding(.vertical, 4).background(.black.opacity(0.45), in: Capsule())
+    }
+
     private var sceneLimitationsSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -274,7 +397,7 @@ struct NativeLibraryView: View {
                 Button("完成") { showScenePreview = false }.keyboardShortcut(.cancelAction)
             }
             Text(scenePreviewTitle).font(.headline).lineLimit(2)
-            Text("离线静态近似画面；视频纹理、脚本及完整效果请通过“播放场景壁纸”查看。")
+            Text("离线静态近似画面；视频纹理、脚本及完整效果请通过“设为场景壁纸”查看。")
                 .font(.callout).foregroundStyle(.secondary)
             if scenePreviewLoading { ProgressView("正在只读生成静态近似图…").frame(maxWidth: .infinity, maxHeight: .infinity) }
             else if let scenePreviewImage {
@@ -351,36 +474,40 @@ struct NativeLibraryView: View {
     }
     private func videoDetails(_ item: Wallpaper) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("视频详情").font(.headline); Spacer()
-                    Button { model.selected = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain).help("关闭详情")
+            VStack(alignment: .leading, spacing: 20) {
+                inspectorHeading("视频详情") { model.selected = nil; focusedVideo = nil }
+                VideoCover(item: item).aspectRatio(4 / 3, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(alignment: .bottomLeading) { coverLabel("视频封面").padding(10) }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(item.title).font(.system(size: 19, weight: .semibold)).tracking(-0.35).textSelection(.enabled)
+                    Label("动态视频", systemImage: "play.rectangle").font(.caption).foregroundStyle(.secondary)
                 }
-                VideoCover(item: item).aspectRatio(16 / 9, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.title).font(.title3.weight(.semibold)).textSelection(.enabled)
-                    Label("动态视频壁纸", systemImage: "video").font(.caption).foregroundStyle(.secondary)
+                Button { Task { await model.perform(.play(item.id)) } } label: {
+                    Label("设为动态壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
+                }.buttonStyle(.borderedProminent).controlSize(.large)
+                    .keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
+                if model.stateIssue == nil && model.state.running && model.state.currentPath == item.id {
+                    Label("正在桌面播放", systemImage: "waveform").font(.caption).foregroundStyle(.tint)
                 }
-                Button { Task { await model.perform(.play(item.id)) } } label: { Label("设为动态壁纸", systemImage: "desktopcomputer").frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
-                Text("视频将在桌面背景中持续播放。此处图片仅为视频封面。").font(.caption).foregroundStyle(.secondary)
-                if model.stateIssue == nil && model.state.currentPath == item.id { Label("正在桌面播放", systemImage: "waveform").font(.callout).foregroundStyle(.tint) }
-                Divider()
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
-                    detailRow("分辨率", "\(item.width) × \(item.height)")
-                    detailRow("帧率", String(format: "%.2f FPS", item.fps))
-                    detailRow("时长", String(format: "%.1f 秒", item.duration))
-                    detailRow("编码", item.codec.uppercased())
-                    detailRow("大小", ByteCountFormatter.string(fromByteCount: item.sizeBytes, countStyle: .file))
-                }.font(.caption)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("视频信息").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    inspectorMetadata("分辨率", "\(item.width) × \(item.height)")
+                    inspectorMetadata("帧率", String(format: "%.2f FPS", item.fps))
+                    inspectorMetadata("时长", String(format: "%.1f 秒", item.duration))
+                    inspectorMetadata("编码", item.codec.uppercased())
+                    inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.sizeBytes, countStyle: .file))
+                }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                Text("视频在桌面背景持续播放。上方图片仅为封面。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if item.decodeWarning { Label("此视频可能使用软件解码", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
                 if let warning = item.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
                 Divider()
-                Button("移入废纸篓", systemImage: "trash", role: .destructive) { confirmTrash = true }.disabled(model.isWorking || !model.capabilities.canTrash)
+                Button("移入废纸篓", systemImage: "trash", role: .destructive) { confirmTrash = true }
+                    .buttonStyle(.borderless).font(.callout).disabled(model.isWorking || !model.capabilities.canTrash)
             }.padding(20)
-        }.background(Color(nsColor: .windowBackgroundColor))
+        }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
-    private func detailRow(_ name: String, _ value: String) -> some View { GridRow { Text(name).foregroundStyle(.secondary); Text(value).textSelection(.enabled) } }
     private var rotationSettings: some View {
         Form {
             Section {
@@ -402,29 +529,47 @@ struct NativeLibraryView: View {
         }.formStyle(.grouped)
     }
     private var desktopControls: some View {
-        HStack(spacing: 14) {
-            Label {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面壁纸已停止").font(.callout.weight(.medium))
-                    if scenePlayer.isActive {
-                        Text(scenePlayer.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    } else if model.stateIssue == nil, let path = model.state.currentPath { Text(URL(fileURLWithPath: path).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                }
-            } icon: { Image(systemName: "desktopcomputer").foregroundStyle(model.state.running || scenePlayer.isActive ? Color.accentColor : Color.secondary) }
-            Spacer(minLength: 4)
+        HStack(spacing: 12) {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: "desktopcomputer").font(.system(size: 22, weight: .light)).foregroundStyle(.secondary)
+                Circle().fill(model.stateIssue != nil && !scenePlayer.isActive ? Color.orange : scenePlayer.isActive || model.state.running ? Color.green : Color.secondary)
+                    .frame(width: 7, height: 7).overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2)).offset(x: 3, y: 0)
+            }.frame(width: 32)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面待机")
+                    .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(playbackSubtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }.frame(maxWidth: .infinity, alignment: .leading)
             if page != .scenes {
-                control("backward.end", "上一段视频", .previous)
-                control("shuffle", "随机视频", .random)
-                control("forward.end", "下一段视频", .next)
+                HStack(spacing: 3) {
+                    control("backward.end.fill", "上一段视频", .previous)
+                    control("shuffle", "随机视频", .random)
+                    control("forward.end.fill", "下一段视频", .next)
+                }
+                Divider().frame(height: 22)
             }
-            Divider().frame(height: 20)
-            Button("停止桌面播放") { Task { await model.perform(.stop) } }.help("停止场景或视频，保留视频轮播设置")
+            Button { Task { await model.perform(.stop) } } label: {
+                Label("停止", systemImage: "stop.fill").font(.system(size: 11, weight: .medium))
+            }.help("停止场景或视频，保留视频轮播设置").accessibilityLabel("停止桌面播放")
                 .disabled(model.busy || scenePlayer.phase == .stopping)
-            Button("全部关闭") { Task { await model.perform(.off) } }.help("停止场景和视频，并关闭轮播")
+            Button("全部关闭") { Task { await model.perform(.off) } }
+                .font(.system(size: 11, weight: .medium)).help("停止场景和视频，并关闭轮播")
                 .disabled(model.busy || scenePlayer.phase == .stopping)
-        }.padding(.horizontal, 20).padding(.vertical, 12).background(Color(nsColor: .windowBackgroundColor))
+        }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 14)
+            .background(Color(nsColor: .windowBackgroundColor))
     }
-    private func control(_ icon: String, _ title: String, _ action: Action) -> some View { Button { Task { await model.perform(action) } } label: { Image(systemName: icon) }.help(title).accessibilityLabel(title).disabled(model.items.isEmpty || model.isWorking) }
+    private var playbackSubtitle: String {
+        if scenePlayer.isActive { return scenePlayer.title }
+        if model.stateIssue != nil { return "暂时无法读取桌面播放状态" }
+        if model.state.running, let path = model.state.currentPath { return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent }
+        if model.state.rotating { return "自动轮播已开启 · 等待下一次切换" }
+        return "选一幅喜欢的风景，留在桌面。"
+    }
+    private func control(_ icon: String, _ title: String, _ action: Action) -> some View {
+        Button { Task { await model.perform(action) } } label: {
+            Image(systemName: icon).font(.system(size: 12)).frame(width: 27, height: 27).contentShape(Rectangle())
+        }.buttonStyle(.borderless).help(title).accessibilityLabel(title).disabled(model.items.isEmpty || model.isWorking)
+    }
     private func issueBanner(_ text: String) -> some View { Label(text, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading).padding(12) }
     private func importVideos() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType.mpeg4Movie]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
@@ -493,22 +638,90 @@ private struct VideoCard: View {
     let playing: Bool
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                VideoCover(item: item).aspectRatio(16 / 9, contentMode: .fit)
-                    .overlay(alignment: .bottomTrailing) {
-                        Label(String(format: "%.0f 秒", item.duration), systemImage: "video.fill").font(.caption2.weight(.medium)).padding(.horizontal, 7).padding(.vertical, 4)
-                            .background(Color(nsColor: .windowBackgroundColor).opacity(0.95), in: Capsule()).padding(6)
-                    }.clipShape(RoundedRectangle(cornerRadius: 8))
-                Text(item.title).font(.callout.weight(.medium)).lineLimit(1)
-                HStack(spacing: 4) {
-                    if playing { Label("桌面播放中", systemImage: "waveform").foregroundStyle(.tint) }
-                    else { Text("\(item.width) × \(item.height)").foregroundStyle(.secondary) }
-                    Spacer(minLength: 0)
-                    if item.warning != nil || item.decodeWarning { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange) }
-                }.font(.caption)
-            }.padding(8).background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)).contentShape(RoundedRectangle(cornerRadius: 12))
-        }.buttonStyle(.plain).focusable().accessibilityLabel(item.title + "，视频壁纸").accessibilityValue(playing ? "正在桌面播放" : selected ? "已选择" : "未选择")
+        GalleryCard(title: item.title, subtitle: "\(item.width) × \(item.height)",
+                    badge: String(format: "%.0f 秒", item.duration), selected: selected,
+                    playing: playing, warning: item.warning != nil || item.decodeWarning,
+                    accessibilityKind: "视频壁纸", playbackStatus: playing ? "正在桌面播放" : nil,
+                    action: action) {
+            VideoCover(item: item)
+        }
+    }
+}
+
+private struct GalleryCard<Cover: View>: View {
+    let title: String
+    let subtitle: String
+    let badge: String
+    let selected: Bool
+    let playing: Bool
+    let warning: Bool
+    let accessibilityKind: String
+    let playbackStatus: String?
+    let action: () -> Void
+    @ViewBuilder let cover: () -> Cover
+    @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var borderColor: Color { selected ? .accentColor : .primary.opacity(hovered ? 0.18 : 0.07) }
+    private var badgeIcon: String { playing ? "waveform" : accessibilityKind == "视频壁纸" ? "play.fill" : "square.3.layers.3d" }
+    private var badgeText: String { playing ? (playbackStatus ?? "桌面播放中") : badge }
+
+    private var accessibilityStatus: String {
+        let selection = selected ? "已选择" : "未选择"
+        guard playing else { return selection }
+        return selection + "，" + (playbackStatus ?? "正在桌面播放")
+    }
+    var body: some View {
+        Button(action: action) { cardSurface }
+            .buttonStyle(.plain)
+            .focusable()
+            .onHover { hovered = $0 }
+            .animation(reduceMotion ? nil : Animation.easeOut(duration: 0.16), value: hovered)
+            .accessibilityLabel(Text(title + "，" + accessibilityKind))
+            .accessibilityValue(Text(accessibilityStatus))
+            .help(title)
+    }
+    private var cardSurface: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            artwork
+            caption
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(borderColor, lineWidth: selected ? 2.0 : 1.0))
+        .shadow(color: Color.black.opacity(hovered ? 0.10 : 0.035), radius: hovered ? CGFloat(9) : CGFloat(4), x: 0, y: hovered ? CGFloat(4) : CGFloat(2))
+        .contentShape(RoundedRectangle(cornerRadius: 14))
+    }
+    private var artwork: some View {
+        cover().aspectRatio(16 / 10, contentMode: .fit)
+            .overlay(alignment: .bottom) {
+                LinearGradient(colors: [.clear, .black.opacity(0.38)], startPoint: .center, endPoint: .bottom)
+                    .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottomLeading) {
+                Label(badgeText, systemImage: badgeIcon)
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.black.opacity(0.38), in: Capsule()).padding(10)
+            }
+            .overlay(alignment: .topTrailing) {
+                if selected {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white).frame(width: 23, height: 23)
+                        .background(Color.accentColor, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1.5)).padding(10)
+                }
+            }
+    }
+    private var caption: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(2, reservesSpace: true)
+                .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 4) {
+                Text(subtitle).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if warning { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange) }
+            }.font(.system(size: 11))
+        }.padding(13)
     }
 }
