@@ -241,7 +241,7 @@ import Darwin
         store.save(.init(), for: packageA)
         let settingsBackend = SceneTestBackend()
         let settingsPlayer = ScenePlayer(focusProvider: { 1 })
-        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer, sceneRuntimeURL: runtimeRoot, scenePreferences: store)
+        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer, sceneRuntimeURL: runtimeRoot, scenePreferences: store, backdropConfiguration: { nil })
         await settingsModel.applyScenePreferences(for: packageA)
         check(await settingsBackend.actions.isEmpty, "未播放时应用设置不会启动壁纸")
         await settingsModel.playScene(root: root, name: "1000000001", title: "clock", expectedBytes: 3)
@@ -269,6 +269,71 @@ import Darwin
         check(settingsPlayer.activePreferences == settingsB && store.preferences(for: packageA) == requested,
               "切换到同名B时加载B设置并保留A")
         await settingsModel.stopScene()
+        // Automatic backdrop lifecycle uses an isolated fixture, never macOS settings.
+        let backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
+        let backdrop = BackdropFixture()
+        let backdropFocus = FocusFixture()
+        let automatic = ScenePlayer(focusProvider: { backdropFocus.displayID }, backdropFactory: { _ in backdrop })
+        var automaticConfig = configuration("automatic")
+        automaticConfig.backdrop = backdropConfig
+        try automatic.start(automaticConfig)
+        try await wait { automatic.phase == .playing }
+        check(automatic.automaticBackdropActive && backdrop.events == ["apply:1"], "自动底图在激活场景前完成")
+        backdropFocus.displayID = 3
+        try await wait { automatic.displayID == 3 }
+        check(backdrop.events == ["apply:1", "restore", "apply:3"], "跨屏先复原旧屏再匹配目标屏底图")
+        await automatic.stop()
+        check(backdrop.events.last == "restore" && !automatic.automaticBackdropActive && !automatic.restorationPending,
+              "停止场景自动复原且清理匹配状态")
+
+        let rollback = BackdropFixture()
+        let failingRenderer = ScenePlayer(focusProvider: { 1 }, backdropFactory: { _ in rollback })
+        var crashConfig = configuration("backdrop-crash", mode: "crash")
+        crashConfig.backdrop = backdropConfig
+        try failingRenderer.start(crashConfig)
+        try await wait { failingRenderer.phase == .failed }
+        check(rollback.events == ["apply:1", "restore"] && !failingRenderer.restorationPending, "渲染器崩溃仍复原底图")
+
+        let conflict = BackdropFixture(failRestore: true)
+        let blockedPlayer = ScenePlayer(focusProvider: { 1 }, backdropFactory: { _ in conflict })
+        var blockedConfig = configuration("backdrop-conflict"); blockedConfig.backdrop = backdropConfig
+        try blockedPlayer.start(blockedConfig)
+        try await wait { blockedPlayer.phase == .playing }
+        await blockedPlayer.stop()
+        check(blockedPlayer.restorationPending && blockedPlayer.error?.contains("fixture restore") == true && blockedPlayer.phase == .failed,
+              "恢复失败在停止后保留错误与待恢复状态")
+        let blockedBackend = SceneTestBackend()
+        let blockedModel = LibraryModel(backend: blockedBackend, scenePlayer: blockedPlayer)
+        await blockedModel.perform(.play("fixture.mp4"))
+        check(await blockedBackend.actions.isEmpty && blockedModel.error != nil, "恢复失败阻止视频替换覆盖原配置")
+        do { try blockedPlayer.start(configuration("must-not-start")); preconditionFailure("pending recovery bypassed") }
+        catch { check(true, "关闭自动开关也不能绕过待恢复状态") }
+
+        // Real Process/Pipe boundary with a fake helper and temporary journal.
+        // Confirms Swift closes the last writer and waits for restoration.
+        try FileManager.default.createDirectory(at: backdropConfig.state, withIntermediateDirectories: true)
+        try #"""
+        import pathlib, plistlib, sys
+        state = pathlib.Path(sys.argv[sys.argv.index('--state-dir')+1])/'session.plist'
+        def save(value): state.write_bytes(plistlib.dumps({'state':value}))
+        if 'lease' in sys.argv:
+            assert pathlib.Path(sys.argv[sys.argv.index('lease')+1]).exists()
+            save('applied')
+            print('BACKDROP_READY', flush=True)
+            sys.stdin.buffer.read()
+        save('restored')
+        """#.write(to: backdropConfig.helper, atomically: true, encoding: .utf8)
+        let realLease = SceneBackdropLease(configuration: backdropConfig)
+        try realLease.activate(displayID: 1) { try Data("fixture".utf8).write(to: $0) }
+        check(backdropConfig.recoveryPending, "底图进程准备好后恢复账本仍保留")
+        try realLease.finish()
+        check(!backdropConfig.recoveryPending, "关闭UI管道会等待子进程复原后返回")
+        try realLease.finish()
+        check(!backdropConfig.recoveryPending, "重复停止不会重新应用底图")
+        let pendingJournal = try PropertyListSerialization.data(fromPropertyList: ["state":"pending_restore"], format: .binary, options: 0)
+        try pendingJournal.write(to: backdropConfig.state.appendingPathComponent("session.plist"))
+        try SceneBackdropLease.recover(backdropConfig)
+        check(!backdropConfig.recoveryPending, "重启恢复入口处理遗留账本")
         print("\(count) Scene integration checks passed")
     }
 
@@ -313,4 +378,26 @@ private actor SceneTestBackend: WallpaperBackend {
     func importFiles(_ urls: [URL]) async -> [String] { [] }
     func trash(_ url: URL) async throws { }
     func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
+}
+
+
+private final class BackdropFixture: SceneBackdropControlling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var active = false
+    private let failRestore: Bool
+    init(failRestore: Bool = false) { self.failRestore = failRestore }
+    var events: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
+    var recoveryPending: Bool { lock.lock(); defer { lock.unlock() }; return active }
+    func activate(displayID: UInt32, capture: (URL) throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        active = true; recorded.append("apply:\(displayID)")
+    }
+    func checkHealth() throws { }
+    func finish() throws {
+        lock.lock(); defer { lock.unlock() }
+        guard active else { return }
+        if failRestore { throw BackendError.message("fixture restore failure") }
+        recorded.append("restore"); active = false
+    }
 }

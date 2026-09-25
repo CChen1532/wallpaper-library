@@ -148,8 +148,8 @@ def reload_agent():
         raise RuntimeError('配置已写入但 WallpaperAgent 刷新失败；请运行“恢复原壁纸”：' + result.stderr.strip())
 
 
-def inventory(display_id=None):
-    binary = STATE / 'space-inventory'
+def inventory(display_id=None, binary=None):
+    binary = binary or STATE / 'space-inventory'
     if not binary.is_file():
         raise ValueError('请先运行 工具/快速墙纸/build.sh')
     args = [str(binary)] + ([str(display_id)] if display_id else [])
@@ -237,10 +237,33 @@ class Switcher:
         print('原壁纸配置已复原并请求刷新（包括原航拍选择）；未改动屏保。', flush=True)
 
 
+def lease(switcher, image, inv, rows, wait):
+    """Caller holds the state lock for the whole lease, including rollback.
+
+    EOF on the UI-owned pipe releases the lease even if the UI is killed.
+    A failed apply is also rolled back if it created a recovery journal.
+    """
+    old = switcher.read_session()
+    if old and old['state'] != 'restored':
+        raise ValueError('已有待恢复任务，请先 restore')
+    try:
+        switcher.apply(image, inv, rows)
+        print('BACKDROP_READY', flush=True)
+        wait()
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        current = switcher.read_session()
+        if current and (not old or current['backup'] != old['backup']):
+            switcher.restore()
+
+
 def main():
     parser = argparse.ArgumentParser(description='选定 Space 的快速墙纸切换与复原；不需要手动切桌面')
+    parser.add_argument('--state-dir', type=Path, default=STATE)
+    parser.add_argument('--inventory', type=Path, default=STATE / 'space-inventory')
     subs = parser.add_subparsers(dest='command', required=True)
-    for verb in ('apply', 'timed'):
+    for verb in ('apply', 'timed', 'lease'):
         p = subs.add_parser(verb)
         p.add_argument('image', type=Path)
         p.add_argument('--spaces', default='1,2', help='当前所选屏幕的桌面顺序，默认 1,2；可选 all')
@@ -252,17 +275,18 @@ def main():
     args = parser.parse_args()
     if sys.platform != 'darwin':
         parser.error('仅支持 macOS')
-    STATE.mkdir(parents=True, exist_ok=True)
-    with (STATE / 'lock').open('a') as lock:
+    state = args.state_dir.expanduser().resolve()
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (state / 'lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('另一个切换任务正在执行，请等其结束')
-        switcher = Switcher()
+        switcher = Switcher(state=state)
         if args.command == 'status':
             session = switcher.read_session()
             print(json.dumps({'session': session['state'] if session else 'none',
-                              'recovery_file': str(switcher.session), 'current': inventory()}, ensure_ascii=False, indent=2))
+                              'recovery_file': str(switcher.session), 'current': inventory(binary=args.inventory)}, ensure_ascii=False, indent=2))
         elif args.command == 'restore':
             switcher.restore()
         else:
@@ -270,12 +294,17 @@ def main():
                 raise ValueError('自动复原时长必须在 0 到 86400 秒之间')
             if args.display is not None and args.display <= 0:
                 raise ValueError('显示器 ID 必须为正整数')
-            inv = inventory(args.display)
+            inv = inventory(args.display, args.inventory)
             rows = resolve_spaces(inv, args.spaces)
             print('目标显示器 %s，桌面 %s（按本次实时顺序；恢复使用 UUID）' %
                   (inv['display_id'], ','.join(str(r['number']) for r in rows)), flush=True)
             if args.command == 'apply':
                 switcher.apply(args.image, inv, rows)
+            elif args.command == 'lease':
+                def interrupted_lease(_signal, _frame):
+                    raise KeyboardInterrupt
+                signal.signal(signal.SIGTERM, interrupted_lease)
+                lease(switcher, args.image, inv, rows, lambda: sys.stdin.buffer.read())
             else:
                 old = switcher.read_session()
                 if old and old['state'] != 'restored':

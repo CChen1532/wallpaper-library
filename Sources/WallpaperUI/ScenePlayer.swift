@@ -15,6 +15,7 @@ struct SceneLaunchConfiguration: Sendable {
     let title: String
     let displayID: UInt32
     var preferences = ScenePreferences()
+    var backdrop: SceneBackdropConfiguration?
 
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
                         expectedBytes: Int64, displayID: UInt32, preferences: ScenePreferences = .init()) throws -> Self {
@@ -64,17 +65,23 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var displayID: UInt32?
     @Published private(set) var error: String?
     @Published private(set) var activePreferences: ScenePreferences?
+    @Published private(set) var restorationPending = false
+    @Published private(set) var recoveringBackdrop = false
+    @Published private(set) var automaticBackdropActive = false
+    private let backdropFactory: @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private let focusProvider: @MainActor @Sendable () -> UInt32?
 
-    init(focusProvider: @escaping @MainActor @Sendable () -> UInt32? = { FocusDisplaySelector.currentDisplay() }) {
+    init(focusProvider: @escaping @MainActor @Sendable () -> UInt32? = { FocusDisplaySelector.currentDisplay() },
+         backdropFactory: @escaping @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling = { SceneBackdropLease(configuration: $0) }) {
         self.focusProvider = focusProvider
+        self.backdropFactory = backdropFactory
     }
 
     var isActive: Bool { worker != nil }
     func preferredDisplayID() -> UInt32? { focusProvider() }
-    var isTransitioning: Bool { phase == .starting || phase == .stopping }
+    var isTransitioning: Bool { phase == .starting || phase == .stopping || recoveringBackdrop }
     var statusText: String {
         switch phase {
         case .stopped: return "场景未播放"
@@ -85,8 +92,32 @@ struct SceneLaunchConfiguration: Sendable {
         }
     }
 
+    func requireRestoredBackdrop() throws {
+        guard !restorationPending, !recoveringBackdrop else {
+            throw BackendError.message("原壁纸尚未恢复，请在设置中点击“恢复原壁纸”后再播放")
+        }
+    }
+
+    func recoverBackdrop() async {
+        guard worker == nil, !recoveringBackdrop else { return }
+        recoveringBackdrop = true
+        defer { recoveringBackdrop = false }
+        do {
+            let configuration = try SceneBackdropConfiguration.bundled()
+            try await Task.detached { try SceneBackdropLease.recover(configuration) }.value
+            restorationPending = false
+            error = nil
+            phase = .stopped
+        } catch {
+            restorationPending = true
+            self.error = "恢复原壁纸失败：" + error.localizedDescription
+            phase = .failed
+        }
+    }
+
     func start(_ configuration: SceneLaunchConfiguration) throws {
         guard worker == nil else { throw BackendError.message("上一个场景尚未停止，请稍候") }
+        try requireRestoredBackdrop()
         let token = UUID()
         generation = token
         phase = .starting
@@ -96,16 +127,23 @@ struct SceneLaunchConfiguration: Sendable {
         displayID = configuration.displayID
         error = nil
         let focus = focusProvider
+        let backdropFactory = backdropFactory
         worker = Task.detached(priority: .userInitiated) { [weak self] in
             let child = MirageSceneChild(executable: configuration.executable,
                                          arguments: configuration.arguments,
                                          environment: configuration.environment)
+            let backdrop = configuration.backdrop.map { backdropFactory($0) }
             var failure: String?
             do {
                 try Task.checkCancellation()
                 try child.start()
                 try await Self.waitUntil(timeout: 60) { try child.eventReceived("scene-ready") }
                 try await Self.waitUntil(timeout: 15) { try child.eventReceived("first-frame-presented") }
+                try Task.checkCancellation()
+                if let backdrop {
+                    try backdrop.activate(displayID: configuration.displayID) { try child.snapshot(to: $0) }
+                    await self?.backdropActivated(token: token)
+                }
                 try Task.checkCancellation()
                 try child.send("activate")
                 try await Self.waitUntil(timeout: 5) { try child.eventReceived("activated") }
@@ -114,26 +152,32 @@ struct SceneLaunchConfiguration: Sendable {
                 while !Task.isCancelled {
                     // A successful activation is historical; still check liveness.
                     _ = try child.eventReceived("activated")
+                    try backdrop?.checkHealth()
                     let target = configuration.preferences.followsDisplay ? await focus() : nil
                     try Task.checkCancellation()
                     if configuration.preferences.followsDisplay,
                        let move = handoff.observe(target, at: ProcessInfo.processInfo.systemUptime) {
+                        try backdrop?.finish()
+                        try Task.checkCancellation()
                         try child.move(to: move)
                         try await Self.waitUntil(timeout: 2) { try child.moveAcknowledged(to: move) }
+                        try backdrop?.activate(displayID: move) { try child.snapshot(to: $0) }
                         await self?.moved(to: move, token: token)
                     }
                     try await Task.sleep(for: .milliseconds(250))
                 }
             } catch is CancellationError { }
             catch { failure = error.localizedDescription }
+            do { try backdrop?.finish() }
+            catch { failure = [failure, "恢复底图：" + error.localizedDescription].compactMap { $0 }.joined(separator: "\n") }
             child.stop()
-            await self?.finished(token: token, failure: failure)
+            await self?.finished(token: token, failure: failure, pending: backdrop?.recoveryPending ?? false)
         }
     }
 
     func stop() async {
         guard let task = worker else {
-            if phase == .failed { phase = .stopped; error = nil }
+            if phase == .failed && !restorationPending { phase = .stopped; error = nil }
             return
         }
         let token = generation
@@ -143,13 +187,16 @@ struct SceneLaunchConfiguration: Sendable {
         // A newer session must never be cleared by an older stop continuation.
         guard generation == token else { return }
         worker = nil
-        phase = .stopped
+        phase = error == nil ? .stopped : .failed
         package = nil
         activePreferences = nil
         displayID = nil
-        error = nil
     }
 
+    private func backdropActivated(token: UUID) {
+        guard token == generation else { return }
+        automaticBackdropActive = true
+    }
     private func activated(token: UUID) {
         guard token == generation, phase == .starting else { return }
         phase = .playing
@@ -158,8 +205,11 @@ struct SceneLaunchConfiguration: Sendable {
         guard token == generation, phase == .playing else { return }
         self.displayID = displayID
     }
-    private func finished(token: UUID, failure: String?) {
+    private func finished(token: UUID, failure: String?, pending: Bool) {
         guard token == generation else { return }
+        error = failure
+        restorationPending = pending
+        automaticBackdropActive = false
         // stop() owns the final transition while awaiting cleanup.
         guard phase != .stopping else { return }
         worker = nil

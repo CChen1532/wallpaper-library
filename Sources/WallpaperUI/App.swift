@@ -22,6 +22,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         polling = Task {
+            await AppServices.model.scenePlayer.recoverBackdrop()
             while !Task.isCancelled {
                 await AppServices.model.refreshState()
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
@@ -105,6 +106,10 @@ private struct WallpaperMenu: View {
         }
         Button("停止所有壁纸") { Task { await model.perform(.off) } }
             .disabled(model.busy || scenePlayer.phase == .stopping)
+        if scenePlayer.restorationPending {
+            Button("恢复原壁纸") { Task { await scenePlayer.recoverBackdrop() } }
+                .disabled(scenePlayer.isActive || scenePlayer.recoveringBackdrop)
+        }
         Divider()
         Button("退出视频壁纸") { NSApp.terminate(nil) }
     }

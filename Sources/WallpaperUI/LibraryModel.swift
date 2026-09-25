@@ -16,6 +16,7 @@ import Combine
     let scenePlayer: ScenePlayer
     let sceneRuntimeURL: URL
     let scenePreferences: ScenePreferencesStore
+    private let backdropConfiguration: @MainActor () throws -> SceneBackdropConfiguration?
     private var shuttingDown = false
     private var sceneRequestRevision = 0
     private var stateRevision = 0
@@ -36,8 +37,13 @@ import Combine
     }
 
     init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
-         sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil) {
+         sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil,
+         backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
+             guard UserDefaults.standard.object(forKey: SceneBackdropConfiguration.preferenceKey) as? Bool ?? true else { return nil }
+             return try SceneBackdropConfiguration.bundled()
+         }) {
         self.backend = backend
+        self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
         self.scenePlayer = scenePlayer ?? ScenePlayer()
         self.sceneRuntimeURL = sceneRuntimeURL ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
@@ -56,10 +62,11 @@ import Combine
                 throw BackendError.message("当前没有可用显示器")
             }
             // Validate all local inputs before changing the current video engine.
-            let configuration = try SceneLaunchConfiguration.prepare(
+            var configuration = try SceneLaunchConfiguration.prepare(
                 runtimeURL: sceneRuntimeURL, root: root, name: name, title: title,
                 expectedBytes: expectedBytes, displayID: displayID,
                 preferences: scenePreferences.preferences(for: root.appendingPathComponent(name).appendingPathComponent("scene.pkg")))
+            configuration.backdrop = try backdropConfiguration()
             await playPreparedScene(configuration)
         } catch { self.error = error.localizedDescription }
     }
@@ -87,6 +94,7 @@ import Combine
         defer { busy = false }
         do {
             await scenePlayer.stop()
+            try scenePlayer.requireRestoredBackdrop()
             try await backend.perform(.off)
             guard !shuttingDown, request == sceneRequestRevision else { return }
             try Task.checkCancellation()
@@ -170,6 +178,10 @@ import Combine
             case .stopRotation: break
             }
             guard !shuttingDown else { return }
+            switch action {
+            case .play, .next, .previous, .random, .rotation: try scenePlayer.requireRestoredBackdrop()
+            default: break
+            }
             try await backend.perform(action)
         }
         catch is CancellationError { }
