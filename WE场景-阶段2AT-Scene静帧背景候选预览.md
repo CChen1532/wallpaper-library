@@ -16,6 +16,8 @@
 
 ## 下一次实机试验的事务边界
 
-下一步如获明确许可，先在系统设置中记录原始壁纸选择、外观选项及“在所有 Space 上显示”状态；把本次静帧放到持久位置，再通过 macOS 壁纸设置将其选为背景并开启“在所有 Space 上显示”。Apple 的[壁纸设置说明](https://support.apple.com/guide/mac-help/mchlp1103/mac)说明此开关使所有桌面 Space 和显示器使用同一壁纸；而 [Apple 框架工程师](https://developer.apple.com/forums/thread/834630)说明公开 API 没有一次设置所有 Space 图片的接口。因此不通过写 WallpaperAgent 私有数据库绕过该边界，也不把 `NSWorkspace.setDesktopImageURL` 当作全 Space 操作。
+只读系统设置检查显示：目前选中“默认系统壁纸”，“显示为屏幕保护程序”关闭，“在所有空间中显示”也关闭。`NSWorkspace.desktopImageURL(for:)` 只返回 `/System/Library/CoreServices/DefaultDesktop.heic`，不能凭这个代理 URL 还原原来的航拍壁纸选择。因此下一次如获明确许可，先记录试验使用的两个 Space 各自的壁纸 UI 状态，只在这两个 Space 临时选用本次静帧，试验后逐个用系统设置恢复原选择；不切换“在所有空间中显示”，以免波及其余 Space。
 
-只在确认背景已同步后，另行运行一次最长 60 秒的旧 Stationary 跟随 Scene 试验，观察进入 Mission Control、切换到另一个 Space 和返回的动画、图标及停止清理。试验后按记录恢复原壁纸及原“所有 Space”开关状态，并核对系统壁纸 URL、Scene 进程和 phonto 状态。若系统设置无法明确恢复原状态，须停止桌面试验并先处理恢复。静帧只是动画期间的画面匹配候选，**不是动态 Scene 在动画里继续播放的证明**；正式 Scene 仍保持关闭。
+Apple 的[壁纸设置说明](https://support.apple.com/guide/mac-help/mchlp1103/mac)说明“在所有 Space 上显示”会把同一壁纸用于所有桌面 Space 和显示器；[Apple 框架工程师](https://developer.apple.com/forums/thread/834630)说明公开 API 没有一次设置所有 Space 图片的接口。两 Space 小范围试验若通过，再设计用户明确启用的全 Space 方案，不通过写 WallpaperAgent 私有数据库绕过该边界。
+
+只在确认两个 Space 的静态背景已同步后，另行运行一次最长 60 秒的旧 Stationary 跟随 Scene 试验，观察进入 Mission Control、切换到另一个 Space 和返回的动画、图标及停止清理。试验后按各自记录恢复两个 Space 原壁纸，并核对系统设置、Scene 进程和 phonto 状态。若任一 Space 的原状态无法明确识别，须停止桌面试验并先处理恢复。静帧只是动画期间的画面匹配候选，**不是动态 Scene 在动画里继续播放的证明**；正式 Scene 仍保持关闭。
