@@ -34,6 +34,30 @@ struct SystemWallpaperStabilityGate {
     }
 }
 
+enum SystemWallpaperActivationAction: Equatable { case wait, press, complete }
+
+/// WallpaperAgent can undo the first Settings press while it finishes a
+/// desktop-image registration. Retry only after the switch is visibly off and
+/// the all-Spaces selection has gone away; never toggle a switch that is on.
+struct SystemWallpaperActivationGate {
+    static let retryInterval: TimeInterval = 2
+    static let maximumPresses = 3
+
+    private var stability = SystemWallpaperStabilityGate()
+    private(set) var pressCount = 0
+    private var previousPress: TimeInterval?
+
+    mutating func observe(matches: Bool, switchIsOn: Bool?, at uptime: TimeInterval) -> SystemWallpaperActivationAction {
+        let canConfirm = pressCount > 0 || switchIsOn == true
+        if stability.observe(matches: canConfirm && matches, at: uptime) { return .complete }
+        guard switchIsOn == false, !matches, pressCount < Self.maximumPresses else { return .wait }
+        if let previousPress, uptime - previousPress < Self.retryInterval { return .wait }
+        pressCount += 1
+        previousPress = uptime
+        return .press
+    }
+}
+
 /// Drives only the macOS Wallpaper pane's identified all-Spaces switch.
 /// A manual trial of this system action updated Mission Control's thumbnails
 /// where editing Index.plist alone did not. Accessibility permission is
@@ -71,7 +95,12 @@ enum SpaceWallpaperSettingsController {
     private static func findSwitch(_ element: AXUIElement, remaining: inout Int) -> AXUIElement? {
         guard remaining > 0 else { return nil }
         remaining -= 1
-        if attribute(element, "AXIdentifier") as? String == "ShowOnAllDisplays" { return element }
+        if attribute(element, "AXIdentifier") as? String == "ShowOnAllDisplays",
+           switchValue(element) != nil { return element }
+        let label = (attribute(element, kAXTitleAttribute as String) as? String)
+            ?? (attribute(element, kAXDescriptionAttribute as String) as? String)
+        if (label == "在所有空间中显示" || label == "Show on All Spaces"),
+           switchValue(element) != nil { return element }
         for key in [kAXChildrenAttribute as String, "AXContents"] {
             guard let children = attribute(element, key) as? [AXUIElement] else { continue }
             for child in children {
@@ -81,12 +110,27 @@ enum SpaceWallpaperSettingsController {
         return nil
     }
 
-    private static func allSpacesSwitch(in app: NSRunningApplication) -> AXUIElement? {
-        let root = AXUIElementCreateApplication(app.processIdentifier)
-        guard let windows = attribute(root, kAXWindowsAttribute as String) as? [AXUIElement] else { return nil }
-        var remaining = 4000
-        for window in windows {
-            if let control = findSwitch(window, remaining: &remaining) { return control }
+    private static func allSpacesSwitch() -> AXUIElement? {
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences") {
+            let root = AXUIElementCreateApplication(app.processIdentifier)
+            var roots: [AXUIElement] = []
+            for key in [kAXMainWindowAttribute as String, kAXFocusedWindowAttribute as String] {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(root, key as CFString, &value) == .success,
+                   let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                    roots.append(value as! AXUIElement)
+                }
+            }
+            if let windows = attribute(root, kAXWindowsAttribute as String) as? [AXUIElement] {
+                roots.append(contentsOf: windows)
+            }
+            roots.append(root)
+            for element in roots {
+                var remaining = 8000
+                if let control = findSwitch(element, remaining: &remaining), switchValue(control) != nil {
+                    return control
+                }
+            }
         }
         return nil
     }
@@ -151,38 +195,39 @@ enum SpaceWallpaperSettingsController {
     }
 
     private static func setAllSpacesOn(imageURL: URL) async throws {
-        // Navigation and the switch action may consume most of the first
-        // deadline. Give the system a separate confirmation window after the
-        // press, and do not require Settings to keep showing the same pane.
+        // The first press sometimes survives for less than a second before a
+        // delayed WallpaperAgent write puts the per-Space selection back.
+        // Confirmation must be stable, and a reverted switch may be pressed
+        // again within a small, bounded number of attempts.
         let discoveryDeadline = ProcessInfo.processInfo.systemUptime + 20
-        while ProcessInfo.processInfo.systemUptime < discoveryDeadline {
+        var confirmationDeadline: TimeInterval?
+        var activation = SystemWallpaperActivationGate()
+        while true {
             try Task.checkCancellation()
-            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first {
-                if let control = allSpacesSwitch(in: app), let value = switchValue(control) {
-                    guard value == false else {
-                        throw BackendError.message("系统墙纸开关未因登记静帧而关闭，拒绝重复切换")
-                    }
+            let now = ProcessInfo.processInfo.systemUptime
+            if let confirmationDeadline {
+                guard now < confirmationDeadline else { break }
+            } else if now >= discoveryDeadline {
+                throw BackendError.message("无法定位系统墙纸的全空间开关，正在恢复原壁纸")
+            }
+            let control = allSpacesSwitch()
+            let action = activation.observe(matches: systemStateMatches(imageURL),
+                                            switchIsOn: control.flatMap(switchValue), at: now)
+            switch action {
+            case .complete:
+                return
+            case .press:
+                if let control {
                     guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
                         throw BackendError.message("无法操作系统墙纸的全空间开关")
                     }
-                    try await waitForSystemState(imageURL: imageURL)
-                    return
+                    if confirmationDeadline == nil { confirmationDeadline = now + 25 }
+                }
+            case .wait:
+                if confirmationDeadline == nil, control.flatMap(switchValue) == true {
+                    confirmationDeadline = now + 25
                 }
             }
-            try await Task.sleep(for: .milliseconds(200))
-        }
-        throw BackendError.message("无法定位系统墙纸的全空间开关，正在恢复原壁纸")
-    }
-
-    private static func waitForSystemState(imageURL: URL) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 18
-        var stability = SystemWallpaperStabilityGate()
-        while true {
-            try Task.checkCancellation()
-            let matches = systemStateMatches(imageURL)
-            let observedAt = ProcessInfo.processInfo.systemUptime
-            if observedAt <= deadline, stability.observe(matches: matches, at: observedAt) { return }
-            guard observedAt < deadline else { break }
             try await Task.sleep(for: .milliseconds(200))
         }
         throw BackendError.message("系统全空间底图未持续稳定，正在恢复原壁纸")

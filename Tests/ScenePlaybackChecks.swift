@@ -29,6 +29,28 @@ import UniformTypeIdentifiers
               !stalled.observe(matches: true, at: 1.0) &&
               !stalled.observe(matches: true, at: 3.0),
               "采样间隔过长不能冒充持续稳定")
+        var activation = SystemWallpaperActivationGate()
+        check(activation.observe(matches: false, switchIsOn: false, at: 0) == .press,
+              "全空间开关关闭时首次按下")
+        for sample in 1...4 {
+            check(activation.observe(matches: true, switchIsOn: true, at: Double(sample) * 0.2) == .wait,
+                  "短暂开启不足稳定时间")
+        }
+        check(activation.observe(matches: false, switchIsOn: false, at: 1) == .wait &&
+              activation.observe(matches: false, switchIsOn: false, at: 2) == .press,
+              "系统撤销第一次按下后只在开关重新关闭时重试")
+        var completed = false
+        for sample in 1...17 {
+            completed = activation.observe(matches: true, switchIsOn: true,
+                                            at: 2 + Double(sample) * 0.2) == .complete || completed
+        }
+        check(completed && activation.pressCount == 2, "第二次开启连续稳定后完成")
+        var bounded = SystemWallpaperActivationGate()
+        check(bounded.observe(matches: false, switchIsOn: false, at: 0) == .press &&
+              bounded.observe(matches: false, switchIsOn: false, at: 2) == .press &&
+              bounded.observe(matches: false, switchIsOn: false, at: 4) == .press &&
+              bounded.observe(matches: false, switchIsOn: false, at: 6) == .wait,
+              "最多尝试三次，避免无限切换系统开关")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("scene-player-checks-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
