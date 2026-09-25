@@ -1,6 +1,6 @@
 # 壁纸库
 
-当前 UI：0.2.3 预览版。场景的播放与交互设置直接嵌入右侧详情栏，每张壁纸独立保存；边界见 `UI-阶段2BE-每张壁纸独立设置.md`。
+当前 UI：0.2.4 动效预览版。卡片增加悬停、指针视差、按下和选中反馈，详情与展开使用短过渡；每张场景壁纸的设置继续独立保存。验收边界见 `UI-阶段2BF-鼠标反馈与流畅动效.md`。
 
 macOS 14+ 原生 SwiftUI 壁纸前端，视频使用已有 phonto-wall，场景使用随应用打包的 Mirage Scene 运行时。打开 `dist/WallpaperUI.app` 即可使用。首次访问桌面目录时请允许系统权限请求。
 
@@ -10,6 +10,7 @@ macOS 14+ 原生 SwiftUI 壁纸前端，视频使用已有 phonto-wall，场景�
 bash scripts/build-app.sh
 bash scripts/check.sh
 bash scripts/check-scene-playback.sh
+bash scripts/check-covers.sh
 python3 scripts/check-scene-input.py
 bash scripts/check.sh --live
 bash scripts/check.sh --live --media
@@ -33,6 +34,12 @@ bash scripts/check.sh --live --media
 - 预览缓存位于 `~/Library/Caches/WallpaperUI/Thumbnails`。
 - 卡片展示帧率、时长和文件大小；设置页“关于 → 显示器与运行状态”按需读取诊断。
 - 导入先验证视频，再通过临时文件完成复制，成功后才加入素材列表；大写 MP4 扩展名统一转成小写以匹配现有脚本。
+
+## 界面动效
+
+卡片悬停时轻抬、封面微缩放并随局部指针移动；按下轻压，选中标记淡入。详情封面／标题、设置展开及键盘跟随滚动使用短过渡。遵循系统“减少动态效果”，关闭位移与缩放，保留短淡入。
+
+封面在后台缩小解码并复用内存缓存；单图最长边960像素，缓存目标上限64 MiB。动效按交互触发，没有常驻动画计时器。本轮未量化逐帧流畅度，鼠标连续移动验收受自动化坐标通道限制。
 
 ## 当前限制
 

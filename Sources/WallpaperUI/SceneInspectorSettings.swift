@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Bindings capture the represented package instead of a shared selection draft.
 struct SceneInspectorSettings: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
     @ObservedObject var store: ScenePreferencesStore
@@ -26,7 +27,7 @@ struct SceneInspectorSettings: View {
             Text(label)
             Spacer(minLength: 8)
             Toggle(label, isOn: value(keyPath)).labelsHidden().accessibilityLabel(label)
-        }
+        }.modifier(HoverHighlight())
     }
 
     private func picker<Value: Hashable, Options: View>(_ label: String,
@@ -36,7 +37,7 @@ struct SceneInspectorSettings: View {
             Spacer(minLength: 8)
             Picker(label, selection: value(keyPath), content: options)
                 .labelsHidden().accessibilityLabel(label).frame(width: 112)
-        }
+        }.modifier(HoverHighlight())
     }
 
     var body: some View {
@@ -60,7 +61,9 @@ struct SceneInspectorSettings: View {
                 }.padding(10).disabled(!preferences.mouseEnabled)
             }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
 
-            DisclosureGroup("播放与声音", isExpanded: $showPlayback) {
+            DisclosureGroup("播放与声音", isExpanded: Binding(get: { showPlayback }, set: { value in
+                withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlayback = value }
+            })) {
                 VStack(spacing: 12) {
                     picker("帧率上限", \.fps) {
                         Text("30 FPS").tag(30)
@@ -90,6 +93,8 @@ struct SceneInspectorSettings: View {
             Text(isPlaying && !pendingChanges ? "设置已保存并应用" : "自动保存，下次播放此壁纸时生效")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .contentTransition(.opacity)
+                .animation(LibraryMotion.selection(reduceMotion), value: isPlaying && !pendingChanges)
         }.font(.callout).toggleStyle(.switch).controlSize(.small)
     }
 }

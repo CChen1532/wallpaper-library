@@ -21,6 +21,7 @@ private struct SceneCatalogPayload: Decodable {
     let entries: [Entry]
 }
 struct NativeLibraryView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
     @AppStorage("libraryPage") private var page = LibraryPage.scenes
@@ -179,7 +180,7 @@ struct NativeLibraryView: View {
                                 }
                             }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
                         }
-                        .onChange(of: focusedVideo) { _, id in if let id { proxy.scrollTo(id) } }
+                        .onChange(of: focusedVideo) { _, id in if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } } }
                     }
                 }
             }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
@@ -226,7 +227,7 @@ struct NativeLibraryView: View {
                                 }
                             }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
                         }
-                        .onChange(of: focusedScene) { _, id in if let id { proxy.scrollTo(id) } }
+                        .onChange(of: focusedScene) { _, id in if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } } }
                     }
                 }
             }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
@@ -288,7 +289,7 @@ struct NativeLibraryView: View {
             Spacer()
             Button(action: close) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
-                .frame(width: 24, height: 24).contentShape(Rectangle())
+                .frame(width: 24, height: 24).contentShape(Rectangle()).modifier(HoverHighlight())
                 .help("关闭详情").accessibilityLabel("关闭详情")
         }
     }
@@ -298,11 +299,13 @@ struct NativeLibraryView: View {
             VStack(alignment: .leading, spacing: 20) {
                 inspectorHeading("场景详情") { selectedSceneName = nil; focusedScene = nil }
                 SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
+                    .modifier(ArtworkCrossfade(identity: (sceneRoot?.path ?? "") + "/" + item.name))
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("场景封面").padding(10) }
                 VStack(alignment: .leading, spacing: 8) {
                     Text(item.title ?? item.name).font(.system(size: 17, weight: .semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity).animation(LibraryMotion.selection(reduceMotion), value: item.name)
                     Label("动态场景", systemImage: "square.3.layers.3d").font(.caption).foregroundStyle(.secondary)
                 }
                 Button {
@@ -323,7 +326,9 @@ struct NativeLibraryView: View {
                     inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
                     inspectorMetadata("素材编号", item.name)
                 }
-                DisclosureGroup("预览版播放说明", isExpanded: $showPlaybackNotes) {
+                DisclosureGroup("预览版播放说明", isExpanded: Binding(get: { showPlaybackNotes }, set: { value in
+                    withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlaybackNotes = value }
+                })) {
                     Text("场景跟随当前桌面。开启显示器跟随时，跨屏切换前原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
                 }.font(.caption).tint(.secondary)
@@ -453,11 +458,12 @@ struct NativeLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 inspectorHeading("视频详情") { model.selected = nil; focusedVideo = nil }
-                VideoCover(item: item).aspectRatio(4 / 3, contentMode: .fit)
+                VideoCover(item: item).modifier(ArtworkCrossfade(identity: item.id)).aspectRatio(4 / 3, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("视频封面").padding(10) }
                 VStack(alignment: .leading, spacing: 8) {
                     Text(item.title).font(.system(size: 17, weight: .semibold)).textSelection(.enabled)
+                        .contentTransition(.opacity).animation(LibraryMotion.selection(reduceMotion), value: item.id)
                     Label("动态视频", systemImage: "play.rectangle").font(.caption).foregroundStyle(.secondary)
                 }
                 Button { Task { await model.perform(.play(item.id)) } } label: {
@@ -569,45 +575,11 @@ struct NativeLibraryView: View {
 }
 private struct SceneCover: View {
     let folder: URL?
-    @State private var image: NSImage?
-    var body: some View {
-        GeometryReader { geometry in
-            if let image {
-                Image(nsImage: image).resizable().scaledToFill()
-                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-            } else {
-                Rectangle().fill(Color(nsColor: .quaternaryLabelColor))
-                    .overlay(Image(systemName: "square.3.layers.3d").font(.largeTitle).foregroundStyle(.secondary))
-            }
-        }.accessibilityHidden(true).task(id: folder) { image = loadCover() }
-    }
-    private func loadCover() -> NSImage? {
-        guard let folder else { return nil }
-        var names = ["preview.jpg", "preview.png", "preview.gif"]
-        let project = folder.appendingPathComponent("project.json")
-        if let size = try? project.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_048_576,
-           let data = try? Data(contentsOf: project),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let name = object["preview"] as? String { names.insert(name, at: 0) }
-        for name in names where !name.isEmpty && !name.contains("/") && !name.contains("\\") && name != "." && name != ".." {
-            let url = folder.appendingPathComponent(name)
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
-                  values.isRegularFile == true, values.isSymbolicLink != true,
-                  let size = values.fileSize, size > 0, size <= 16 * 1024 * 1024 else { continue }
-            if let image = NSImage(contentsOf: url) { return image }
-        }
-        return nil
-    }
+    var body: some View { LibraryCover(source: .scene(folder), symbol: "square.3.layers.3d") }
 }
 private struct VideoCover: View {
     let item: Wallpaper
-    var body: some View {
-        GeometryReader { geometry in
-            if let url = item.thumbnail, let image = NSImage(contentsOf: url) {
-                Image(nsImage: image).resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
-            } else { Rectangle().fill(Color(nsColor: .quaternaryLabelColor)).overlay(Image(systemName: "film").font(.largeTitle).foregroundStyle(.secondary)) }
-        }.accessibilityHidden(true)
-    }
+    var body: some View { LibraryCover(source: .video(item.thumbnail), symbol: "film") }
 }
 private struct VideoCard: View {
     let item: Wallpaper
@@ -650,10 +622,13 @@ private struct GalleryCard<Cover: View>: View {
     }
     var body: some View {
         Button(action: action) { cardSurface }
-            .buttonStyle(.plain)
+            .buttonStyle(GalleryPressStyle())
             .focusable()
             .onHover { hovered = $0 }
-            .animation(reduceMotion ? nil : Animation.easeOut(duration: 0.16), value: hovered)
+            .onDisappear { hovered = false }
+            .animation(LibraryMotion.feedback(reduceMotion), value: hovered)
+            .animation(LibraryMotion.selection(reduceMotion), value: selected)
+            .animation(nil, value: reduceMotion)
             .accessibilityLabel(Text(title + "，" + accessibilityKind))
             .accessibilityValue(Text(accessibilityStatus))
             .help(title)
@@ -666,11 +641,12 @@ private struct GalleryCard<Cover: View>: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(borderColor, lineWidth: selected ? 1.5 : 0.5))
-        .shadow(color: Color.black.opacity(hovered ? 0.055 : 0.015), radius: hovered ? CGFloat(5) : CGFloat(2), x: 0, y: 1)
+        .shadow(color: Color.black.opacity(hovered ? 0.09 : 0.015), radius: hovered ? CGFloat(9) : CGFloat(2), x: 0, y: hovered ? 3 : 1)
+        .offset(y: hovered && !reduceMotion ? -2 : 0)
         .contentShape(RoundedRectangle(cornerRadius: 10))
     }
     private var artwork: some View {
-        cover().aspectRatio(16 / 10, contentMode: .fit)
+        HoverArtwork(active: hovered) { cover() }.aspectRatio(16 / 10, contentMode: .fit)
             .overlay(alignment: .bottom) {
                 LinearGradient(colors: [.clear, .black.opacity(0.38)], startPoint: .center, endPoint: .bottom)
                     .allowsHitTesting(false)
@@ -687,6 +663,7 @@ private struct GalleryCard<Cover: View>: View {
                         .foregroundStyle(.white).frame(width: 23, height: 23)
                         .background(Color.accentColor, in: Circle())
                         .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1.5)).padding(10)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.78)))
                 }
             }
     }
