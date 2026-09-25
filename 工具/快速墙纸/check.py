@@ -12,10 +12,13 @@ spec.loader.exec_module(m)
 original = {'Content': {'Choices': [{'Provider': 'com.apple.wallpaper.choice.aerials',
              'Configuration': m.encoded({'assetID': 'original-aerial'}), 'Files': []}], 'Shuffle': '$null'}}
 node = {'Type': 'individual', 'Desktop': original, 'Idle': {'preserve': 'OtherWallpaper'}}
-document = {'Spaces': {k: {'Displays': {'display': copy.deepcopy(node)}} for k in ('a','b','other')},
+document = {'Spaces': {k: {'Default': {'Desktop': copy.deepcopy(original)},
+                          'Displays': {'display': copy.deepcopy(node)}} for k in ('a','b','other')},
             'AllSpacesAndDisplays': {'Type': 'idle', 'Idle': {'preserve': True}},
+            'SystemDefault': {'Desktop': copy.deepcopy(original)},
+            'Displays': {'display': {'Desktop': copy.deepcopy(original)}},
             'unrelated': {'keep': 42}}
-inv = {'display_uuid': 'display', 'display_id': 1,
+inv = {'display_uuid': 'display', 'display_id': 1, 'screen_count': 1,
        'spaces': [{'uuid': 'a', 'number': 1}, {'uuid': 'b', 'number': 2}]}
 with tempfile.TemporaryDirectory() as folder:
     root = Path(folder)
@@ -78,4 +81,71 @@ with tempfile.TemporaryDirectory() as folder:
     failed.refresh = lambda: None
     failed.restore()
     assert plistlib.loads(store.read_bytes()) == document
+    # UI mode includes the system's global "Show on all Spaces" selection.
+    state3 = root / 'state3'; state3.mkdir()
+    store.write_bytes(m.encoded(document))
+    automatic = m.Switcher(store, state3, lambda: None)
+    automatic.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    active_document = plistlib.loads(store.read_bytes())
+    global_active = active_document['AllSpacesAndDisplays']
+    assert global_active['Type'] == 'individual' and 'Desktop' in global_active
+    assert active_document['Spaces'] == {}
+    assert active_document['Displays']['display']['Desktop']['Content']['Choices'][0]['Provider'] == 'com.apple.wallpaper.choice.image'
+    # NSWorkspace may normalize image options while keeping the same image.
+    changed = plistlib.loads(store.read_bytes())
+    changed['AllSpacesAndDisplays']['Desktop']['Content']['Choices'][0]['Configuration'] = b'normalized'
+    changed['SystemDefault']['Desktop']['Content']['Choices'][0]['Configuration'] = b'normalized'
+    store.write_bytes(m.encoded(changed))
+    automatic.restore()
+    assert plistlib.loads(store.read_bytes()) == document
+    # The real Settings switch removes the per-display node altogether.
+    # Recovery must rebuild only that known node from the verified backup.
+    automatic.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    changed['Displays'] = {}
+    store.write_bytes(m.encoded(changed))
+    automatic.restore()
+    assert plistlib.loads(store.read_bytes()) == document
+    automatic.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    changed['Displays'] = {}
+    changed['AllSpacesAndDisplays']['Desktop'] = {'user': 'changed'}
+    store.write_bytes(m.encoded(changed))
+    try:
+        automatic.restore()
+        raise AssertionError('foreign global wallpaper overwritten')
+    except ValueError:
+        pass
+    assert plistlib.loads(store.read_bytes()) == changed
+    assert automatic.read_session()['state'] == 'applied'
+    changed['AllSpacesAndDisplays']['Desktop'] = copy.deepcopy(automatic.read_session()['patches'][-1]['after']['value'])
+    store.write_bytes(m.encoded(changed))
+    automatic.restore()
+    assert plistlib.loads(store.read_bytes()) == document
+    # A crash between native image registration and the Settings toggle must
+    # also recover: registration recreates the original Space UUIDs with the
+    # scene image and returns global mode to idle.
+    automatic.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    scene = automatic.read_session()['patches'][-1]['after']['value']
+    changed['Spaces'] = copy.deepcopy(document['Spaces'])
+    for space in changed['Spaces'].values():
+        space['Default']['Desktop'] = copy.deepcopy(scene)
+        space['Displays']['display']['Desktop'] = copy.deepcopy(scene)
+    changed['AllSpacesAndDisplays'] = copy.deepcopy(document['AllSpacesAndDisplays'])
+    store.write_bytes(m.encoded(changed))
+    automatic.restore()
+    assert plistlib.loads(store.read_bytes()) == document
+    # A newly created Space while all-space mode is active requires manual
+    # recovery; never erase it by restoring the earlier Spaces dictionary.
+    automatic.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    changed = plistlib.loads(store.read_bytes())
+    changed['Spaces']['new'] = {'Default': {'Desktop': {'user': 'new'}}}
+    store.write_bytes(m.encoded(changed))
+    try:
+        automatic.restore()
+        raise AssertionError('new Space overwritten')
+    except ValueError:
+        pass
+    assert plistlib.loads(store.read_bytes()) == changed
 print('Offline recovery checks passed: scoped writes, aerial restore, unrelated edits, idempotence, conflicts, concurrent writes, refresh failure.')

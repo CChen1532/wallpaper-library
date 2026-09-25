@@ -21,7 +21,7 @@ struct WallpaperSettingsView: View {
             Section {
                 Toggle("自动匹配 Space 过渡底图", isOn: $automaticBackdrop)
                     .disabled(model.isWorking || scenePlayer.isActive)
-                Text("播放场景时，将当前显示器各桌面的底图临时设为场景画面；停止、换片或退出时自动恢复。")
+                Text("播放场景时，将截图设为所有 Space 的过渡底图；停止、换片或退出时恢复原设置。")
                     .font(.callout).foregroundStyle(.secondary)
                 if let url = scenePlayer.automaticBackdropImage, let image = NSImage(contentsOf: url) {
                     LabeledContent("当前壁纸底图", value: scenePlayer.title)
@@ -45,7 +45,7 @@ struct WallpaperSettingsView: View {
             } header: {
                 Text("Space 切换")
             } footer: {
-                Text("每张壁纸独立截图、独立保存；换片重新截图，不复用其他壁纸底图。")
+                Text("每张壁纸独立截图、独立保存；换片重新截图。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
             }
             Section("关于") {
                 Button("显示器与运行状态", action: showDiagnostics)

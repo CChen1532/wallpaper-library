@@ -34,18 +34,23 @@ struct SceneBackdropConfiguration: Sendable {
 protocol SceneBackdropControlling: AnyObject, Sendable {
     var recoveryPending: Bool { get }
     var previewURL: URL? { get }
+    var registrationURL: URL? { get }
     func activate(displayID: UInt32, capture: (URL) throws -> Void) throws
     func checkHealth() throws
     func finish() throws
 }
 
-extension SceneBackdropControlling { var previewURL: URL? { nil } }
+extension SceneBackdropControlling {
+    var previewURL: URL? { nil }
+    var registrationURL: URL? { nil }
+}
 
 /// A worker owns this object. Only the bounded output buffer is touched by the
 /// pipe callback. Keeping stdin open grants a lease; EOF requests restoration.
 final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
     private let configuration: SceneBackdropConfiguration
     private(set) var previewURL: URL?
+    private(set) var registrationURL: URL?
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -100,7 +105,17 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
         while true {
             try Task.checkCancellation()
             try checkHealth()
-            if text.contains("BACKDROP_READY\n") { previewURL = image; return }
+            if text.contains("BACKDROP_READY\n") {
+                let journal = configuration.state.appendingPathComponent("session.plist")
+                let data = try Data(contentsOf: journal)
+                guard let session = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                      let path = session["image"] as? String else {
+                    throw BackendError.message("底图恢复记录没有当前图片路径")
+                }
+                registrationURL = URL(fileURLWithPath: path)
+                previewURL = image
+                return
+            }
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 throw BackendError.message("自动底图准备超时")
             }

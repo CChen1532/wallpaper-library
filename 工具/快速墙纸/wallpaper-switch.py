@@ -83,15 +83,15 @@ def entry(document, path):
     return node
 
 
-def selected(node):
-    return {'present': 'Desktop' in node, 'value': copy.deepcopy(node.get('Desktop', {}))}
+def selected(node, field='Desktop'):
+    return {'present': field in node, 'value': copy.deepcopy(node.get(field, {}))}
 
 
-def put(node, selection):
+def put(node, selection, field='Desktop'):
     if selection['present']:
-        node['Desktop'] = copy.deepcopy(selection['value'])
+        node[field] = copy.deepcopy(selection['value'])
     else:
-        node.pop('Desktop', None)
+        node.pop(field, None)
 
 
 def image_desktop(image):
@@ -103,12 +103,38 @@ def image_desktop(image):
                      'Files': [{'relative': image.as_uri()}]}], 'Shuffle': '$null'}}
 
 
-def prepare(document, display_uuid, space_uuids, image):
+def prepare(document, display_uuid, space_uuids, image, all_spaces_visible=False):
     global_entry = document.get('AllSpacesAndDisplays', {})
     if isinstance(global_entry, dict) and 'Desktop' in global_entry:
         raise ValueError('当前启用了全空间壁纸，不能安全地只改选定桌面')
-    patches = []
     after = {'present': True, 'value': image_desktop(image)}
+    if all_spaces_visible:
+        # The system's switch moves the selection to these shared scopes and
+        # clears Spaces. Keeping per-Space records made Settings show "on" but
+        # Mission Control still used the previous thumbnails on this Mac.
+        if not isinstance(global_entry, dict) or global_entry.get('Type') != 'idle':
+            raise ValueError('全空间墙纸配置不是已验证的 idle 形式，拒绝改动')
+        spaces = document['Spaces']
+        displays = document.get('Displays')
+        if not isinstance(spaces, dict) or not isinstance(displays, dict) or set(displays) != {display_uuid}:
+            raise ValueError('全空间切换只支持当前单显示器配置')
+        if not set(space_uuids).issubset(spaces):
+            raise ValueError('目标 Space 已变化，拒绝改动')
+        for space in spaces.values():
+            if not isinstance(space, dict) or not isinstance(space.get('Default'), dict) or not isinstance(space.get('Displays'), dict) or set(space['Displays']) != {display_uuid}:
+                raise ValueError('全空间切换遇到未知 Space 显示器结构')
+        system = entry(document, ['SystemDefault'])
+        display = entry(document, ['Displays', display_uuid])
+        return [
+            {'path': [], 'field': 'Spaces', 'before': selected(document, 'Spaces'),
+             'after': {'present': True, 'value': {}}},
+            {'path': ['SystemDefault'], 'before': selected(system), 'after': copy.deepcopy(after)},
+            {'path': ['Displays', display_uuid], 'before': selected(display), 'after': copy.deepcopy(after)},
+            {'path': ['AllSpacesAndDisplays'], 'field': 'Type',
+             'before': selected(global_entry, 'Type'), 'after': {'present': True, 'value': 'individual'}},
+            {'path': ['AllSpacesAndDisplays'], 'before': selected(global_entry), 'after': copy.deepcopy(after)},
+        ]
+    patches = []
     for space in space_uuids:
         path = ['Spaces', space, 'Displays', display_uuid]
         node = entry(document, path)
@@ -120,17 +146,98 @@ def prepare(document, display_uuid, space_uuids, image):
     return patches
 
 
-def merge(document, patches, restore=False):
+def same_image(current, expected):
+    if not current['present'] or not expected['present']:
+        return False
+    try:
+        a = current['value']['Content']['Choices']
+        b = expected['value']['Content']['Choices']
+        return (len(a) == len(b) == 1 and
+                a[0]['Provider'] == b[0]['Provider'] == 'com.apple.wallpaper.choice.image' and
+                a[0]['Files'] == b[0]['Files'])
+    except (KeyError, TypeError, IndexError):
+        return False
+
+
+def registered_spaces(current, original, scene):
+    """Accept the intermediate state produced by setDesktopImageURL.
+
+    On this macOS build it exits all-space mode and recreates the same Space
+    UUIDs with the current scene image. Anything else remains a conflict.
+    """
+    if not current['present'] or not original['present']:
+        return False
+    now, before = current['value'], original['value']
+    if not isinstance(now, dict) or not isinstance(before, dict) or set(now) != set(before):
+        return False
+    normalized = copy.deepcopy(now)
+    for uuid, space in before.items():
+        try:
+            paths = [['Default']] + [['Displays', display] for display in space['Displays']]
+            for path in paths:
+                old_node = entry(space, path)
+                new_node = entry(normalized[uuid], path)
+                value, previous = selected(new_node), selected(old_node)
+                if semantic(value) != semantic(previous):
+                    if not same_image(value, scene):
+                        return False
+                    put(new_node, previous)
+        except (KeyError, TypeError, ValueError):
+            return False
+    return semantic(normalized) == semantic(before)
+
+
+def removed_display_from_all_spaces(document, original, patches):
+    """Recreate the display node that Settings deletes in all-Space mode.
+
+    This is only safe while the one-display global scene still matches our
+    journal. The original node comes from the checksummed pre-apply backup.
+    """
+    display_patches = [p for p in patches if len(p['path']) == 2 and p['path'][0] == 'Displays']
+    if len(display_patches) != 1 or original is None:
+        return document
+    display_patch = display_patches[0]
+    display = display_patch['path'][1]
+    displays = document.get('Displays')
+    if not isinstance(displays, dict) or display in displays:
+        return document
+    scene = next((p['after'] for p in patches if p['path'] == ['AllSpacesAndDisplays']
+                  and p.get('field', 'Desktop') == 'Desktop'), None)
+    global_node = document.get('AllSpacesAndDisplays', {})
+    before_displays = original.get('Displays', {})
+    if (displays != {} or document.get('Spaces') != {} or scene is None or
+            not isinstance(global_node, dict) or global_node.get('Type') != 'individual' or
+            not same_image(selected(global_node), scene) or
+            not isinstance(before_displays, dict) or set(before_displays) != {display} or
+            selected(before_displays[display]) != display_patch['before']):
+        raise ValueError('全空间开关之外的显示器记录变化，保留恢复记录')
+    result = copy.deepcopy(document)
+    result['Displays'][display] = copy.deepcopy(before_displays[display])
+    return result
+
+
+def merge(document, patches, restore=False, original=None):
+    if restore:
+        document = removed_display_from_all_spaces(document, original, patches)
     result = copy.deepcopy(document)
     # Preflight EVERY field before changing any field.
     for patch in patches:
-        current = selected(entry(document, patch['path']))
+        field = patch.get('field', 'Desktop')
+        current = selected(entry(document, patch['path']), field)
         expected = patch['after'] if restore else patch['before']
         target = patch['before'] if restore else patch['after']
-        if semantic(current) != semantic(expected) and not (restore and semantic(current) == semantic(target)):
+        allowed = semantic(current) == semantic(expected)
+        if restore and not allowed:
+            allowed = semantic(current) == semantic(target) or (field == 'Desktop' and same_image(current, expected))
+            if field == 'Spaces' and patch['path'] == []:
+                scene = next((p['after'] for p in patches if
+                              p['path'] == ['AllSpacesAndDisplays'] and p.get('field', 'Desktop') == 'Desktop'), None)
+                allowed = allowed or (scene is not None and registered_spaces(current, target, scene))
+        if not allowed:
             raise ValueError('该桌面壁纸已被其他操作改变，拒绝覆盖；恢复记录保留：' + '/'.join(patch['path']))
     for patch in patches:
-        put(entry(result, patch['path']), patch['before'] if restore else patch['after'])
+        put(entry(result, patch['path']), patch['before'] if restore else patch['after'],
+            patch.get('field', 'Desktop'))
     return result
 
 
@@ -188,25 +295,30 @@ class Switcher:
     def save(self, session):
         atomic(self.session, encoded(session))
 
-    def apply(self, image, inv, rows):
+    def apply(self, image, inv, rows, all_spaces_visible=False):
         old = self.read_session()
         if old and old['state'] != 'restored':
             raise ValueError('已有待恢复壁纸；先执行 restore，避免覆盖原始备份')
         image = image.expanduser().resolve(strict=True)
         if not image.is_file() or image.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.heic', '.heif'):
             raise ValueError('请选择 PNG、JPEG 或 HEIC 普通图片文件')
+        if all_spaces_visible and (inv.get('screen_count') != 1 or
+                                   {row['uuid'] for row in rows} != {row['uuid'] for row in inv['spaces']}):
+            raise ValueError('自动全空间底图需要单屏并覆盖全部普通桌面')
         raw, document = load_store(self.store)
         stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         archive = self.state / stamp
         archive.mkdir(mode=0o700)
         cached = archive / ('wallpaper' + image.suffix.lower())
         shutil.copyfile(image, cached)
-        patches = prepare(document, inv['display_uuid'], [r['uuid'] for r in rows], cached)
+        patches = prepare(document, inv['display_uuid'], [r['uuid'] for r in rows], cached,
+                          all_spaces_visible=all_spaces_visible)
         atomic(archive / 'original.plist', raw)
         if old:
             atomic(archive / 'previous-session.plist', encoded(old))
         session = {'schema': 1, 'store': str(self.store.resolve()), 'state': 'pending_apply',
                    'display': inv['display_uuid'], 'spaces': rows, 'patches': patches,
+                   'image': str(cached),
                    'backup': str(archive / 'original.plist'), 'backup_sha256': digest(raw)}
         self.save(session)  # Durable recovery exists BEFORE the first system write.
         commit_store(self.store, raw, merge(document, patches))
@@ -227,7 +339,8 @@ class Switcher:
         if digest(backup) != session['backup_sha256']:
             raise ValueError('原始备份校验失败，拒绝复原')
         raw, document = load_store(self.store)
-        restored = merge(document, session['patches'], restore=True)
+        restored = merge(document, session['patches'], restore=True,
+                         original=plistlib.loads(backup))
         session['state'] = 'pending_restore'
         self.save(session)
         commit_store(self.store, raw, restored)
@@ -247,7 +360,7 @@ def lease(switcher, image, inv, rows, wait):
     if old and old['state'] != 'restored':
         raise ValueError('已有待恢复任务，请先 restore')
     try:
-        switcher.apply(image, inv, rows)
+        switcher.apply(image, inv, rows, all_spaces_visible=True)
         print('BACKDROP_READY', flush=True)
         wait()
     finally:

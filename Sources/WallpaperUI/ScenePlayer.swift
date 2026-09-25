@@ -143,6 +143,9 @@ struct SceneLaunchConfiguration: Sendable {
                 try Task.checkCancellation()
                 if let backdrop {
                     try backdrop.activate(displayID: configuration.displayID) { try child.snapshot(to: $0) }
+                    if let image = backdrop.registrationURL {
+                        try await SpaceWallpaperSettingsController.activate(displayID: configuration.displayID, imageURL: image)
+                    }
                     await self?.backdropActivated(token: token, image: backdrop.previewURL)
                 }
                 try Task.checkCancellation()
@@ -163,6 +166,9 @@ struct SceneLaunchConfiguration: Sendable {
                         try child.move(to: move)
                         try await Self.waitUntil(timeout: 2) { try child.moveAcknowledged(to: move) }
                         try backdrop?.activate(displayID: move) { try child.snapshot(to: $0) }
+                        if let image = backdrop?.registrationURL {
+                            try await SpaceWallpaperSettingsController.activate(displayID: move, imageURL: image)
+                        }
                         await self?.backdropActivated(token: token, image: backdrop?.previewURL)
                         await self?.moved(to: move, token: token)
                     }

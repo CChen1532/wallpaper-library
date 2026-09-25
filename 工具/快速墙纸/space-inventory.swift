@@ -27,6 +27,7 @@ for item in spaces where (item["type"] as? Int) == 0 {
           let managedID = item["ManagedSpaceID"] as? Int else { fail("Space 数据格式不受支持") }
     rows.append(["number": rows.count + 1, "uuid": spaceUUID, "id": managedID])
 }
-let object: [String: Any] = ["display_id": id, "display_uuid": uuid, "spaces": rows]
+let object: [String: Any] = ["display_id": id, "display_uuid": uuid,
+                             "screen_count": screens.count, "spaces": rows]
 let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 print(String(decoding: data, as: UTF8.self))

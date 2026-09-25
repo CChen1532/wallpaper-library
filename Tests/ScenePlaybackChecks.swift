@@ -318,9 +318,10 @@ import UniformTypeIdentifiers
         try #"""
         import pathlib, plistlib, sys
         state = pathlib.Path(sys.argv[sys.argv.index('--state-dir')+1])/'session.plist'
-        def save(value): state.write_bytes(plistlib.dumps({'state':value}))
+        image = pathlib.Path(sys.argv[sys.argv.index('lease')+1]) if 'lease' in sys.argv else None
+        def save(value): state.write_bytes(plistlib.dumps({'state':value, 'image':str(image) if image else ''}))
         if 'lease' in sys.argv:
-            assert pathlib.Path(sys.argv[sys.argv.index('lease')+1]).exists()
+            assert image.exists()
             save('applied')
             print('BACKDROP_READY', flush=True)
             sys.stdin.buffer.read()

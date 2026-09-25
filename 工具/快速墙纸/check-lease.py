@@ -27,7 +27,11 @@ def wait_for(predicate):
 with tempfile.TemporaryDirectory() as folder:
     root = Path(folder)
     store = root / 'Index.plist'
-    original = {'Spaces': {'a': {'Displays': {'display': {
+    original = {'AllSpacesAndDisplays': {'Type': 'idle', 'Idle': {'untouched': True}},
+                'SystemDefault': {'Desktop': {'original': 'aerial'}},
+                'Displays': {'display': {'Desktop': {'original': 'aerial'}}},
+                'Spaces': {'a': {'Default': {'Desktop': {'original': 'aerial'}},
+                                  'Displays': {'display': {
         'Type': 'individual', 'Desktop': {'original': 'aerial'}, 'Idle': {'unchanged': True}}}}}}
     image = root / 'image.png'; image.write_bytes(b'fixture')
     state = root / 'state'; state.mkdir()
@@ -43,7 +47,7 @@ def refresh():
 def interrupted(*_): raise KeyboardInterrupt
 signal.signal(signal.SIGTERM, interrupted)
 tool = m.Switcher(root/'Index.plist', root/'state', refresh)
-inv = {'display_uuid':'display', 'spaces':[{'uuid':'a','number':1}]}
+inv = {'display_uuid':'display', 'screen_count':1, 'spaces':[{'uuid':'a','number':1}]}
 with (root/'state/lock').open('a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     m.lease(tool, root/'image.png', inv, inv['spaces'], lambda: sys.stdin.buffer.read())
@@ -62,12 +66,17 @@ with (root/'state/lock').open('a') as lock:
         child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=output)
         try:
             wait_for(applied)
+            # The live macOS switch removes the display node after the lease
+            # begins. EOF must still restore the full original configuration.
+            switched = plistlib.loads(store.read_bytes())
+            switched['Displays'] = {}
+            store.write_bytes(m.encoded(switched))
             child.stdin.close()
             assert child.wait(timeout=6) == 0
             assert restored() and plistlib.loads(store.read_bytes()) == original
         finally:
             if child.poll() is None: child.kill(); child.wait()
-    print('PASS: pipe EOF restores original configuration')
+    print('PASS: pipe EOF restores after Settings removes the display node')
 
     # The fake UI owns the only stdin writer. Killing just this fixture process
     # exercises real parent death; the helper must restore without a UI callback.
