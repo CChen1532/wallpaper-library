@@ -11,8 +11,6 @@ app="$staging/WallpaperUI.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
 cp Resources/Info.plist "$app/Contents/Info.plist"
-mkdir -p "$app/Contents/Resources/SceneOverrides"
-cp Resources/SceneOverrides/hide-watermark.json "$app/Contents/Resources/SceneOverrides/"
 python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
 bash 工具/快速墙纸/build.sh
 mkdir -p "$app/Contents/Resources/WallpaperSwitch"
@@ -25,7 +23,10 @@ codesign --verify --deep --strict "$app"
 python3 scripts/check-scene-input.py "$app/Contents/Resources/SceneRuntime/Contents/Resources/Renderers/SceneWallpaper"
 # Keep the previous app available until the staged build has passed validation.
 if [[ -e dist/WallpaperUI.app ]]; then
-    backup="dist/WallpaperUI-before-scene-$(date +%Y%m%d-%H%M%S).app"
+    mkdir -p dist/.WallpaperUIPrevious
+    # Keep old bytes for rollback without registering another runnable .app
+    # under the same bundle identifier in macOS Accessibility settings.
+    backup="dist/.WallpaperUIPrevious/WallpaperUI-before-scene-$(date +%Y%m%d-%H%M%S).app.backup"
     mv dist/WallpaperUI.app "$backup"
 fi
 mv "$app" dist/WallpaperUI.app

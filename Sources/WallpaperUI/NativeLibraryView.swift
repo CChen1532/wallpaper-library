@@ -318,7 +318,8 @@ struct NativeLibraryView: View {
                     .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0 || item.packageBytes > 256 * 1024 * 1024)
                 if let sceneRoot {
                     let package = sceneRoot.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
-                    SceneInspectorSettings(store: model.scenePreferences, package: package)
+                    SceneInspectorSettings(store: model.scenePreferences,
+                                           properties: model.sceneUserProperties, package: package)
                         .id(ScenePreferencesStore.identity(for: package))
                 }
                 Divider()

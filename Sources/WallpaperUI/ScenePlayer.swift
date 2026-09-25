@@ -9,12 +9,13 @@ enum ScenePlaybackPhase { case stopped, starting, playing, stopping, failed }
 
 struct SceneLaunchConfiguration: Sendable {
     let executable: URL
-    let arguments: [String]
+    var arguments: [String]
     let environment: [String: String]?
     let package: URL
     let title: String
     let displayID: UInt32
     var preferences = ScenePreferences()
+    var userPropertyValues: [String: ScenePropertyValue] = [:]
     var backdrop: SceneBackdropConfiguration?
 
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
@@ -43,40 +44,24 @@ struct SceneLaunchConfiguration: Sendable {
         default: throw BackendError.message("画面位置设置无效")
         }
         let runtime = try MirageSceneRuntime(app: runtimeURL)
-        var arguments = try runtime.playbackArguments(scenePackage: package, displayID: displayID,
+        let arguments = try runtime.playbackArguments(scenePackage: package, displayID: displayID,
                                                       fps: preferences.fps, horizontalCropPosition: position,
                                                       mouseEnabled: preferences.mouseEnabled,
                                                       mouseButtonsEnabled: preferences.mouseButtonsEnabled,
                                                       inputHz: preferences.inputHz,
                                                       soundEnabled: preferences.soundEnabled,
                                                       audioResponseEnabled: preferences.audioResponseEnabled)
-        if sceneRequestsHiddenWatermark(in: folder) {
-            let override = runtimeURL.deletingLastPathComponent()
-                .appendingPathComponent("SceneOverrides/hide-watermark.json")
-            guard FileManager.default.isReadableFile(atPath: override.path) else {
-                throw BackendError.message("场景水印设置缺失，请使用完整打包的应用")
-            }
-            // Loaded by Mirage before scene parsing and the first captured frame.
-            arguments.insert(contentsOf: ["--user-properties", override.path], at: arguments.count - 2)
-        }
         return Self(executable: runtime.executable, arguments: arguments,
                     environment: runtime.environment(), package: package,
                     title: title, displayID: displayID, preferences: preferences)
     }
 
-    private static func sceneRequestsHiddenWatermark(in folder: URL) -> Bool {
-        let project = folder.appendingPathComponent("project.json")
-        guard let values = try? project.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
-              values.isRegularFile == true, values.isSymbolicLink != true,
-              let size = values.fileSize, size > 0, size <= 1_048_576,
-              let data = try? Data(contentsOf: project), data.count == size,
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let general = root["general"] as? [String: Any],
-              let properties = general["properties"] as? [String: Any],
-              let watermark = properties["watermark"] as? [String: Any],
-              watermark["type"] as? String == "bool",
-              watermark["value"] as? Bool == true else { return false }
-        return true
+    mutating func setUserProperties(_ launch: ScenePropertyLaunch) {
+        userPropertyValues = launch.effectiveValues
+        if let file = launch.file {
+            // Mirage reads this before scene parsing and before the first captured frame.
+            arguments.insert(contentsOf: ["--user-properties", file.path], at: arguments.count - 2)
+        }
     }
 }
 
@@ -89,6 +74,7 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var displayID: UInt32?
     @Published private(set) var error: String?
     @Published private(set) var activePreferences: ScenePreferences?
+    @Published private(set) var activeUserPropertyValues: [String: ScenePropertyValue] = [:]
     @Published private(set) var restorationPending = false
     @Published private(set) var recoveringBackdrop = false
     @Published private(set) var automaticBackdropActive = false
@@ -147,6 +133,7 @@ struct SceneLaunchConfiguration: Sendable {
         generation = token
         phase = .starting
         activePreferences = configuration.preferences
+        activeUserPropertyValues = configuration.userPropertyValues
         title = configuration.title
         package = configuration.package
         displayID = configuration.displayID
@@ -222,6 +209,7 @@ struct SceneLaunchConfiguration: Sendable {
         phase = error == nil ? .stopped : .failed
         package = nil
         activePreferences = nil
+        activeUserPropertyValues = [:]
         displayID = nil
     }
 
@@ -251,6 +239,7 @@ struct SceneLaunchConfiguration: Sendable {
         phase = failure == nil ? .stopped : .failed
         package = nil
         activePreferences = nil
+        activeUserPropertyValues = [:]
         displayID = nil
     }
     nonisolated private static func waitUntil(timeout: TimeInterval, predicate: () throws -> Bool) async throws {

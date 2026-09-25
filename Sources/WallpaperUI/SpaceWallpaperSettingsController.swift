@@ -79,9 +79,18 @@ enum SpaceWallpaperSettingsController {
         // per-Space selections. Pressing the Settings switch during that
         // rewrite can be undone by the later registration write.
         try await waitForRegistration(imageURL: imageURL)
-        guard let pane = URL(string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension"),
-              NSWorkspace.shared.open(pane) else {
-            throw BackendError.message("无法打开系统墙纸设置，自动底图已取消")
+        if allSpacesSwitch() == nil {
+            guard let pane = URL(string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension") else {
+                throw BackendError.message("无法定位系统墙纸设置，自动底图已取消")
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                NSWorkspace.shared.open(pane, configuration: configuration) { _, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume() }
+                }
+            }
         }
         try await setAllSpacesOn(imageURL: imageURL)
     }

@@ -16,6 +16,7 @@ import Combine
     let scenePlayer: ScenePlayer
     let sceneRuntimeURL: URL
     let scenePreferences: ScenePreferencesStore
+    let sceneUserProperties: SceneUserPropertiesStore
     private let backdropConfiguration: @MainActor () throws -> SceneBackdropConfiguration?
     private var shuttingDown = false
     private var sceneRequestRevision = 0
@@ -38,6 +39,7 @@ import Combine
 
     init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
          sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil,
+         sceneUserProperties: SceneUserPropertiesStore? = nil,
          backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
              guard UserDefaults.standard.object(forKey: SceneBackdropConfiguration.preferenceKey) as? Bool ?? true else { return nil }
              return try SceneBackdropConfiguration.bundled()
@@ -45,6 +47,7 @@ import Combine
         self.backend = backend
         self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
+        self.sceneUserProperties = sceneUserProperties ?? SceneUserPropertiesStore()
         self.scenePlayer = scenePlayer ?? ScenePlayer()
         self.sceneRuntimeURL = sceneRuntimeURL ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
             .appendingPathComponent("SceneRuntime", isDirectory: true)
@@ -66,6 +69,7 @@ import Combine
                 runtimeURL: sceneRuntimeURL, root: root, name: name, title: title,
                 expectedBytes: expectedBytes, displayID: displayID,
                 preferences: scenePreferences.preferences(for: root.appendingPathComponent(name).appendingPathComponent("scene.pkg")))
+            configuration.setUserProperties(try sceneUserProperties.launch(for: configuration.package))
             configuration.backdrop = try backdropConfiguration()
             let sourcePackage = configuration.package
             configuration.backdrop?.sourcePackage = sourcePackage

@@ -179,31 +179,82 @@ import UniformTypeIdentifiers
         check(prepared.arguments[fpsIndex + 1] == "60" && prepared.arguments[cropIndex + 1] == "1.0", "帧率和1000000001完整时钟裁切参数生效")
         check(!prepared.arguments.contains("--user-properties"), "没有水印属性的场景不接受额外覆盖")
 
-        let overrideFolder = root.appendingPathComponent("SceneOverrides")
-        try FileManager.default.createDirectory(at: overrideFolder, withIntermediateDirectories: true)
-        let overrideFile = overrideFolder.appendingPathComponent("hide-watermark.json")
-        let overrideData = try Data(contentsOf: URL(fileURLWithPath: "Resources/SceneOverrides/hide-watermark.json"))
-        try overrideData.write(to: overrideFile)
-        let overrideJSON = try JSONSerialization.jsonObject(with: overrideData) as! [String: Bool]
-        check(overrideJSON == ["watermark": false], "水印覆盖只关闭场景自身的布尔属性")
         let markedFolder = root.appendingPathComponent("marked-scene")
         try FileManager.default.createDirectory(at: markedFolder, withIntermediateDirectories: true)
-        try Data([4, 5, 6]).write(to: markedFolder.appendingPathComponent("scene.pkg"))
+        let markedPackage = markedFolder.appendingPathComponent("scene.pkg")
+        try Data([4, 5, 6]).write(to: markedPackage)
         let projectFile = markedFolder.appendingPathComponent("project.json")
-        let originalProject = Data(#"{"general":{"properties":{"watermark":{"type":"bool","value":true}}}}"#.utf8)
+        let originalProject = Data(#"""
+        {"general":{"properties":{
+          "watermark":{"type":"bool","text":"作者水印","value":true},
+          "fog":{"type":"bool","text":"雾效","value":false},
+          "parallax":{"type":"slider","text":"视差","min":0,"max":2,"step":0.1,"value":1},
+          "season":{"type":"combo","text":"季节","value":"0","options":[{"label":"春","value":"0"},{"label":"冬","value":"1"}]},
+          "schemecolor":{"type":"color","text":"颜色","value":"1 0.5 0"},
+          "caption":{"type":"textinput","text":"文字","value":"hello"},
+          "promo":{"type":"bool","text":"<a href='https://example.com'>link</a>","value":true},
+          "heading":{"type":"group","text":"组","value":0}
+        }}}
+        """#.utf8)
         try originalProject.write(to: projectFile)
-        let marked = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "marked-scene",
+        let propertyDefaults = UserDefaults(suiteName: "ScenePropertyChecks-" + UUID().uuidString)!
+        let propertyStore = SceneUserPropertiesStore(defaults: propertyDefaults,
+            directory: root.appendingPathComponent("saved-properties"))
+        let catalog = propertyStore.catalog(for: markedPackage)
+        check(catalog.properties.count == 6 && catalog.properties.first?.label == "作者水印" &&
+              !catalog.properties.contains(where: { $0.id == "promo" || $0.id == "heading" }),
+              "只展示可编辑属性，过滤链接和非控件元数据")
+        let watermark = catalog.properties.first { $0.id == "watermark" }!
+        let fog = catalog.properties.first { $0.id == "fog" }!
+        let parallax = catalog.properties.first { $0.id == "parallax" }!
+        let color = catalog.properties.first { $0.id == "schemecolor" }!
+        check(propertyStore.value(for: watermark, package: markedPackage) == .boolean(false),
+              "作者默认开启的水印在本应用中默认关闭")
+        check(propertyStore.value(for: fog, package: markedPackage) == .boolean(false),
+              "其他场景效果保留作者默认值")
+        check(parallax.validated(NSNumber(value: 2.5)) == nil &&
+              color.validated("99 0 0") == nil &&
+              watermark.validated(NSNumber(value: 1)) == nil,
+              "越界效果值和错误类型不能交给渲染器")
+        let launch = try propertyStore.launch(for: markedPackage)
+        var marked = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "marked-scene",
             title: "marked", expectedBytes: 3, displayID: 1)
+        marked.setUserProperties(launch)
         let propertyIndex = marked.arguments.firstIndex(of: "--user-properties")!
-        check(marked.arguments[propertyIndex + 1] == overrideFile.path &&
+        let overrideJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: launch.file!)) as! [String: Bool]
+        check(overrideJSON == ["watermark": false] && marked.arguments[propertyIndex + 1] == launch.file!.path &&
               propertyIndex < marked.arguments.count - 2 &&
               marked.arguments.last == marked.package.path,
-              "有水印属性的场景在首帧前只读取独立覆盖文件")
+              "首帧前传入当前场景独立覆盖文件且仅关闭水印")
         check(try Data(contentsOf: projectFile) == originalProject, "启动配置不修改原始作者署名和场景配置")
-        try Data(#"{"general":{"properties":{"watermark":{"type":"bool","value":false}}}}"#.utf8).write(to: projectFile)
-        let alreadyHidden = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "marked-scene",
-            title: "marked", expectedBytes: 3, displayID: 1)
-        check(!alreadyHidden.arguments.contains("--user-properties"), "原本已关闭水印的场景无需覆盖")
+        propertyStore.save(.boolean(true), for: fog, package: markedPackage)
+        propertyStore.save(.number(1.5), for: parallax, package: markedPackage)
+        propertyStore.save(.string("0.2 0.3 0.4"), for: color, package: markedPackage)
+        let changed = try propertyStore.launch(for: markedPackage)
+        let changedJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: changed.file!)) as! [String: Any]
+        check(changedJSON["fog"] as? Bool == true && changedJSON["parallax"] as? Double == 1.5 &&
+              changedJSON["schemecolor"] as? String == "0.2 0.3 0.4" && changedJSON["watermark"] as? Bool == false,
+              "布尔、滑块和颜色效果以校验后的值传给渲染器")
+        let reloadedProperties = SceneUserPropertiesStore(defaults: propertyDefaults,
+            directory: root.appendingPathComponent("saved-properties"))
+        check(reloadedProperties.value(for: fog, package: markedPackage) == .boolean(true) &&
+              reloadedProperties.value(for: watermark, package: markedPackage) == .boolean(false),
+              "重新创建存储后仍读取场景自己的效果")
+        let otherPackage = root.appendingPathComponent("other-marked/scene.pkg")
+        try FileManager.default.createDirectory(at: otherPackage.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([7, 8, 9]).write(to: otherPackage)
+        try originalProject.write(to: otherPackage.deletingLastPathComponent().appendingPathComponent("project.json"))
+        let otherCatalog = propertyStore.catalog(for: otherPackage)
+        let otherFog = otherCatalog.properties.first { $0.id == "fog" }!
+        let otherLaunch = try propertyStore.launch(for: otherPackage)
+        check(propertyStore.value(for: otherFog, package: otherPackage) == .boolean(false) &&
+              otherLaunch.file != changed.file,
+              "同内容不同壁纸使用各自独立设置与覆盖文件")
+        propertyStore.save(.boolean(true), for: watermark, package: markedPackage)
+        let visibleWatermark = try propertyStore.launch(for: markedPackage)
+        let visibleJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: visibleWatermark.file!)) as! [String: Any]
+        check(visibleJSON["watermark"] == nil && visibleJSON["fog"] as? Bool == true,
+              "用户开启水印后恢复作者默认画面，其他效果不受影响")
 
         // Preference persistence, normalization and immutable launch snapshots.
         let suiteName = "ScenePreferencesChecks-" + UUID().uuidString
@@ -308,20 +359,35 @@ import UniformTypeIdentifiers
         store.save(ScenePreferences(fps: 17, cropMode: "bad", inputHz: 0), for: otherLibraryPackage)
         check(store.preferences(for: otherLibraryPackage) == ScenePreferences(), "独立设置校验非法采样帧率与裁切")
         store.save(.init(), for: packageA)
+        let playbackProject = Data(#"{"general":{"properties":{"watermark":{"type":"bool","text":"水印","value":true}}}}"#.utf8)
+        try playbackProject.write(to: sceneFolder.appendingPathComponent("project.json"))
+        try playbackProject.write(to: folderB.appendingPathComponent("project.json"))
+        let playbackProperties = SceneUserPropertiesStore(defaults: perItemDefaults,
+            directory: root.appendingPathComponent("playback-properties"))
+        let playbackWatermark = playbackProperties.catalog(for: packageA).properties.first!
         let settingsBackend = SceneTestBackend()
         let settingsPlayer = ScenePlayer(focusProvider: { 1 })
-        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer, sceneRuntimeURL: runtimeRoot, scenePreferences: store, backdropConfiguration: { nil })
+        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer,
+            sceneRuntimeURL: runtimeRoot, scenePreferences: store, sceneUserProperties: playbackProperties,
+            backdropConfiguration: { nil })
         await settingsModel.applyScenePreferences(for: packageA)
         check(await settingsBackend.actions.isEmpty, "未播放时应用设置不会启动壁纸")
         await settingsModel.playScene(root: root, name: "1000000001", title: "clock", expectedBytes: 3)
         try await wait { settingsPlayer.phase == .playing }
         check(settingsPlayer.activePreferences == ScenePreferences(), "播放入口读取选中壁纸自己的配置")
+        let firstSceneLog = try String(contentsOf: settingsLog, encoding: .utf8)
+        check(settingsPlayer.activeUserPropertyValues["watermark"] == .boolean(false) &&
+              firstSceneLog.contains("--user-properties"),
+              "播放入口在首帧前装载此场景的水印设置")
         store.save(requested, for: packageB)
         await settingsModel.applyScenePreferences(for: packageB)
         check(await settingsBackend.actions.count == 1 && settingsPlayer.activePreferences == ScenePreferences(),
               "编辑和应用B不会更改或重启正在播放的A")
         store.save(requested, for: packageA)
+        playbackProperties.save(.boolean(true), for: playbackWatermark, package: packageA)
         check(settingsPlayer.activePreferences == ScenePreferences(), "编辑A后运行快照保持原值直到应用")
+        check(settingsPlayer.activeUserPropertyValues["watermark"] == .boolean(false),
+              "编辑中的场景效果不改动当前播放快照")
         await settingsBackend.setOffDelay(true)
         let applying = Task { await settingsModel.applyScenePreferences(for: packageA) }
         try await wait { settingsModel.busy }
@@ -330,6 +396,8 @@ import UniformTypeIdentifiers
         try await wait { settingsPlayer.phase == .playing }
         let launches = try String(contentsOf: settingsLog, encoding: .utf8).components(separatedBy: "\n").filter { $0 == "start" }.count
         check(launches == 2 && settingsPlayer.activePreferences == requested, "应用设置只重播一次且拒绝重复点击")
+        check(settingsPlayer.activeUserPropertyValues["watermark"] == .boolean(true),
+              "应用后只更新当前壁纸的场景效果")
         check(await settingsBackend.actions.count == 2, "应用设置沿用引擎互斥协调器")
         await settingsModel.stopScene()
         store.save(settingsB, for: packageB)
@@ -337,6 +405,9 @@ import UniformTypeIdentifiers
         try await wait { settingsPlayer.phase == .playing }
         check(settingsPlayer.activePreferences == settingsB && store.preferences(for: packageA) == requested,
               "切换到同名B时加载B设置并保留A")
+        check(settingsPlayer.activeUserPropertyValues["watermark"] == .boolean(false) &&
+              playbackProperties.value(for: playbackWatermark, package: packageA) == .boolean(true),
+              "切换到B后自动读取B的效果且不串改A")
         await settingsModel.stopScene()
         // Automatic backdrop lifecycle uses an isolated fixture, never macOS settings.
         var backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
