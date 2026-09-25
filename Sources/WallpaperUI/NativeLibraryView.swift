@@ -234,7 +234,7 @@ struct NativeLibraryView: View {
             Group {
                 if let item = selectedScene { sceneDetails(item) }
                 else { inspectorPlaceholder("未选择场景", subtitle: "点选场景，查看详情并设为桌面壁纸。", icon: "square.3.layers.3d") }
-            }.frame(width: 280)
+            }.frame(width: 320)
         }
     }
 
@@ -298,7 +298,7 @@ struct NativeLibraryView: View {
             VStack(alignment: .leading, spacing: 20) {
                 inspectorHeading("场景详情") { selectedSceneName = nil; focusedScene = nil }
                 SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
-                    .aspectRatio(4 / 3, contentMode: .fit)
+                    .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("场景封面").padding(10) }
                 VStack(alignment: .leading, spacing: 8) {
@@ -308,21 +308,23 @@ struct NativeLibraryView: View {
                 Button {
                     guard let sceneRoot else { return }
                     Task { await model.playScene(root: sceneRoot, name: item.name, title: item.title ?? item.name,
-                                                  expectedBytes: item.packageBytes, preferences: ScenePreferences.load()) }
+                                                  expectedBytes: item.packageBytes) }
                 } label: { Label("设为场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
                     .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0 || item.packageBytes > 256 * 1024 * 1024)
-                Button { page = .settings } label: {
-                    Label("播放与交互设置", systemImage: "gearshape").frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(.borderless).font(.callout)
+                if let sceneRoot {
+                    let package = sceneRoot.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
+                    SceneInspectorSettings(store: model.scenePreferences, package: package)
+                        .id(ScenePreferencesStore.identity(for: package))
+                }
                 Divider()
                 VStack(spacing: 10) {
                     inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
                     inspectorMetadata("素材编号", item.name)
                 }
                 DisclosureGroup("预览版播放说明", isExpanded: $showPlaybackNotes) {
-                    Text("场景跟随当前桌面与显示器。跨屏切换时，原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
+                    Text("场景跟随当前桌面。开启显示器跟随时，跨屏切换前原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
                 }.font(.caption).tint(.secondary)
                 if let sceneRoot {

@@ -15,6 +15,7 @@ import Combine
     let backend: any WallpaperBackend
     let scenePlayer: ScenePlayer
     let sceneRuntimeURL: URL
+    let scenePreferences: ScenePreferencesStore
     private var shuttingDown = false
     private var sceneRequestRevision = 0
     private var stateRevision = 0
@@ -35,8 +36,9 @@ import Combine
     }
 
     init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
-         sceneRuntimeURL: URL? = nil) {
+         sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil) {
         self.backend = backend
+        self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
         self.scenePlayer = scenePlayer ?? ScenePlayer()
         self.sceneRuntimeURL = sceneRuntimeURL ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
             .appendingPathComponent("SceneRuntime", isDirectory: true)
@@ -47,8 +49,7 @@ import Combine
             .appendingPathComponent("Contents/Resources/Renderers/SceneWallpaper").path)
     }
 
-    func playScene(root: URL, name: String, title: String, expectedBytes: Int64,
-                   preferences: ScenePreferences = .init()) async {
+    func playScene(root: URL, name: String, title: String, expectedBytes: Int64) async {
         guard !isWorking else { return }
         do {
             guard let displayID = scenePlayer.preferredDisplayID() else {
@@ -57,18 +58,25 @@ import Combine
             // Validate all local inputs before changing the current video engine.
             let configuration = try SceneLaunchConfiguration.prepare(
                 runtimeURL: sceneRuntimeURL, root: root, name: name, title: title,
-                expectedBytes: expectedBytes, displayID: displayID, preferences: preferences)
+                expectedBytes: expectedBytes, displayID: displayID,
+                preferences: scenePreferences.preferences(for: root.appendingPathComponent(name).appendingPathComponent("scene.pkg")))
             await playPreparedScene(configuration)
         } catch { self.error = error.localizedDescription }
     }
 
-    func applyScenePreferences(_ preferences: ScenePreferences) async {
-        guard !isWorking, scenePlayer.isActive, let package = scenePlayer.package else { return }
+    func isActiveScene(_ package: URL) -> Bool {
+        guard scenePlayer.isActive, let active = scenePlayer.package else { return false }
+        return ScenePreferencesStore.identity(for: active) == ScenePreferencesStore.identity(for: package)
+    }
+
+    func applyScenePreferences(for package: URL) async {
+        // A delayed action from B must never reconfigure the currently playing A.
+        guard !isWorking, isActiveScene(package) else { return }
         do {
             let bytes = try package.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             let folder = package.deletingLastPathComponent()
             await playScene(root: folder.deletingLastPathComponent(), name: folder.lastPathComponent,
-                            title: scenePlayer.title, expectedBytes: Int64(bytes), preferences: preferences)
+                            title: scenePlayer.title, expectedBytes: Int64(bytes))
         } catch { self.error = error.localizedDescription }
     }
 

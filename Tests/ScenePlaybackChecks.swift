@@ -81,7 +81,7 @@ import Darwin
         let backend = SceneTestBackend()
         let model = LibraryModel(backend: backend, scenePlayer: coordinated,
                                  sceneRuntimeURL: root.appendingPathComponent("missing-runtime"))
-        await model.playScene(root: root, name: "../outside", title: "bad", expectedBytes: 1, preferences: .init())
+        await model.playScene(root: root, name: "../outside", title: "bad", expectedBytes: 1)
         check(await backend.actions.isEmpty && model.error != nil, "输入预检失败不停止现有视频")
         await backend.setFailOff(true)
         await model.playPreparedScene(configuration("off-failed"))
@@ -197,22 +197,77 @@ import Darwin
         done
         """#.write(to: renderer, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: renderer.path)
+        // Per-package storage, migration, corruption isolation and reload.
+        let perItemSuite = "PerSceneChecks-" + UUID().uuidString
+        let perItemDefaults = UserDefaults(suiteName: perItemSuite)!
+        defer { perItemDefaults.removePersistentDomain(forName: perItemSuite) }
+        perItemDefaults.set("left", forKey: ScenePreferences.Key.crop)
+        let store = ScenePreferencesStore(defaults: perItemDefaults)
+        let packageA = sceneFolder.appendingPathComponent("scene.pkg")
+        let folderB = root.appendingPathComponent("second-scene")
+        try FileManager.default.createDirectory(at: folderB, withIntermediateDirectories: true)
+        let packageB = folderB.appendingPathComponent("scene.pkg")
+        try Data([4, 5, 6]).write(to: packageB)
+        let otherLibraryPackage = root.appendingPathComponent("other-library/1000000001/scene.pkg")
+        let initial = ScenePreferences(cropMode: "left")
+        check(store.preferences(for: packageA) == initial && store.preferences(for: packageB) == initial,
+              "旧全局设置保留为迁移初始值")
+        var settingsA = requested
+        settingsA.cropMode = "right"
+        let settingsB = ScenePreferences(fps: 60, inputHz: 30)
+        store.save(settingsA, for: packageA)
+        check(store.preferences(for: packageA) == settingsA && store.preferences(for: packageB) == initial,
+              "修改A不改变尚未编辑的B")
+        store.save(settingsB, for: packageB)
+        check(store.preferences(for: packageA) == settingsA && store.preferences(for: packageB) == settingsB,
+              "A与B的交互播放声音设置分别保存")
+        let reloaded = ScenePreferencesStore(defaults: UserDefaults(suiteName: perItemSuite)!)
+        check(reloaded.preferences(for: packageA) == settingsA && reloaded.preferences(for: packageB) == settingsB,
+              "重新创建存储后仍读取各自设置")
+        perItemDefaults.set(false, forKey: ScenePreferences.Key.mouse)
+        perItemDefaults.set("right", forKey: ScenePreferences.Key.crop)
+        let migratedAgain = ScenePreferencesStore(defaults: perItemDefaults)
+        check(migratedAgain.preferences(for: otherLibraryPackage) == initial,
+              "全局旧值后续变化不会再次迁移或串改壁纸")
+        check(store.preferences(for: otherLibraryPackage) != settingsA,
+              "不同资料库的相同目录名不共用设置")
+        let aliasA = root.appendingPathComponent("second-scene/../1000000001/scene.pkg")
+        check(store.preferences(for: aliasA) == settingsA, "等价规范路径使用同一壁纸设置")
+        perItemDefaults.set(Data("broken".utf8), forKey: ScenePreferencesStore.storageKey(for: packageA))
+        check(store.preferences(for: packageA) == initial && store.preferences(for: packageB) == settingsB,
+              "单条设置损坏不会影响其他壁纸")
+        store.save(ScenePreferences(fps: 17, cropMode: "bad", inputHz: 0), for: otherLibraryPackage)
+        check(store.preferences(for: otherLibraryPackage) == ScenePreferences(), "独立设置校验非法采样帧率与裁切")
+        store.save(.init(), for: packageA)
         let settingsBackend = SceneTestBackend()
         let settingsPlayer = ScenePlayer(focusProvider: { 1 })
-        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer, sceneRuntimeURL: runtimeRoot)
-        await settingsModel.applyScenePreferences(requested)
+        let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer, sceneRuntimeURL: runtimeRoot, scenePreferences: store)
+        await settingsModel.applyScenePreferences(for: packageA)
         check(await settingsBackend.actions.isEmpty, "未播放时应用设置不会启动壁纸")
         await settingsModel.playScene(root: root, name: "1000000001", title: "clock", expectedBytes: 3)
         try await wait { settingsPlayer.phase == .playing }
+        check(settingsPlayer.activePreferences == ScenePreferences(), "播放入口读取选中壁纸自己的配置")
+        store.save(requested, for: packageB)
+        await settingsModel.applyScenePreferences(for: packageB)
+        check(await settingsBackend.actions.count == 1 && settingsPlayer.activePreferences == ScenePreferences(),
+              "编辑和应用B不会更改或重启正在播放的A")
+        store.save(requested, for: packageA)
+        check(settingsPlayer.activePreferences == ScenePreferences(), "编辑A后运行快照保持原值直到应用")
         await settingsBackend.setOffDelay(true)
-        let applying = Task { await settingsModel.applyScenePreferences(requested) }
+        let applying = Task { await settingsModel.applyScenePreferences(for: packageA) }
         try await wait { settingsModel.busy }
-        await settingsModel.applyScenePreferences(.init())
+        await settingsModel.applyScenePreferences(for: packageA)
         await applying.value
         try await wait { settingsPlayer.phase == .playing }
         let launches = try String(contentsOf: settingsLog, encoding: .utf8).components(separatedBy: "\n").filter { $0 == "start" }.count
         check(launches == 2 && settingsPlayer.activePreferences == requested, "应用设置只重播一次且拒绝重复点击")
         check(await settingsBackend.actions.count == 2, "应用设置沿用引擎互斥协调器")
+        await settingsModel.stopScene()
+        store.save(settingsB, for: packageB)
+        await settingsModel.playScene(root: root, name: "second-scene", title: "clock", expectedBytes: 3)
+        try await wait { settingsPlayer.phase == .playing }
+        check(settingsPlayer.activePreferences == settingsB && store.preferences(for: packageA) == requested,
+              "切换到同名B时加载B设置并保留A")
         await settingsModel.stopScene()
         print("\(count) Scene integration checks passed")
     }

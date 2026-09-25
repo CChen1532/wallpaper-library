@@ -1,7 +1,8 @@
 import Foundation
+import Combine
 
 /// A validated snapshot: changing defaults never mutates a running session.
-struct ScenePreferences: Equatable, Sendable {
+struct ScenePreferences: Codable, Equatable, Sendable {
     var fps = 30
     var cropMode = "auto"
     var mouseEnabled = true
@@ -37,6 +38,58 @@ struct ScenePreferences: Equatable, Sendable {
         value.followsDisplay = flag(Key.followsDisplay, fallback: true)
         value.soundEnabled = flag(Key.sound, fallback: false)
         value.audioResponseEnabled = flag(Key.audioResponse, fallback: false)
+        return value
+    }
+}
+
+/// Preferences are keyed by package location, never by title or current selection.
+/// Old global values are frozen once for migration, then cease to be live defaults.
+@MainActor final class ScenePreferencesStore: ObservableObject {
+    static let migrationKey = "scenePreferences.v1.initialValues"
+    private let defaults: UserDefaults
+    private let initialValues: ScenePreferences
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.migrationKey) {
+            initialValues = Self.decode(data) ?? .init()
+        } else {
+            let legacy = ScenePreferences.load(from: defaults)
+            initialValues = legacy
+            if let data = try? JSONEncoder().encode(legacy) {
+                defaults.set(data, forKey: Self.migrationKey)
+            }
+        }
+    }
+
+    static func identity(for package: URL) -> String {
+        package.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    static func storageKey(for package: URL) -> String {
+        "scenePreferences.v1.item." + identity(for: package)
+    }
+
+    func preferences(for package: URL) -> ScenePreferences {
+        guard let data = defaults.data(forKey: Self.storageKey(for: package)) else { return initialValues }
+        return Self.decode(data) ?? initialValues
+    }
+
+    func save(_ preferences: ScenePreferences, for package: URL) {
+        guard let data = try? JSONEncoder().encode(Self.normalized(preferences)) else { return }
+        objectWillChange.send()
+        defaults.set(data, forKey: Self.storageKey(for: package))
+    }
+
+    private static func decode(_ data: Data) -> ScenePreferences? {
+        (try? JSONDecoder().decode(ScenePreferences.self, from: data)).map(normalized)
+    }
+
+    private static func normalized(_ preferences: ScenePreferences) -> ScenePreferences {
+        var value = preferences
+        if ![30, 60].contains(value.fps) { value.fps = 30 }
+        if ![30, 60, 120].contains(value.inputHz) { value.inputHz = 60 }
+        if !["auto", "center", "left", "right"].contains(value.cropMode) { value.cropMode = "auto" }
         return value
     }
 }
