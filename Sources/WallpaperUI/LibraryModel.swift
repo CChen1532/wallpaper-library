@@ -12,17 +12,22 @@ import Combine
     @Published var selected: String?
     @Published var diagnostics: BackendDiagnostics?
     @Published var loadingDiagnostics = false
+    @Published var videoBackdropIssue: String?
     let backend: any WallpaperBackend
     let scenePlayer: ScenePlayer
     let sceneRuntimeURL: URL
     let scenePreferences: ScenePreferencesStore
     let sceneUserProperties: SceneUserPropertiesStore
+    let videoBackdropPreferences: VideoBackdropPreferencesStore
+    let videoBackdrop: VideoBackdropController
     private let backdropConfiguration: @MainActor () throws -> SceneBackdropConfiguration?
     private var shuttingDown = false
     private var sceneRequestRevision = 0
     private var stateRevision = 0
+    private var lastVideoBackdropAttempt: String?
+    private var backdropsReady = false
     var capabilities: BackendCapabilities { backend.capabilities }
-    var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || shuttingDown }
+    var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || videoBackdrop.transitioning || shuttingDown }
     var selectedWallpaper: Wallpaper? { items.first { $0.id == selected } }
     var rotationStatusText: String { stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
     var rotationIntervalText: String {
@@ -40,6 +45,8 @@ import Combine
     init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
          sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil,
          sceneUserProperties: SceneUserPropertiesStore? = nil,
+         videoBackdropPreferences: VideoBackdropPreferencesStore? = nil,
+         videoBackdrop: VideoBackdropController? = nil,
          backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
              guard UserDefaults.standard.object(forKey: SceneBackdropConfiguration.preferenceKey) as? Bool ?? true else { return nil }
              return try SceneBackdropConfiguration.bundled()
@@ -48,6 +55,8 @@ import Combine
         self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
         self.sceneUserProperties = sceneUserProperties ?? SceneUserPropertiesStore()
+        self.videoBackdropPreferences = videoBackdropPreferences ?? VideoBackdropPreferencesStore()
+        self.videoBackdrop = videoBackdrop ?? VideoBackdropController()
         self.scenePlayer = scenePlayer ?? ScenePlayer()
         self.sceneRuntimeURL = sceneRuntimeURL ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
             .appendingPathComponent("SceneRuntime", isDirectory: true)
@@ -102,6 +111,9 @@ import Combine
             await scenePlayer.stop()
             try scenePlayer.requireRestoredBackdrop()
             try await backend.perform(.off)
+            try await videoBackdrop.stop()
+            try videoBackdrop.requireRestoredBackdrop()
+            lastVideoBackdropAttempt = nil
             guard !shuttingDown, request == sceneRequestRevision else { return }
             try Task.checkCancellation()
             try scenePlayer.start(configuration)
@@ -118,6 +130,35 @@ import Combine
     func shutdownScene() async {
         shuttingDown = true
         await stopScene()
+        if videoBackdrop.activePath != nil {
+            do { try await backend.perform(.off) }
+            catch { self.error = "退出时停止视频失败：" + error.localizedDescription }
+        }
+        do { try await videoBackdrop.stop() }
+        catch { self.error = "退出时恢复视频底图失败：" + error.localizedDescription }
+    }
+
+    func recoverBackdrops() async {
+        await scenePlayer.recoverBackdrop()
+        do { try await videoBackdrop.recover() }
+        catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
+        backdropsReady = !scenePlayer.restorationPending && !videoBackdrop.restorationPending
+    }
+
+    func recoverVideoBackdrop() async {
+        guard !isWorking else { return }
+        do {
+            try await videoBackdrop.recover()
+            videoBackdropIssue = nil; lastVideoBackdropAttempt = nil
+            backdropsReady = !scenePlayer.restorationPending && !videoBackdrop.restorationPending
+        }
+        catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
+    }
+
+    func applyVideoBackdropPreferences(for video: URL) async {
+        guard state.currentPath == video.path, beginOperation() else { return }
+        defer { busy = false }
+        await readState(forceVideoBackdrop: true)
     }
 
     func refreshLibrary() async {
@@ -143,7 +184,7 @@ import Combine
         guard !isWorking else { return }
         await readState()
     }
-    private func readState() async {
+    private func readState(forceVideoBackdrop: Bool = false) async {
         stateRevision += 1
         let revision = stateRevision
         do {
@@ -155,10 +196,49 @@ import Combine
                 error = "检测到视频播放或轮播从外部开启，已停止场景以避免重叠。"
             }
             state = value; stateIssue = nil
+            await syncVideoBackdrop(for: value, force: forceVideoBackdrop)
         } catch is CancellationError { return }
         catch {
             guard revision == stateRevision else { return }
             stateIssue = error.localizedDescription
+        }
+    }
+
+    private func syncVideoBackdrop(for value: PlaybackState, force: Bool) async {
+        guard backdropsReady else { return }
+        guard !scenePlayer.isActive else { return }
+        guard let path = value.currentPath, !path.isEmpty else {
+            lastVideoBackdropAttempt = nil
+            if videoBackdrop.activePath != nil {
+                do { try await videoBackdrop.stop(); videoBackdropIssue = nil }
+                catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
+            }
+            return
+        }
+        let video = URL(fileURLWithPath: path)
+        guard let directory = capabilities.libraryDirectory,
+              video.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else { return }
+        var preferences = videoBackdropPreferences.preferences(for: video)
+        if let item = items.first(where: { $0.id == path }) {
+            preferences.frameSecond = min(preferences.frameSecond, max(0, Int(item.duration.rounded(.down)) - 1))
+        }
+        if videoBackdrop.matches(video: video, preferences: preferences) { videoBackdropIssue = nil; return }
+        let attempt = path + "|\(preferences.enabled)|\(preferences.frameSecond)"
+        guard force || lastVideoBackdropAttempt != attempt else { return }
+        lastVideoBackdropAttempt = attempt
+        do {
+            if preferences.enabled {
+                guard let displayID = scenePlayer.preferredDisplayID() else {
+                    throw BackendError.message("当前没有可用显示器")
+                }
+                try await videoBackdrop.activate(video: video, preferences: preferences, displayID: displayID)
+            } else {
+                try await videoBackdrop.stop()
+            }
+            videoBackdropIssue = nil
+        } catch {
+            videoBackdropIssue = "视频 Space 过渡底图未匹配：" + error.localizedDescription
+            if force { self.error = videoBackdropIssue }
         }
     }
     private func beginOperation() -> Bool {
@@ -192,7 +272,7 @@ import Combine
         }
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }
-        await readState()
+        await readState(forceVideoBackdrop: true)
     }
     func importFiles(_ urls: [URL]) async {
         guard capabilities.canImport, beginOperation() else { return }

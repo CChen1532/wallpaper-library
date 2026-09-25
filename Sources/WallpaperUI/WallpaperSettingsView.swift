@@ -19,7 +19,7 @@ struct WallpaperSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                Toggle("自动匹配 Space 过渡底图", isOn: $automaticBackdrop)
+                Toggle("场景自动匹配过渡底图", isOn: $automaticBackdrop)
                     .disabled(model.isWorking || scenePlayer.isActive)
                 Text("播放场景时，将截图设为所有 Space 的过渡底图；停止、换片或退出时恢复原设置。")
                     .font(.callout).foregroundStyle(.secondary)
@@ -39,13 +39,22 @@ struct WallpaperSettingsView: View {
                         .disabled(model.isWorking || scenePlayer.isActive)
                 }
                 if scenePlayer.recoveringBackdrop { ProgressView("正在恢复原壁纸…") }
+                if model.videoBackdrop.restorationPending {
+                    Text("视频过渡底图的原壁纸恢复未完成。")
+                        .foregroundStyle(.orange)
+                    Button("恢复视频底图前的壁纸") { Task { await model.recoverVideoBackdrop() } }
+                        .disabled(model.isWorking)
+                }
+                if let issue = model.videoBackdropIssue {
+                    Text(issue).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                }
                 if let error = scenePlayer.error {
                     Text(error).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             } header: {
-                Text("Space 切换")
+                Text("场景 Space 切换")
             } footer: {
-                Text("每张壁纸独立截图、独立保存；换片重新截图。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
+                Text("视频的过渡底图可在每个视频的详情栏单独设置。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
             }
             Section("关于") {
                 Button("显示器与运行状态", action: showDiagnostics)

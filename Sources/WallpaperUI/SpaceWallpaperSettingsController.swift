@@ -73,7 +73,7 @@ enum SpaceWallpaperSettingsController {
         }) else { throw BackendError.message("目标显示器已断开，未切换系统底图") }
         try NSWorkspace.shared.setDesktopImageURL(imageURL, for: screen, options: [:])
         guard NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == imageURL.standardizedFileURL else {
-            throw BackendError.message("系统未登记当前场景静帧，自动底图已取消")
+            throw BackendError.message("系统未登记当前壁纸静帧，自动底图已取消")
         }
         // setDesktopImageURL returns before WallpaperAgent has rebuilt its
         // per-Space selections. Pressing the Settings switch during that

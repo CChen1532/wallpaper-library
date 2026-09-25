@@ -82,6 +82,7 @@ struct NativeLibraryView: View {
             VStack(spacing: 0) {
                 if let issue = model.stateIssue { issueBanner("状态暂不可用：" + issue) }
                 if let issue = model.libraryIssue { issueBanner("素材读取失败：" + issue) }
+                if let issue = model.videoBackdropIssue { issueBanner(issue) }
                 if page == .settings {
                     WallpaperSettingsView {
                         showDiagnostics = true; Task { await model.refreshDiagnostics() }
@@ -188,7 +189,7 @@ struct NativeLibraryView: View {
             Group {
                 if let item = model.selectedWallpaper { videoDetails(item) }
                 else { inspectorPlaceholder("未选择视频", subtitle: "点选视频，查看详情并设为桌面壁纸。", icon: "play.rectangle") }
-            }.frame(width: 280)
+            }.frame(width: 320)
         }
     }
 
@@ -478,6 +479,10 @@ struct NativeLibraryView: View {
                 if model.stateIssue == nil && model.state.running && model.state.currentPath == item.id {
                     Label("正在桌面播放", systemImage: "waveform").font(.caption).foregroundStyle(.tint)
                 }
+                VideoInspectorSettings(store: model.videoBackdropPreferences,
+                                       backdrop: model.videoBackdrop, video: item)
+                    .id(item.id)
+                Divider()
                 VStack(alignment: .leading, spacing: 14) {
                     Text("视频信息").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     inspectorMetadata("分辨率", "\(item.width) × \(item.height)")

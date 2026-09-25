@@ -56,6 +56,15 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: fixture) }
         let media = fixture.appendingPathComponent("media")
         try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+        let videoDefaultsName = "WallpaperUI.VideoBackdropTests." + UUID().uuidString
+        let videoDefaults = UserDefaults(suiteName: videoDefaultsName)!
+        defer { videoDefaults.removePersistentDomain(forName: videoDefaultsName) }
+        let videoPreferences = VideoBackdropPreferencesStore(defaults: videoDefaults)
+        let firstVideo = media.appendingPathComponent("first.mp4")
+        let secondVideo = media.appendingPathComponent("second.mp4")
+        videoPreferences.save(.init(enabled: false, frameSecond: 4), for: firstVideo)
+        check(videoPreferences.preferences(for: firstVideo) == .init(enabled: false, frameSecond: 4) &&
+              videoPreferences.preferences(for: secondVideo) == .init(), "视频底图设置按素材独立保存")
         let fakeRunner = StateRunner()
         let backend = PhontoBackend(home: fixture, runner: fakeRunner, directoryOverride: media)
         let configDirectory = fixture.appendingPathComponent(".config/phonto")
@@ -144,6 +153,21 @@ import Foundation
             check(await mediaBackend.importFiles([sample]).isEmpty, "有效MP4导入")
             let imported = media.appendingPathComponent("测试 空格.mp4")
             check(FileManager.default.fileExists(atPath: imported.path), "大写扩展名导入后标准化为mp4")
+            let frameState = fixture.appendingPathComponent("backdrop-state")
+            let frameA = try await VideoBackdropFrame.capture(video: imported, second: 0, width: 80, height: 48,
+                                                               state: frameState, ffmpeg: URL(fileURLWithPath: generator))
+            let frameAData = try Data(contentsOf: frameA)
+            check(!frameAData.isEmpty && frameA.path.contains("VideoCaptures"), "视频实际解码为独立全尺寸底图")
+            let frameAgain = try await VideoBackdropFrame.capture(video: imported, second: 0, width: 80, height: 48,
+                                                                   state: frameState, ffmpeg: URL(fileURLWithPath: generator))
+            check(frameAgain == frameA, "同一视频与截帧设置命中稳定缓存")
+            let red = fixture.appendingPathComponent("red.mp4")
+            let redResult = try await realRunner.run(generator, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x64:d=0.2", "-c:v", "libx264", red.path])
+            check(redResult.code == 0, "生成第二段视频fixture")
+            let frameB = try await VideoBackdropFrame.capture(video: red, second: 0, width: 80, height: 48,
+                                                               state: frameState, ffmpeg: URL(fileURLWithPath: generator))
+            let frameBData = try Data(contentsOf: frameB)
+            check(frameB != frameA && frameBData != frameAData, "不同视频不会共用过渡底图画面")
             let before = try Data(contentsOf: imported)
             let duplicateProblems = await mediaBackend.importFiles([sample])
             let after = try Data(contentsOf: imported)

@@ -100,6 +100,15 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
             throw BackendError.message("缺少当前壁纸身份，拒绝使用其他壁纸底图")
         }
         let image = try SceneBackdropCapture.capture(package: package, state: configuration.state, render: capture)
+        try activatePreparedImage(displayID: displayID, image: image)
+    }
+
+    /// Video frames are decoded ahead of time and independently validated.
+    /// The same journalled lease owns both Scene and video desktop pictures.
+    func activatePreparedImage(displayID: UInt32, image: URL) throws {
+        guard FileManager.default.isReadableFile(atPath: image.path) else {
+            throw BackendError.message("当前壁纸静帧不可读取")
+        }
         try launch(["lease", image.path, "--spaces", "all", "--display", String(displayID)])
         let deadline = ProcessInfo.processInfo.systemUptime + 15
         while true {
