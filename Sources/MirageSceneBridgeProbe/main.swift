@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ImageIO
 import MirageSceneBridge
 
 private func fail(_ message: String) -> Never {
@@ -24,6 +25,8 @@ private func selfTest() throws {
         '{"cmd":"deactivate"}') printf '%s\\n' '{"event":"deactivated"}' ;;
         '{"cmd":"moveDisplay","displayID":3}') printf '%s\\n' '{"event":"display-moved","display_id":3}' ;;
         '{"cmd":"moveDisplay","displayID":4}') printf '%s\\n' '{"event":"display-move-failed","display_id":4}' ;;
+        *'"token":"failure-token"'*) printf '%s\\n' '{"event":"snapshot-done","token":"failure-token","ok":false}' ;;
+        *'"cmd":"snapshot"'*) printf '%s\\n' '{"event":"snapshot-done","token":"selftest-token","ok":true}' ;;
         '{"cmd":"quit"}') exit 0 ;;
         *) exit 4 ;;
       esac
@@ -42,6 +45,13 @@ private func selfTest() throws {
     do {
         try child.waitForMove(to: 4, timeout: 2)
         fail("跨屏移动失败未被识别")
+    } catch is MirageSceneBridgeError { }
+    try child.snapshot(to: folder.appendingPathComponent("frame.heic"),
+                       token: "selftest-token")
+    do {
+        try child.snapshot(to: folder.appendingPathComponent("failed.heic"),
+                           token: "failure-token")
+        fail("静帧失败回复未被识别")
     } catch is MirageSceneBridgeError { }
     child.stop()
     require(child.terminationStatus == 0, "假渲染器未收到退出命令")
@@ -101,7 +111,50 @@ private func selfTest() throws {
             handoff.observe(2, at: 21) == 2 &&
             handoff.observe(2, at: 22) == nil,
             "改选第三屏应重新计时且不能重复移动")
-    print("selftest: lifecycle, display move, 1.5s focus handoff, failed activation, closed stdin, and cleanup passed")
+    print("selftest: lifecycle, display move, snapshot reply, 1.5s focus handoff, failed activation, closed stdin, and cleanup passed")
+}
+
+private func captureStill(_ arguments: [String]) throws {
+    guard arguments.count == 5, let displayID = UInt32(arguments[3]), displayID != 0 else {
+        fail("静帧格式：<Mirage运行目录> <scene.pkg> <displayID> <新文件.heic>")
+    }
+    let target = URL(fileURLWithPath: arguments[4]).standardizedFileURL
+    let parent = target.deletingLastPathComponent()
+    guard target.pathExtension.lowercased() == "heic",
+          FileManager.default.fileExists(atPath: parent.path),
+          !FileManager.default.fileExists(atPath: target.path),
+          NSScreen.screens.contains(where: {
+              ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
+          }) else {
+        throw MirageSceneBridgeError.invalid("静帧目标须为现有目录中的新 .heic 文件，且显示器须已连接")
+    }
+    let temporary = parent.appendingPathComponent(".scene-still-\(UUID().uuidString).heic")
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    let runtime = try MirageSceneRuntime(app: URL(fileURLWithPath: arguments[1], isDirectory: true))
+    let scene = URL(fileURLWithPath: arguments[2])
+    let rendererArguments = try runtime.trialArguments(scenePackage: scene,
+                                                        displayID: displayID,
+                                                        durationSeconds: 5)
+    let child = MirageSceneChild(executable: runtime.executable,
+                                 arguments: rendererArguments,
+                                 environment: runtime.environment())
+    try child.start()
+    defer { child.stop() }
+    try child.wait(for: "scene-ready", timeout: 60)
+    try child.wait(for: "first-frame-presented", timeout: 15)
+    try child.snapshot(to: temporary)
+    child.stop()
+    guard child.terminationStatus == 0,
+          let source = CGImageSourceCreateWithURL(temporary as CFURL, nil),
+          CGImageSourceGetCount(source) == 1,
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+          let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
+          let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
+          width >= 320, height >= 240 else {
+        throw MirageSceneBridgeError.failed("Mirage Scene 静帧文件无效或清理未完成")
+    }
+    try FileManager.default.moveItem(at: temporary, to: target)
+    print("still: saved \(width)x\(height) to \(target.path); system desktop image unchanged")
 }
 
 private func verifyRuntime(_ path: String, requireFocusFollow: Bool = false) throws {
@@ -232,6 +285,8 @@ do {
         }
         let selection = FocusDisplaySelector.currentSelection()
         print("focus: connected=\(ids) selected=\(selection.displayID.map(String.init) ?? "unknown") source=\(selection.source.rawValue)")
+    case "--capture-still" where arguments.count == 6:
+        try captureStill(Array(arguments.dropFirst()))
     case "--trial":
         try trial(Array(arguments.dropFirst()), durationSeconds: 5)
     case "--space-trial":
@@ -242,7 +297,7 @@ do {
         try trial(Array(arguments.dropFirst()), durationSeconds: 60,
                   collectPerformance: true, followFocus: true)
     default:
-        fail("可用命令：--selftest | --focus-diagnose | --verify-runtime/--verify-follow-runtime <Mirage运行目录> | --trial/--space-trial/--perf-trial/--follow-trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
+        fail("可用命令：--selftest | --focus-diagnose | --verify-runtime/--verify-follow-runtime <Mirage运行目录> | --capture-still <Mirage运行目录> <scene.pkg> <displayID> <新文件.heic> | --trial/--space-trial/--perf-trial/--follow-trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
     }
 } catch {
     fail(error.localizedDescription)

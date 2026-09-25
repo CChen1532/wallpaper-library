@@ -82,6 +82,7 @@ public final class MirageSceneChild: @unchecked Sendable {
     private let condition = NSCondition()
     private var pending = Data()
     private var observed: Set<String> = []
+    private var snapshotResponses: [String: Bool] = [:]
     private var lastMovedDisplayID: UInt32?
     private var exitCode: Int32?
     private var errorTail = ""
@@ -167,6 +168,40 @@ public final class MirageSceneChild: @unchecked Sendable {
         try input.fileHandleForWriting.write(contentsOf: data)
     }
 
+    /// Captures one renderer-owned frame without ordering the transparent
+    /// desktop window into view. The caller supplies a new file path and owns
+    /// the image after the renderer acknowledges the matching token.
+    public func snapshot(to url: URL, timeout: TimeInterval = 8,
+                         token: String = UUID().uuidString) throws {
+        guard timeout.isFinite, timeout > 0, timeout <= 15,
+              !token.isEmpty, token.count <= 64,
+              token.utf8.allSatisfy({ $0 == 45 || (48...57).contains($0) ||
+                                     (65...90).contains($0) || (97...122).contains($0) }),
+              url.isFileURL, process.isRunning else {
+            throw MirageSceneBridgeError.invalid("静帧请求无效或渲染进程已退出")
+        }
+        let message: [String: String] = ["cmd": "snapshot", "path": url.path, "token": token]
+        let data = try JSONSerialization.data(withJSONObject: message)
+        condition.lock()
+        snapshotResponses.removeValue(forKey: token)
+        condition.unlock()
+        try input.fileHandleForWriting.write(contentsOf: data + Data([10]))
+
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while snapshotResponses[token] == nil {
+            if let exitCode {
+                throw MirageSceneBridgeError.failed("渲染器在静帧请求期间退出（\(exitCode)）：\(errorTail)")
+            }
+            if !condition.wait(until: deadline) {
+                throw MirageSceneBridgeError.failed("等待 Mirage Scene 静帧超时：\(errorTail)")
+            }
+        }
+        let ok = snapshotResponses.removeValue(forKey: token) == true
+        guard ok else { throw MirageSceneBridgeError.failed("Mirage Scene 静帧导出失败") }
+    }
+
     public func waitForMove(to displayID: UInt32, timeout: TimeInterval) throws {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
@@ -244,6 +279,10 @@ public final class MirageSceneChild: @unchecked Sendable {
                 observed.insert(event)
                 if event == "display-moved", let number = object["display_id"] as? NSNumber {
                     lastMovedDisplayID = number.uint32Value
+                }
+                if event == "snapshot-done", let token = object["token"] as? String,
+                   let ok = object["ok"] as? Bool {
+                    snapshotResponses[token] = ok
                 }
                 condition.broadcast()
             }
