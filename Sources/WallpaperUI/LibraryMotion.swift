@@ -72,9 +72,45 @@ struct HoverHighlight: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(Color.primary.opacity(hovered && enabled ? 0.045 : 0), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
             .onHover { hovered = $0 }
             .animation(LibraryMotion.selection(reduced), value: hovered)
+            .animation(LibraryMotion.selection(reduced), value: enabled)
             .onDisappear { hovered = false }
+    }
+}
+
+/// The List still owns selection, focus and keyboard navigation.
+struct SidebarNavigationLabel: View {
+    let title: String
+    let symbol: String
+    let selected: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduced
+    @State private var hovered = false
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: symbol)
+                .scaleEffect(!reduced && hovered ? 1.08 : 1)
+                .symbolVariant(selected ? .fill : .none)
+                .contentTransition(.opacity)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 5)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(hovered && !selected ? 0.055 : 0))
+                .padding(.horizontal, -5)
+                .allowsHitTesting(false)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .animation(LibraryMotion.feedback(reduced), value: hovered)
+        .animation(LibraryMotion.selection(reduced), value: selected)
+        .animation(nil, value: reduced)
+        .onDisappear { hovered = false }
     }
 }
 

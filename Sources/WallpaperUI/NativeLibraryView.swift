@@ -68,12 +68,12 @@ struct NativeLibraryView: View {
         NavigationSplitView {
             List(selection: Binding<LibraryPage?>(get: { page }, set: { if let value = $0 { page = value } })) {
                 Section("资料库") {
-                    Label("场景壁纸", systemImage: "square.3.layers.3d").badge(sceneEntries.count).tag(LibraryPage.scenes)
-                    Label("视频壁纸", systemImage: "play.rectangle").badge(model.items.count).tag(LibraryPage.videos)
+                    SidebarNavigationLabel(title: "场景壁纸", symbol: "square.3.layers.3d", selected: page == .scenes).badge(sceneEntries.count).tag(LibraryPage.scenes)
+                    SidebarNavigationLabel(title: "视频壁纸", symbol: "play.rectangle", selected: page == .videos).badge(model.items.count).tag(LibraryPage.videos)
                 }
                 Section("管理") {
-                    Label("自动轮播", systemImage: "arrow.triangle.2.circlepath").tag(LibraryPage.rotation)
-                    Label("设置", systemImage: "gearshape").tag(LibraryPage.settings)
+                    SidebarNavigationLabel(title: "自动轮播", symbol: "arrow.triangle.2.circlepath", selected: page == .rotation).tag(LibraryPage.rotation)
+                    SidebarNavigationLabel(title: "设置", symbol: "gearshape", selected: page == .settings).tag(LibraryPage.settings)
                 }
             }.listStyle(.sidebar).navigationTitle("壁纸库")
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
@@ -326,16 +326,20 @@ struct NativeLibraryView: View {
                     inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
                     inspectorMetadata("素材编号", item.name)
                 }
-                DisclosureGroup("预览版播放说明", isExpanded: Binding(get: { showPlaybackNotes }, set: { value in
+                DisclosureGroup(isExpanded: Binding(get: { showPlaybackNotes }, set: { value in
                     withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlaybackNotes = value }
                 })) {
                     Text("场景跟随当前桌面。开启显示器跟随时，跨屏切换前原屏会继续播放 1.5 秒。\n\n切换桌面的动画中，可能短暂露出系统壁纸。睡眠或退出应用时停止。\n\n设为场景壁纸会关闭视频与自动轮播。关闭窗口后，可从菜单栏停止。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+                } label: {
+                    Text("预览版播放说明").frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5).modifier(HoverHighlight())
                 }.font(.caption).tint(.secondary)
                 if let sceneRoot {
                     Button("在访达中显示", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([sceneRoot.appendingPathComponent(item.name)])
                     }.buttonStyle(.link).font(.callout)
+                        .padding(.vertical, 5).modifier(HoverHighlight())
                 }
             }.padding(20)
         }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))

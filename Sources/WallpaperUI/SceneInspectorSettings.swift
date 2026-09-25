@@ -27,7 +27,7 @@ struct SceneInspectorSettings: View {
             Text(label)
             Spacer(minLength: 8)
             Toggle(label, isOn: value(keyPath)).labelsHidden().accessibilityLabel(label)
-        }.modifier(HoverHighlight())
+        }.padding(10).modifier(HoverHighlight())
     }
 
     private func picker<Value: Hashable, Options: View>(_ label: String,
@@ -37,7 +37,7 @@ struct SceneInspectorSettings: View {
             Spacer(minLength: 8)
             Picker(label, selection: value(keyPath), content: options)
                 .labelsHidden().accessibilityLabel(label).frame(width: 112)
-        }.modifier(HoverHighlight())
+        }.padding(10).modifier(HoverHighlight())
     }
 
     var body: some View {
@@ -48,23 +48,23 @@ struct SceneInspectorSettings: View {
                 Text("仅此壁纸").font(.caption).foregroundStyle(.secondary)
             }
             VStack(spacing: 0) {
-                toggle("鼠标交互", \.mouseEnabled).padding(10)
+                toggle("鼠标交互", \.mouseEnabled)
                     .help("控制此场景的视差、粒子跟随和脚本输入，效果取决于场景。")
                 Divider().padding(.horizontal, 10)
-                toggle("响应鼠标点击", \.mouseButtonsEnabled).padding(10)
+                toggle("响应鼠标点击", \.mouseButtonsEnabled)
                     .disabled(!preferences.mouseEnabled)
                 Divider().padding(.horizontal, 10)
                 picker("采样频率", \.inputHz) {
                     Text("30 Hz").tag(30)
                     Text("60 Hz").tag(60)
                     Text("120 Hz").tag(120)
-                }.padding(10).disabled(!preferences.mouseEnabled)
+                }.disabled(!preferences.mouseEnabled)
             }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
 
-            DisclosureGroup("播放与声音", isExpanded: Binding(get: { showPlayback }, set: { value in
+            DisclosureGroup(isExpanded: Binding(get: { showPlayback }, set: { value in
                 withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlayback = value }
             })) {
-                VStack(spacing: 12) {
+                VStack(spacing: 0) {
                     picker("帧率上限", \.fps) {
                         Text("30 FPS").tag(30)
                         Text("60 FPS").tag(60)
@@ -81,7 +81,11 @@ struct SceneInspectorSettings: View {
                     toggle("播放场景声音", \.soundEnabled)
                     toggle("音频响应", \.audioResponseEnabled)
                         .help("响应系统声音，需场景支持。首次使用可能需要系统录音权限。")
-                }.padding(.top, 12).padding(.bottom, 4)
+                }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.top, 8).padding(.bottom, 4)
+            } label: {
+                Text("播放与声音").frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 5).modifier(HoverHighlight())
             }
             if isPlaying && pendingChanges {
                 Button("应用到此壁纸") {
