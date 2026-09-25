@@ -12,6 +12,23 @@ import UniformTypeIdentifiers
             count += 1
             print("PASS: " + name)
         }
+        var stability = SystemWallpaperStabilityGate()
+        check(!stability.observe(matches: true, at: 0) &&
+              !stability.observe(matches: true, at: 0.2) &&
+              !stability.observe(matches: true, at: 0.4) &&
+              !stability.observe(matches: false, at: 0.8),
+              "全空间底图短暂匹配后回退时不启动场景")
+        var acceptedBeforeStable = false
+        for sample in 0...14 {
+            acceptedBeforeStable = stability.observe(matches: true, at: 1.6 + Double(sample) * 0.2) || acceptedBeforeStable
+        }
+        check(!acceptedBeforeStable && stability.observe(matches: true, at: 4.8),
+              "回退后重新连续稳定3秒才允许激活场景")
+        var stalled = SystemWallpaperStabilityGate()
+        check(!stalled.observe(matches: true, at: 0) &&
+              !stalled.observe(matches: true, at: 1.0) &&
+              !stalled.observe(matches: true, at: 3.0),
+              "采样间隔过长不能冒充持续稳定")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("scene-player-checks-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

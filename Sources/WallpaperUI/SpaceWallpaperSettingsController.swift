@@ -2,6 +2,38 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+/// A matching plist read is only a sample: WallpaperAgent may still finish an
+/// older registration write and temporarily replace the all-Spaces selection.
+/// Require a run of closely spaced matching observations before the renderer
+/// is allowed to cover the system desktop picture.
+struct SystemWallpaperStabilityGate {
+    static let requiredDuration: TimeInterval = 3
+    static let maximumSampleGap: TimeInterval = 0.6
+
+    private var matchingSince: TimeInterval?
+    private var previousSample: TimeInterval?
+
+    mutating func observe(matches: Bool, at uptime: TimeInterval) -> Bool {
+        guard uptime.isFinite else {
+            matchingSince = nil
+            previousSample = nil
+            return false
+        }
+        defer { previousSample = uptime }
+        guard matches else {
+            matchingSince = nil
+            return false
+        }
+        guard let previousSample, let matchingSince,
+              uptime >= previousSample,
+              uptime - previousSample <= Self.maximumSampleGap else {
+            self.matchingSince = uptime
+            return false
+        }
+        return uptime - matchingSince >= Self.requiredDuration
+    }
+}
+
 /// Drives only the macOS Wallpaper pane's identified all-Spaces switch.
 /// A manual trial of this system action updated Mission Control's thumbnails
 /// where editing Index.plist alone did not. Accessibility permission is
@@ -97,16 +129,17 @@ enum SpaceWallpaperSettingsController {
     }
 
     private static func waitForRegistration(imageURL: URL) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
-        var consecutiveMatches = 0
+        let deadline = ProcessInfo.processInfo.systemUptime + 16
+        var stability = SystemWallpaperStabilityGate()
         while true {
             try Task.checkCancellation()
-            consecutiveMatches = registrationMatches(imageURL) ? consecutiveMatches + 1 : 0
-            if consecutiveMatches >= 3 { return }
-            guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+            let matches = registrationMatches(imageURL)
+            let observedAt = ProcessInfo.processInfo.systemUptime
+            if observedAt <= deadline, stability.observe(matches: matches, at: observedAt) { return }
+            guard observedAt < deadline else { break }
             try await Task.sleep(for: .milliseconds(200))
         }
-        throw BackendError.message("系统尚未完成场景静帧登记，正在恢复原壁纸")
+        throw BackendError.message("系统尚未稳定登记场景静帧，正在恢复原壁纸")
     }
 
     private static func systemStateMatches(_ imageURL: URL) -> Bool {
@@ -142,13 +175,16 @@ enum SpaceWallpaperSettingsController {
     }
 
     private static func waitForSystemState(imageURL: URL) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 12
+        let deadline = ProcessInfo.processInfo.systemUptime + 18
+        var stability = SystemWallpaperStabilityGate()
         while true {
             try Task.checkCancellation()
-            if systemStateMatches(imageURL) { return }
-            guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+            let matches = systemStateMatches(imageURL)
+            let observedAt = ProcessInfo.processInfo.systemUptime
+            if observedAt <= deadline, stability.observe(matches: matches, at: observedAt) { return }
+            guard observedAt < deadline else { break }
             try await Task.sleep(for: .milliseconds(200))
         }
-        throw BackendError.message("系统没有确认全空间底图，正在恢复原壁纸")
+        throw BackendError.message("系统全空间底图未持续稳定，正在恢复原壁纸")
     }
 }
