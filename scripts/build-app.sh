@@ -11,6 +11,8 @@ app="$staging/WallpaperUI.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+mkdir -p "$app/Contents/Resources/SceneOverrides"
+cp Resources/SceneOverrides/hide-watermark.json "$app/Contents/Resources/SceneOverrides/"
 python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
 bash 工具/快速墙纸/build.sh
 mkdir -p "$app/Contents/Resources/WallpaperSwitch"

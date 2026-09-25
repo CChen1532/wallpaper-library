@@ -177,6 +177,33 @@ import UniformTypeIdentifiers
         let fpsIndex = prepared.arguments.firstIndex(of: "--fps")!
         let cropIndex = prepared.arguments.firstIndex(of: "--position-x")!
         check(prepared.arguments[fpsIndex + 1] == "60" && prepared.arguments[cropIndex + 1] == "1.0", "帧率和1000000001完整时钟裁切参数生效")
+        check(!prepared.arguments.contains("--user-properties"), "没有水印属性的场景不接受额外覆盖")
+
+        let overrideFolder = root.appendingPathComponent("SceneOverrides")
+        try FileManager.default.createDirectory(at: overrideFolder, withIntermediateDirectories: true)
+        let overrideFile = overrideFolder.appendingPathComponent("hide-watermark.json")
+        let overrideData = try Data(contentsOf: URL(fileURLWithPath: "Resources/SceneOverrides/hide-watermark.json"))
+        try overrideData.write(to: overrideFile)
+        let overrideJSON = try JSONSerialization.jsonObject(with: overrideData) as! [String: Bool]
+        check(overrideJSON == ["watermark": false], "水印覆盖只关闭场景自身的布尔属性")
+        let markedFolder = root.appendingPathComponent("marked-scene")
+        try FileManager.default.createDirectory(at: markedFolder, withIntermediateDirectories: true)
+        try Data([4, 5, 6]).write(to: markedFolder.appendingPathComponent("scene.pkg"))
+        let projectFile = markedFolder.appendingPathComponent("project.json")
+        let originalProject = Data(#"{"general":{"properties":{"watermark":{"type":"bool","value":true}}}}"#.utf8)
+        try originalProject.write(to: projectFile)
+        let marked = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "marked-scene",
+            title: "marked", expectedBytes: 3, displayID: 1)
+        let propertyIndex = marked.arguments.firstIndex(of: "--user-properties")!
+        check(marked.arguments[propertyIndex + 1] == overrideFile.path &&
+              propertyIndex < marked.arguments.count - 2 &&
+              marked.arguments.last == marked.package.path,
+              "有水印属性的场景在首帧前只读取独立覆盖文件")
+        check(try Data(contentsOf: projectFile) == originalProject, "启动配置不修改原始作者署名和场景配置")
+        try Data(#"{"general":{"properties":{"watermark":{"type":"bool","value":false}}}}"#.utf8).write(to: projectFile)
+        let alreadyHidden = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "marked-scene",
+            title: "marked", expectedBytes: 3, displayID: 1)
+        check(!alreadyHidden.arguments.contains("--user-properties"), "原本已关闭水印的场景无需覆盖")
 
         // Preference persistence, normalization and immutable launch snapshots.
         let suiteName = "ScenePreferencesChecks-" + UUID().uuidString
