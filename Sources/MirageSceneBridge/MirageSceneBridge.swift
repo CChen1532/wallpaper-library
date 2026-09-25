@@ -43,10 +43,14 @@ public struct MirageSceneRuntime {
     }
 
     public func trialArguments(scenePackage: URL, displayID: UInt32,
-                               durationSeconds: Int = 5, followFocus: Bool = false) throws -> [String] {
+                               durationSeconds: Int = 5, followFocus: Bool = false,
+                               horizontalCropPosition: Double = 0.5) throws -> [String] {
         guard displayID != 0 else { throw MirageSceneBridgeError.invalid("显示器 ID 必须非零") }
         guard durationSeconds == 5 || durationSeconds == 60 else {
             throw MirageSceneBridgeError.invalid("仅允许 5 秒或 60 秒的隔离试验")
+        }
+        guard horizontalCropPosition.isFinite, (0...1).contains(horizontalCropPosition) else {
+            throw MirageSceneBridgeError.invalid("横向裁切位置必须在 0 到 1 之间")
         }
         let values = try scenePackage.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard scenePackage.lastPathComponent == "scene.pkg",
@@ -58,6 +62,10 @@ public struct MirageSceneRuntime {
                 "--control-stdin", "--deferred-show", "--run-seconds", String(durationSeconds + 90),
                 assets.path, scenePackage.path]
         if followFocus { arguments.insert("--follow-focus", at: arguments.count - 2) }
+        if horizontalCropPosition != 0.5 {
+            arguments.insert(contentsOf: ["--position-x", String(horizontalCropPosition)],
+                             at: arguments.count - 2)
+        }
         return arguments
     }
 

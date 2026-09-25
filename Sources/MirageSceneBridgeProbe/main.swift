@@ -12,6 +12,14 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() { fail(message) }
 }
 
+/// The 1000000001 fixture places its clock against the right edge of a
+/// 3840x2160 canvas. Centered cover cropping cuts it off on the built-in screen.
+/// Keep this fixture calibration in the isolated probe, not the production UI.
+private func defaultHorizontalCropPosition(scenePackagePath: String) -> Double {
+    let folder = URL(fileURLWithPath: scenePackagePath).deletingLastPathComponent().lastPathComponent
+    return folder == "1000000001" ? 1 : 0.5
+}
+
 private func selfTest() throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mirage-bridge-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -117,8 +125,17 @@ private func selfTest() throws {
 }
 
 private func captureStill(_ arguments: [String]) throws {
-    guard arguments.count == 5, let displayID = UInt32(arguments[3]), displayID != 0 else {
-        fail("静帧格式：<Mirage运行目录> <scene.pkg> <displayID> <新文件.heic>")
+    let positionX: Double
+    if arguments.count == 5 {
+        positionX = defaultHorizontalCropPosition(scenePackagePath: arguments[2])
+    } else if arguments.count == 7, arguments[5] == "--position-x",
+              let value = Double(arguments[6]), value.isFinite, (0...1).contains(value) {
+        positionX = value
+    } else {
+        fail("静帧格式：<Mirage运行目录> <scene.pkg> <displayID> <新文件.heic> [--position-x 0..1]")
+    }
+    guard let displayID = UInt32(arguments[3]), displayID != 0 else {
+        fail("显示器 ID 必须非零")
     }
     let target = URL(fileURLWithPath: arguments[4]).standardizedFileURL
     let parent = target.deletingLastPathComponent()
@@ -136,7 +153,9 @@ private func captureStill(_ arguments: [String]) throws {
     let scene = URL(fileURLWithPath: arguments[2])
     let rendererArguments = try runtime.trialArguments(scenePackage: scene,
                                                         displayID: displayID,
-                                                        durationSeconds: 5)
+                                                        durationSeconds: 5,
+                                                        horizontalCropPosition: positionX)
+    print("presentation: horizontal_crop_position=\(positionX)")
     let child = MirageSceneChild(executable: runtime.executable,
                                  arguments: rendererArguments,
                                  environment: runtime.environment())
@@ -201,9 +220,18 @@ private func samplePerformance(pid: Int32, elapsedSeconds: Int) throws {
 
 private func trial(_ arguments: [String], durationSeconds: Int,
                    collectPerformance: Bool = false, followFocus: Bool = false) throws {
-    guard arguments.count == 5, arguments[4] == "--consent",
-          let displayID = UInt32(arguments[3]) else {
-        fail("试验格式：<Mirage运行目录> <scene.pkg> <displayID> --consent")
+    let positionX: Double
+    if arguments.count == 5, arguments[4] == "--consent" {
+        positionX = defaultHorizontalCropPosition(scenePackagePath: arguments[2])
+    } else if arguments.count == 7, arguments[4] == "--position-x",
+              let value = Double(arguments[5]), value.isFinite, (0...1).contains(value),
+              arguments[6] == "--consent" {
+        positionX = value
+    } else {
+        fail("试验格式：<Mirage运行目录> <scene.pkg> <displayID> [--position-x 0..1] --consent")
+    }
+    guard let displayID = UInt32(arguments[3]), displayID != 0 else {
+        fail("显示器 ID 必须非零")
     }
     let runtime = try MirageSceneRuntime(app: URL(fileURLWithPath: arguments[1], isDirectory: true))
     if followFocus { try verifyRuntime(arguments[1], requireFocusFollow: true) }
@@ -212,7 +240,9 @@ private func trial(_ arguments: [String], durationSeconds: Int,
     let rendererArguments = try runtime.trialArguments(scenePackage: scene,
                                                         displayID: initialDisplayID,
                                                         durationSeconds: durationSeconds,
-                                                        followFocus: followFocus)
+                                                        followFocus: followFocus,
+                                                        horizontalCropPosition: positionX)
+    print("presentation: horizontal_crop_position=\(positionX)")
     require(NSScreen.screens.contains { screen in
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == initialDisplayID
     }, "目标显示器当前未连接或工具会话无法读取显示器")
@@ -302,7 +332,7 @@ do {
         }
         let selection = FocusDisplaySelector.currentSelection()
         print("focus: connected=\(ids) selected=\(selection.displayID.map(String.init) ?? "unknown") source=\(selection.source.rawValue)")
-    case "--capture-still" where arguments.count == 6:
+    case "--capture-still" where arguments.count == 6 || arguments.count == 8:
         try captureStill(Array(arguments.dropFirst()))
     case "--trial":
         try trial(Array(arguments.dropFirst()), durationSeconds: 5)
@@ -314,7 +344,7 @@ do {
         try trial(Array(arguments.dropFirst()), durationSeconds: 60,
                   collectPerformance: true, followFocus: true)
     default:
-        fail("可用命令：--selftest | --focus-diagnose | --verify-runtime/--verify-follow-runtime <Mirage运行目录> | --capture-still <Mirage运行目录> <scene.pkg> <displayID> <新文件.heic> | --trial/--space-trial/--perf-trial/--follow-trial <Mirage运行目录> <scene.pkg> <displayID> --consent")
+        fail("可用命令：--selftest | --focus-diagnose | --verify-runtime/--verify-follow-runtime <Mirage运行目录> | --capture-still <Mirage运行目录> <scene.pkg> <displayID> <新文件.heic> [--position-x 0..1] | --trial/--space-trial/--perf-trial/--follow-trial <Mirage运行目录> <scene.pkg> <displayID> [--position-x 0..1] --consent")
     }
 } catch {
     fail(error.localizedDescription)
