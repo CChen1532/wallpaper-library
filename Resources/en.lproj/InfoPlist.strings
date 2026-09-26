@@ -1,0 +1,5 @@
+/* 英文界面下的应用名与权限说明（Info.plist 本地化） */
+CFBundleName = "Wallpaper";
+CFBundleDisplayName = "Wallpaper";
+NSDesktopFolderUsageDescription = "Access desktop video files and folders you choose to manage and play dynamic wallpapers.";
+NSAudioCaptureUsageDescription = "Let audio-reactive scenes follow the system audio level.";

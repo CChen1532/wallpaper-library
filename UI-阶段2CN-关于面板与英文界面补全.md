@@ -35,7 +35,14 @@
    - 数值 + 单位：`5 分钟`、`90 秒` 这类运行时拼出的字符串按 `%.0f 分钟` / `%.0f 秒` 输出为 `5 min` / `90 sec`。
 3. **界面里 10 处动态提示改走本地化通道**（图库问题横幅、场景/视频底图提示、操作失败弹窗、场景包错误、视频详情提示等）。
 
-### 2.3 新增验证
+### 2.3 应用名与权限说明的英文（实机验收后发现）
+
+安装 0.2.36 后用辅助功能树核对英文界面，发现应用菜单仍是「关于壁纸／隐藏壁纸／退出壁纸」、AX 应用名为「壁纸」——因为 `CFBundleName` 来自 Info.plist，不随应用内语言切换。补 `Resources/en.lproj/InfoPlist.strings`：
+
+- `CFBundleName` / `CFBundleDisplayName` = Wallpaper
+- `NSDesktopFolderUsageDescription`、`NSAudioCaptureUsageDescription` 的英文说明（系统权限弹窗跟随）
+
+### 2.4 新增验证
 
 | 检查 | 内容 |
 | --- | --- |
