@@ -29,9 +29,14 @@ struct NativeLibraryView: View {
     @State private var scenePreviewLoading = false
     @FocusState private var focusedWallpaper: String?
     @State private var showPlaybackNotes = false
-    private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
+    private var query: String { GalleryNavigation.normalizedQuery(search) }
+    private var filtered: [Wallpaper] { model.items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) } }
+    private var selectedVideo: Wallpaper? {
+        guard selectedSceneName == nil else { return nil }
+        return filtered.first { $0.id == model.selected }
+    }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
-        sceneEntries.filter { search.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(search) || $0.name.localizedCaseInsensitiveContains(search) }
+        sceneEntries.filter { query.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(query) || $0.name.localizedCaseInsensitiveContains(query) }
     }
     private var selectedScene: SceneCatalogPayload.Entry? {
         filteredScenes.first { $0.id == selectedSceneName }
@@ -68,7 +73,7 @@ struct NativeLibraryView: View {
                 if let issue = model.videoBackdropIssue { issueBanner(issue) }
                 if let issue = model.backdropCompatibilityIssue { issueBanner(issue) }
                 if page == .settings {
-                    WallpaperSettingsView {
+                    WallpaperSettingsView(chooseFolder: chooseSceneDirectory) {
                         showDiagnostics = true; Task { await model.refreshDiagnostics() }
                     }
                 }
@@ -148,8 +153,17 @@ struct NativeLibraryView: View {
                 }.padding(.horizontal, 24).padding(.vertical, 14)
                 if let sceneError { issueBanner(sceneError) }
                 if galleryEntries.isEmpty && !catalog.scanning {
-                    ContentUnavailableView("没有匹配的壁纸", systemImage: "photo.on.rectangle",
-                        description: Text(search.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词。"))
+                    ContentUnavailableView {
+                        Label(query.isEmpty ? "还没有壁纸" : "没有匹配的壁纸", systemImage: "photo.on.rectangle")
+                    } description: {
+                        Text(query.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词，或清除搜索查看全部壁纸。")
+                    } actions: {
+                        if query.isEmpty {
+                            Button("添加素材文件夹", action: chooseSceneDirectory)
+                        } else {
+                            Button("清除搜索") { search = "" }
+                        }
+                    }
                 } else {
                     GeometryReader { geometry in
                         // Reserve space for a non-overlay macOS scroll bar as well.
@@ -191,21 +205,24 @@ struct NativeLibraryView: View {
                     }
                 }
             }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            Group {
-                if let scene = selectedScene { sceneDetails(scene) }
-                else if let video = model.selectedWallpaper { videoDetails(video) }
-                else { inspectorPlaceholder("未选择壁纸", subtitle: "点选壁纸，查看详情并调整设置。", icon: "photo.on.rectangle") }
-            }.frame(width: 320)
+            if let scene = selectedScene {
+                Divider()
+                sceneDetails(scene).id(scene.id).frame(width: 320)
+            } else if let video = selectedVideo {
+                Divider()
+                videoDetails(video).id(video.id).frame(width: 320)
+            }
         }
     }
     private func moveWallpaperSelection(_ direction: MoveCommandDirection, columns: Int) {
         let entries = galleryEntries
         guard !entries.isEmpty else { return }
-        let index = entries.firstIndex { $0.id == (selectedSceneName ?? model.selected) } ?? 0
-        let step: Int
-        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -columns; case .down: step = columns; default: return }
-        let entry = entries[min(max(index + step, 0), entries.count - 1)]
+        let index = entries.firstIndex { $0.id == focusedWallpaper }
+            ?? entries.firstIndex { $0.id == (selectedSceneName ?? model.selected) }
+        let move: GalleryNavigation.Direction
+        switch direction { case .left: move = .left; case .right: move = .right; case .up: move = .up; case .down: move = .down; default: return }
+        guard let target = GalleryNavigation.targetIndex(from: index, count: entries.count, columns: columns, direction: move) else { return }
+        let entry = entries[target]
         selectedSceneName = entry.scene?.id; model.selected = entry.video?.id; focusedWallpaper = entry.id
     }
 
@@ -222,15 +239,6 @@ struct NativeLibraryView: View {
         } cover: {
             SceneCover(folder: item.folder)
         }
-    }
-
-    private func inspectorPlaceholder(_ title: String, subtitle: String, icon: String) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: icon).font(.system(size: 32, weight: .ultraLight)).foregroundStyle(.tertiary)
-            Text(title).font(.headline)
-            Text(subtitle).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
     private func inspectorHeading(_ title: String, close: @escaping () -> Void) -> some View {
@@ -439,6 +447,9 @@ struct NativeLibraryView: View {
                 if item.decodeWarning { Label("此视频可能使用软件解码", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
                 if let warning = item.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
                 Divider()
+                Button("在访达中显示", systemImage: "folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                }.buttonStyle(.link).font(.callout)
                 Button("移入废纸篓", systemImage: "trash", role: .destructive) { confirmTrash = true }
                     .buttonStyle(.borderless).font(.callout).disabled(model.isWorking || !model.capabilities.canTrash)
             }.padding(20)
@@ -450,6 +461,13 @@ struct NativeLibraryView: View {
                 LabeledContent("当前状态", value: model.rotationStatusText)
                 if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: model.rotationIntervalText) }
             } header: { Text("桌面视频轮播") } footer: { Text("轮播会定时更换桌面正在播放的视频。关闭应用窗口后，已开启的轮播仍会继续。") }
+            Section {
+                if let directory = model.capabilities.libraryDirectory {
+                    Text(directory.path).font(.caption).textSelection(.enabled)
+                }
+                Text("仅轮播此文件夹中的视频；场景和其他素材文件夹不参与轮播。")
+                    .font(.callout).foregroundStyle(.secondary)
+            } header: { Text("轮播范围") }
             Section("轮播设置") {
                 Picker("切换方式", selection: $mode) {
                     ForEach(model.capabilities.rotationModes, id: \.self) { value in Text(value == "rand" ? "随机" : value == "next" ? "顺序" : "倒序").tag(value) }

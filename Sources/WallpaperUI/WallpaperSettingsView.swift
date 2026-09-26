@@ -8,6 +8,7 @@ struct WallpaperSettingsView: View {
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
     @State private var accessibilityTrusted = false
+    let chooseFolder: () -> Void
     let showDiagnostics: () -> Void
 
     var body: some View {
@@ -24,7 +25,15 @@ struct WallpaperSettingsView: View {
                     Text(root.path).font(.caption).textSelection(.enabled)
                 }
                 if let date = catalog.lastScan { LabeledContent("上次检查", value: date.formatted(date: .omitted, time: .standard)) }
-                Button("立即检查") { Task { await catalog.refresh() } }.disabled(catalog.scanning)
+                HStack {
+                    Button("添加素材文件夹", systemImage: "folder.badge.plus", action: chooseFolder)
+                    Button(catalog.scanning ? "正在检查…" : "立即检查") { Task { await catalog.refresh() } }
+                        .disabled(catalog.scanning)
+                }
+                ForEach(catalog.issues, id: \.self) { issue in
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                }
                 Text("自动轮播仍使用原视频素材目录。其他文件夹中的视频可以单独播放。")
                     .font(.caption).foregroundStyle(.secondary)
             }

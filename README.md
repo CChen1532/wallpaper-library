@@ -1,6 +1,6 @@
 # 壁纸库
 
-当前 UI：0.2.26 卡片缓动预览版。卡片在192-240点内伸缩填充行宽，空间足够时增加列数；窗口缩放与重排过渡已放慢，悬停与点击保持及时。详见 `UI-阶段2CB-放慢卡片移动动画.md`。
+当前 UI：0.2.27 使用流程修正预览版。统一搜索与详情状态，关闭详情释放空间，换片回到详情顶部，修正方向键边界；设置页增加素材入口和扫描异常。详见 UI-阶段2CC-使用流程审查与修正.md。
 
 macOS 14+ 原生 SwiftUI 壁纸前端，视频使用已有 phonto-wall，场景使用随应用打包的 Mirage Scene 运行时。打开 `dist/WallpaperUI.app` 即可使用。首次访问桌面目录时请允许系统权限请求。
 
@@ -13,6 +13,7 @@ bash scripts/check-scene-playback.sh
 bash scripts/check-covers.sh
 bash scripts/check-material-discovery.sh
 bash scripts/check-unified-library.sh
+bash scripts/check-gallery-navigation.sh
 python3 scripts/check-scene-input.py
 bash scripts/check.sh --live
 bash scripts/check.sh --live --media
