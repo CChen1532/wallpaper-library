@@ -85,6 +85,7 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var recoveringBackdrop = false
     @Published private(set) var automaticBackdropActive = false
     @Published private(set) var automaticBackdropImage: URL?
+    @Published private(set) var preparingBackdrop = false
     private let backdropFactory: @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling
     private var worker: Task<Void, Never>?
     private var generation = UUID()
@@ -102,7 +103,7 @@ struct SceneLaunchConfiguration: Sendable {
     var statusText: String {
         switch phase {
         case .stopped: return "场景未播放"
-        case .starting: return "正在准备场景…"
+        case .starting: return preparingBackdrop ? "正在准备场景与 Space 过渡底图…" : "正在准备场景…"
         case .playing: return "场景正在桌面播放"
         case .stopping: return "正在停止场景…"
         case .failed: return "场景播放失败"
@@ -143,6 +144,7 @@ struct SceneLaunchConfiguration: Sendable {
         title = configuration.title
         package = configuration.package
         displayID = configuration.displayID
+        preparingBackdrop = configuration.backdrop != nil
         error = nil
         let focus = focusProvider
         let backdropFactory = backdropFactory
@@ -159,7 +161,13 @@ struct SceneLaunchConfiguration: Sendable {
                 try await Self.waitUntil(timeout: 15) { try child.eventReceived("first-frame-presented") }
                 try Task.checkCancellation()
                 if let backdrop {
-                    try backdrop.activate(displayID: configuration.displayID) { try child.snapshot(to: $0) }
+                    let opening = SceneBackdropFrameSampler.openingEnabled(
+                        package: configuration.package, values: configuration.userPropertyValues)
+                    try backdrop.activate(displayID: configuration.displayID) { output in
+                        try SceneBackdropFrameSampler.capture(to: output, openingEnabled: opening) {
+                            try child.snapshot(to: $0)
+                        }
+                    }
                     if let image = backdrop.registrationURL {
                         try await SpaceWallpaperSettingsController.activate(displayID: configuration.displayID, imageURL: image)
                     }
@@ -182,7 +190,11 @@ struct SceneLaunchConfiguration: Sendable {
                         try Task.checkCancellation()
                         try child.move(to: move)
                         try await Self.waitUntil(timeout: 2) { try child.moveAcknowledged(to: move) }
-                        try backdrop?.activate(displayID: move) { try child.snapshot(to: $0) }
+                        try backdrop?.activate(displayID: move) { output in
+                            try SceneBackdropFrameSampler.capture(to: output, openingEnabled: false) {
+                                try child.snapshot(to: $0)
+                            }
+                        }
                         if let image = backdrop?.registrationURL {
                             try await SpaceWallpaperSettingsController.activate(displayID: move, imageURL: image)
                         }
@@ -223,6 +235,7 @@ struct SceneLaunchConfiguration: Sendable {
         activePreferences = nil
         activeUserPropertyValues = [:]
         displayID = nil
+        preparingBackdrop = false
     }
 
     private func backdropActivated(token: UUID, image: URL?) {
@@ -232,6 +245,7 @@ struct SceneLaunchConfiguration: Sendable {
     }
     private func activated(token: UUID) {
         guard token == generation, phase == .starting else { return }
+        preparingBackdrop = false
         phase = .playing
     }
     private func moved(to displayID: UInt32, token: UUID) {
@@ -244,6 +258,7 @@ struct SceneLaunchConfiguration: Sendable {
         restorationPending = pending
         automaticBackdropActive = false
         automaticBackdropImage = nil
+        preparingBackdrop = false
         // stop() owns the final transition while awaiting cleanup.
         guard phase != .stopping else { return }
         worker = nil

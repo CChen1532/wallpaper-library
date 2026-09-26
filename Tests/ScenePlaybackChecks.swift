@@ -547,6 +547,64 @@ import UniformTypeIdentifiers
         }
         check(capturedA.deletingLastPathComponent().deletingLastPathComponent() != capturedB.deletingLastPathComponent().deletingLastPathComponent(), "不同壁纸的底图目录完全隔离")
         check(try Data(contentsOf: capturedA).prefix(8) == Data([137,80,78,71,13,10,26,10]), "底图实际编码为PNG而非只修改后缀")
+        let openingFolder = root.appendingPathComponent("opening-scene", isDirectory: true)
+        try FileManager.default.createDirectory(at: openingFolder, withIntermediateDirectories: true)
+        let openingPackage = openingFolder.appendingPathComponent("scene.pkg")
+        try Data([1]).write(to: openingPackage)
+        try Data(#"{"general":{"properties":{"opening":{"type":"bool","text":"开场动画 Intro Animation","value":true}}}}"#.utf8)
+            .write(to: openingFolder.appendingPathComponent("project.json"))
+        check(SceneBackdropFrameSampler.openingEnabled(package: openingPackage, values: [:]),
+              "作者启用的开场动画默认延后静帧采样")
+        check(!SceneBackdropFrameSampler.openingEnabled(package: openingPackage,
+              values: ["opening": .boolean(false)]), "当前壁纸关闭开场后不拖慢静帧采样")
+        func solid(_ red: UInt8, _ green: UInt8, _ blue: UInt8) -> Data {
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 32, pixelsHigh: 24,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let pixels = bitmap.bitmapData!
+            for y in 0..<24 { for x in 0..<32 {
+                let index = y * bitmap.bytesPerRow + x * 4
+                pixels[index] = red; pixels[index + 1] = green; pixels[index + 2] = blue; pixels[index + 3] = 255
+            } }
+            return bitmap.representation(using: .png, properties: [:])!
+        }
+        let black = solid(0, 0, 0), red = solid(255, 0, 0), green = solid(0, 255, 0)
+        let sampled = root.appendingPathComponent("sampled.heic")
+        var samples = 0
+        try SceneBackdropFrameSampler.capture(to: sampled, openingEnabled: false, sampleTimes: [0, 0]) { url in
+            samples += 1
+            try (samples == 1 ? black : red).write(to: url)
+        }
+        let selectedRed = try Data(contentsOf: sampled)
+        check(samples == 2 && selectedRed == red,
+              "黑色首帧不登记为底图，改用后续场景画面")
+        try FileManager.default.removeItem(at: sampled)
+        let darkScene = solid(15, 15, 15)
+        samples = 0
+        try SceneBackdropFrameSampler.capture(to: sampled, openingEnabled: false, sampleTimes: [0, 0]) { url in
+            samples += 1
+            try darkScene.write(to: url)
+        }
+        let selectedDark = try Data(contentsOf: sampled)
+        check(samples == 1 && selectedDark == darkScene, "真实暗色场景不因低亮度被误判为黑色开场")
+        try FileManager.default.removeItem(at: sampled)
+        samples = 0
+        try SceneBackdropFrameSampler.capture(to: sampled, openingEnabled: true, sampleTimes: [0, 0]) { url in
+            samples += 1
+            try (samples == 1 ? red : green).write(to: url)
+        }
+        let selectedGreen = try Data(contentsOf: sampled)
+        check(samples == 2 && selectedGreen == green,
+              "开场动画开启时即使首帧有内容也选开场后的帧")
+        try FileManager.default.removeItem(at: sampled)
+        do {
+            try SceneBackdropFrameSampler.capture(to: sampled, openingEnabled: false, sampleTimes: [0, 0]) {
+                try black.write(to: $0)
+            }
+            preconditionFailure("black-only scene registered")
+        } catch {
+            check(!FileManager.default.fileExists(atPath: sampled.path), "只有黑帧时拒绝覆盖系统墙纸")
+        }
         do {
             _ = try SceneBackdropCapture.capture(package: backdropConfig.sourcePackage!, state: backdropConfig.state) { try Data("broken".utf8).write(to: $0) }
             preconditionFailure("bad image accepted")
