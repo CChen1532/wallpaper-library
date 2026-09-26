@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct WESceneCatalogEntry: Codable {
     let name: String
@@ -17,6 +18,78 @@ struct WESceneCatalogReport: Codable {
 }
 
 extension WESceneInspection {
+    private static let deepInspectionMaxBytes: Int64 = 128 * 1024 * 1024
+
+    /// Check only the PKGV index for a large package. The older resource and
+    /// preview analyzers copy the entire package into byte arrays, so they
+    /// must not run just because the UI permits a larger runtime input.
+    private static func largePackageVersion(at url: URL, expectedBytes: Int64) throws -> String {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw ProbeError.invalid("无法安全打开大型场景包") }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0,
+              metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              Int64(metadata.st_size) == expectedBytes else {
+            throw ProbeError.invalid("大型场景包已变化或不是普通文件")
+        }
+        let maxIndexBytes = 16 * 1024 * 1024
+        var consumed = 0
+        func readExactly(_ count: Int) throws -> [UInt8] {
+            guard count >= 0, count <= maxIndexBytes - consumed else {
+                throw ProbeError.invalid("大型场景包索引超过16MiB")
+            }
+            var bytes = Data()
+            while bytes.count < count {
+                let chunk = try handle.read(upToCount: count - bytes.count) ?? Data()
+                guard !chunk.isEmpty else { throw ProbeError.truncated("大型场景包索引") }
+                bytes.append(chunk)
+            }
+            consumed += count
+            return Array(bytes)
+        }
+        func readInt32() throws -> Int32 {
+            let bytes = try readExactly(4)
+            let value = UInt32(bytes[0]) | UInt32(bytes[1]) << 8 |
+                UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
+            return Int32(bitPattern: value)
+        }
+        let versionLength = Int(try readInt32())
+        guard (4...32).contains(versionLength),
+              let version = String(bytes: try readExactly(versionLength), encoding: .utf8),
+              version.hasPrefix("PKGV") else {
+            throw ProbeError.invalid("大型场景包缺少有效 PKGV 标识")
+        }
+        let count = Int(try readInt32())
+        guard (0...100_000).contains(count) else { throw ProbeError.invalid("大型场景包条目数异常") }
+        var ranges: [(offset: Int64, length: Int64)] = []
+        ranges.reserveCapacity(count)
+        var names: Set<String> = []
+        for index in 0..<count {
+            if index.isMultiple(of: 128) { try Task.checkCancellation() }
+            let pathLength = Int(try readInt32())
+            guard (1...4096).contains(pathLength),
+                  let path = String(bytes: try readExactly(pathLength), encoding: .utf8),
+                  safePackagePath(path),
+                  names.insert(path.precomposedStringWithCanonicalMapping.lowercased()).inserted else {
+                throw ProbeError.invalid("大型场景包资源路径无效或重复")
+            }
+            let offset = Int64(try readInt32())
+            let length = Int64(try readInt32())
+            guard offset >= 0, length >= 0 else { throw ProbeError.invalid("大型场景包条目范围无效") }
+            ranges.append((offset, length))
+        }
+        let dataBytes = expectedBytes - Int64(consumed)
+        guard ranges.allSatisfy({ $0.offset <= dataBytes && $0.length <= dataBytes - $0.offset }) else {
+            throw ProbeError.truncated("大型场景包资源范围越界")
+        }
+        guard names.contains("scene.json") else {
+            throw ProbeError.invalid("大型场景包缺少 scene.json")
+        }
+        return version
+    }
+
     private static func sceneTitle(in folder: URL) -> String? {
         let project = folder.appendingPathComponent("project.json", isDirectory: false)
         guard let values = try? project.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
@@ -62,14 +135,26 @@ extension WESceneInspection {
         var entries: [WESceneCatalogEntry] = []
         for (name, title, pkg, bytes) in packages {
             try Task.checkCancellation()
-            guard bytes > 0 && bytes <= 128 * 1024 * 1024 else {
+            guard bytes > 0 else {
                 entries.append(.init(name: name, title: title, packagePath: pkg.path, packageBytes: bytes,
-                                     capability: nil, error: "场景包大小不在1...128MiB范围"))
+                                     capability: nil, error: "场景包为空"))
                 continue
             }
             do {
+                if bytes > deepInspectionMaxBytes {
+                    let version = try largePackageVersion(at: pkg, expectedBytes: bytes)
+                    let capability = WESceneCapabilityReport(schemaVersion: 1, packageVersion: version,
+                        resourceInspectionAvailable: false, restrictedStaticPreviewAvailable: false,
+                        desktopScenePlayable: false, faithfulSceneRendering: false,
+                        previewFailure: "大型场景包不进入旧版受限静态预览",
+                        limitationCodes: ["largePackageInspectionDeferred"],
+                        description: "已验证包索引；跳过会复制整包的离线分析，可交给场景运行时尝试播放")
+                    entries.append(.init(name: name, title: title, packagePath: pkg.path, packageBytes: bytes,
+                                         capability: capability, error: nil))
+                    continue
+                }
                 let data = try Data(contentsOf: pkg, options: .mappedIfSafe)
-                guard data.count > 0 && data.count <= 128 * 1024 * 1024 else {
+                guard data.count > 0 && data.count <= deepInspectionMaxBytes else {
                     throw ProbeError.invalid("读取后的场景包大小超出1...128MiB范围")
                 }
                 let report = try capabilityReport(packageData: data, maxPreviewDimension: maxPreviewDimension)

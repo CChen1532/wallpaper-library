@@ -7,6 +7,7 @@ enum LibraryPage: String, Hashable { case videos, scenes, rotation, settings }
 private struct SceneCatalogPayload: Decodable {
     struct Entry: Decodable, Identifiable {
         struct Capability: Decodable {
+            let resourceInspectionAvailable: Bool
             let restrictedStaticPreviewAvailable: Bool
             let desktopScenePlayable: Bool
             let limitationCodes: [String]
@@ -247,7 +248,7 @@ struct NativeLibraryView: View {
         return GalleryCard(title: title,
                            subtitle: ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file),
                            badge: "场景", selected: selectedSceneName == item.name,
-                           playing: playing, warning: item.error != nil,
+                           playing: playing, warning: item.error != nil || item.capability?.resourceInspectionAvailable == false,
                            accessibilityKind: "场景壁纸",
                            playbackStatus: playing ? scenePlayer.statusText : nil) {
             selectedSceneName = item.name; focusedScene = item.name
@@ -310,6 +311,13 @@ struct NativeLibraryView: View {
                         .contentTransition(.opacity).animation(LibraryMotion.selection(reduceMotion), value: item.name)
                     Label("动态场景", systemImage: "square.3.layers.3d").font(.caption).foregroundStyle(.secondary)
                 }
+                if let error = item.error {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                } else if item.capability?.resourceInspectionAvailable == false {
+                    Label("大型场景包已通过文件索引检查；为避免界面卡顿，跳过受限静态分析。仍可尝试动态播放。", systemImage: "info.circle")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 Button {
                     guard let sceneRoot else { return }
                     Task { await model.playScene(root: sceneRoot, name: item.name, title: item.title ?? item.name,
@@ -317,7 +325,7 @@ struct NativeLibraryView: View {
                 } label: { Label("设为场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
-                    .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0 || item.packageBytes > 256 * 1024 * 1024)
+                    .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0)
                 if let sceneRoot {
                     let package = sceneRoot.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
                     SceneInspectorSettings(store: model.scenePreferences,
@@ -347,8 +355,7 @@ struct NativeLibraryView: View {
             }.padding(20)
         }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             .task(id: (sceneRoot?.path ?? "") + "/" + item.name) {
-                guard let sceneRoot, item.error == nil, item.packageBytes > 0,
-                      item.packageBytes <= 256 * 1024 * 1024 else { return }
+                guard let sceneRoot, item.error == nil, item.packageBytes > 0 else { return }
                 await model.preloadScene(root: sceneRoot, name: item.name,
                                          title: item.title ?? item.name,
                                          expectedBytes: item.packageBytes)

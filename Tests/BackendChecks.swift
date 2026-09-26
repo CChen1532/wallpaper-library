@@ -12,7 +12,8 @@ import Foundation
         check(SceneLimitationLabels.title(for: "offlineVideoFrame") == "视频仅离线取帧", "离线视频帧与动态播放明确区分")
         check(SceneLimitationLabels.title(for: "invalidTexture") == "纹理数据无效", "资源异常不误称功能限制")
         check(SceneLimitationLabels.title(for: "futureCode") == "其他限制（futureCode）", "未知限制代码仍可见")
-        check(SceneLimitationLabels.titles.count == 36, "已知场景限制说明覆盖当前代码清单")
+        check(SceneLimitationLabels.title(for: "largePackageInspectionDeferred") == "大型场景包跳过受限静态分析", "大包状态说明与动态播放分开")
+        check(SceneLimitationLabels.titles.count == 37, "已知场景限制说明覆盖当前代码清单")
         var state = PlaybackState()
         state.lastPath = "/tmp/中文 空格.mp4"
         check(state.currentPath == nil, "未运行时忽略陈旧路径")

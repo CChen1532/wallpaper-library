@@ -17,6 +17,7 @@ enum SceneLimitationLabels {
         "invalidReference": "资源引用无效",
         "invalidTexture": "纹理数据无效",
         "invalidTextureSlots": "纹理列表结构无效",
+        "largePackageInspectionDeferred": "大型场景包跳过受限静态分析",
         "layerSkipped": "受限预览跳过图层",
         "missingMaterial": "模型缺少材质",
         "missingParent": "父图层不存在",
