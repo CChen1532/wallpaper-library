@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct VideoInspectorSettings: View {
+    @Environment(\.locale) private var locale
     @EnvironmentObject private var model: LibraryModel
     @ObservedObject var store: VideoBackdropPreferencesStore
     @ObservedObject var backdrop: VideoBackdropController
@@ -48,7 +49,7 @@ struct VideoInspectorSettings: View {
                     HStack {
                         Text("截帧时间")
                         Spacer()
-                        Text("\(min(preferences.frameSecond, frameLimit)) 秒").foregroundStyle(.secondary)
+                        Text("\(min(preferences.frameSecond, frameLimit)) " + AppStrings.text("秒", locale: locale)).foregroundStyle(.secondary)
                     }
                 }.padding(10).modifier(HoverHighlight()).disabled(!preferences.enabled || frameLimit == 0)
             }.background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
@@ -59,7 +60,7 @@ struct VideoInspectorSettings: View {
                let image = NSImage(contentsOf: url) {
                 Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 120)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("当前视频过渡静帧：" + video.title)
+                    .accessibilityLabel(AppStrings.text("当前视频过渡静帧：", locale: locale) + video.title)
                 Label("当前视频底图已匹配", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
             }

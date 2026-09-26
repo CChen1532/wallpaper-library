@@ -2,10 +2,12 @@ import SwiftUI
 import ApplicationServices
 
 struct WallpaperSettingsView: View {
+    @Environment(\.locale) private var locale
     @EnvironmentObject private var catalog: UnifiedLibrary
     @EnvironmentObject private var model: LibraryModel
     @EnvironmentObject private var scenePlayer: ScenePlayer
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
+    @AppStorage("appLanguage") private var language = AppLanguage.chinese
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
     @State private var accessibilityTrusted = false
     let chooseFolder: () -> Void
@@ -15,8 +17,16 @@ struct WallpaperSettingsView: View {
         Form {
             Section("外观") {
                 Picker("应用外观", selection: $appearance) {
-                    ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
+                    ForEach(AppAppearance.allCases) { Text(LocalizedStringKey($0.label)).tag($0) }
                 }
+            }
+            Section("语言") {
+                Picker("应用语言", selection: $language) {
+                    Text("简体中文").tag(AppLanguage.chinese)
+                    Text("English").tag(AppLanguage.english)
+                }
+                Text("切换后立即应用到界面，不影响正在播放的壁纸。")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             Section("素材文件夹") {
                 Text("每60秒自动识别新场景与 MP4 视频，应用运行时持续检查。")
@@ -27,7 +37,7 @@ struct WallpaperSettingsView: View {
                 if let date = catalog.lastScan { LabeledContent("上次检查", value: date.formatted(date: .omitted, time: .standard)) }
                 HStack {
                     Button("添加素材文件夹", systemImage: "folder.badge.plus", action: chooseFolder)
-                    Button(catalog.scanning ? "正在检查…" : "立即检查") { Task { await catalog.refresh() } }
+                    Button(LocalizedStringKey(catalog.scanning ? "正在检查…" : "立即检查")) { Task { await catalog.refresh() } }
                         .disabled(catalog.scanning)
                 }
                 ForEach(catalog.issues, id: \.self) { issue in
@@ -52,10 +62,10 @@ struct WallpaperSettingsView: View {
                 if let url = scenePlayer.automaticBackdropImage, let image = NSImage(contentsOf: url) {
                     LabeledContent("当前壁纸底图", value: scenePlayer.title)
                     Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 150)
-                        .accessibilityLabel("当前场景实际截图：" + scenePlayer.title)
+                        .accessibilityLabel(AppStrings.text("当前场景实际截图：", locale: locale) + scenePlayer.title)
                 }
                 if scenePlayer.isActive {
-                    Text(scenePlayer.automaticBackdropActive ? "过渡底图已匹配；停止后可修改开关。" : "停止当前场景后可修改开关。")
+                    Text(LocalizedStringKey(scenePlayer.automaticBackdropActive ? "过渡底图已匹配；停止后可修改开关。" : "停止当前场景后可修改开关。"))
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 if scenePlayer.restorationPending {
@@ -83,10 +93,10 @@ struct WallpaperSettingsView: View {
                 Text("视频的过渡底图可在每个视频的详情栏单独设置。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
             }
             Section("关于") {
-                LabeledContent("辅助功能授权", value: accessibilityTrusted ? "已授权" : "未授权")
+                LabeledContent("辅助功能授权") { Text(LocalizedStringKey(accessibilityTrusted ? "已授权" : "未授权")) }
                 Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
                 Button("显示器与运行状态", action: showDiagnostics)
-                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") + " 预览版")
+                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? AppStrings.text("开发版", locale: locale)) + AppStrings.text(" 预览版", locale: locale))
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden)

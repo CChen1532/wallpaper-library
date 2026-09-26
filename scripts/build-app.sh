@@ -14,7 +14,10 @@ cp .build/release/GravitySceneRenderer "$app/Contents/Resources/GravitySceneRend
 cp -R .build/release/WallpaperUI_GravitySceneRenderer.bundle "$app/Contents/Resources/"
 cp -R Scenes/GravityJourney "$app/Contents/Resources/GravityScenes"
 cp Resources/Info.plist "$app/Contents/Info.plist"
-bash scripts/build-icon.sh "$app/Contents/Resources/AppIcon.icns"
+cp -R Resources/en.lproj Resources/zh-Hans.lproj "$app/Contents/Resources/"
+# Use the committed icon for reproducible packaging; iconutil may reject a
+# regenerated iconset even when its input PNG and the existing ICNS are valid.
+cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
 bash 工具/快速墙纸/build.sh
 mkdir -p "$app/Contents/Resources/WallpaperSwitch"

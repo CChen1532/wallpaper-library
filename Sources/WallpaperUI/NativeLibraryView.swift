@@ -6,6 +6,7 @@ import WESceneCore
 enum LibraryPage: String, Hashable { case library, videos, scenes, rotation, settings }
 struct NativeLibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
     @AppStorage("libraryPage") private var page = LibraryPage.library
@@ -63,13 +64,13 @@ struct NativeLibraryView: View {
                     SidebarNavigationLabel(title: "自动轮播", symbol: "arrow.triangle.2.circlepath", selected: page == .rotation).tag(LibraryPage.rotation)
                     SidebarNavigationLabel(title: "设置", symbol: "gearshape", selected: page == .settings).tag(LibraryPage.settings)
                 }
-            }.listStyle(.sidebar).navigationTitle("壁纸库")
+            }.listStyle(.sidebar).navigationTitle(AppStrings.text("壁纸库", locale: locale))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
 
         } detail: {
             VStack(spacing: 0) {
-                if let issue = model.stateIssue { issueBanner("状态暂不可用：" + issue) }
-                if let issue = model.libraryIssue { issueBanner("素材读取失败：" + issue) }
+                if let issue = model.stateIssue { issueBanner(AppStrings.text("状态暂不可用：", locale: locale) + issue) }
+                if let issue = model.libraryIssue { issueBanner(AppStrings.text("素材读取失败：", locale: locale) + issue) }
                 if let issue = model.videoBackdropIssue { issueBanner(issue) }
                 if let issue = model.backdropCompatibilityIssue { issueBanner(issue) }
                 if page == .settings {
@@ -82,7 +83,7 @@ struct NativeLibraryView: View {
                 if page != .settings { Divider(); desktopControls }
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .navigationTitle(page == .settings ? "设置" : page == .rotation ? "自动轮播" : "全部壁纸")
+            .navigationTitle(AppStrings.text(page == .settings ? "设置" : page == .rotation ? "自动轮播" : "全部壁纸", locale: locale))
             .modifier(LibrarySearch(text: $search, enabled: page == .library, prompt: "搜索壁纸"))
             .toolbar {
                 ToolbarItemGroup {
@@ -120,7 +121,7 @@ struct NativeLibraryView: View {
         .confirmationDialog("将所选视频移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("移入废纸篓", role: .destructive) { Task { await model.trashSelected() } }
             Button("取消", role: .cancel) {}
-        } message: { Text("\(model.selectedWallpaper?.url.lastPathComponent ?? "")\n可以从废纸篓恢复。若正在播放此视频或开启了轮播，将先停止桌面播放并关闭轮播。") }
+        } message: { Text(model.selectedWallpaper?.url.lastPathComponent ?? "") + Text("\n") + Text("可以从废纸篓恢复。若正在播放此视频或开启了轮播，将先停止桌面播放并关闭轮播。") }
         .sheet(isPresented: $showDiagnostics) { diagnosticsSheet }
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
@@ -146,7 +147,7 @@ struct NativeLibraryView: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("\(galleryEntries.count) 项").foregroundStyle(.secondary)
+                    Text("\(galleryEntries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary)
                     Spacer()
                     if catalog.scanning { ProgressView().controlSize(.small) }
                     Text("每分钟自动检查").font(.caption).foregroundStyle(.secondary)
@@ -154,9 +155,9 @@ struct NativeLibraryView: View {
                 if let sceneError { issueBanner(sceneError) }
                 if galleryEntries.isEmpty && !catalog.scanning {
                     ContentUnavailableView {
-                        Label(query.isEmpty ? "还没有壁纸" : "没有匹配的壁纸", systemImage: "photo.on.rectangle")
+                        Label(LocalizedStringKey(query.isEmpty ? "还没有壁纸" : "没有匹配的壁纸"), systemImage: "photo.on.rectangle")
                     } description: {
-                        Text(query.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词，或清除搜索查看全部壁纸。")
+                        Text(LocalizedStringKey(query.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词，或清除搜索查看全部壁纸。"))
                     } actions: {
                         if query.isEmpty {
                             Button("添加素材文件夹", action: chooseSceneDirectory)
@@ -243,7 +244,7 @@ struct NativeLibraryView: View {
 
     private func inspectorHeading(_ title: String, close: @escaping () -> Void) -> some View {
         HStack {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(LocalizedStringKey(title)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Spacer()
             Button(action: close) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -328,14 +329,14 @@ struct NativeLibraryView: View {
 
     private func inspectorMetadata(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(.secondary)
+            Text(LocalizedStringKey(label)).foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(value).textSelection(.enabled).multilineTextAlignment(.trailing)
         }.font(.caption)
     }
 
     private func coverLabel(_ label: String) -> some View {
-        Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
+        Text(LocalizedStringKey(label)).font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
             .padding(.horizontal, 8).padding(.vertical, 4).background(.black.opacity(0.45), in: Capsule())
     }
 
@@ -350,7 +351,7 @@ struct NativeLibraryView: View {
                 .font(.callout).foregroundStyle(.secondary)
             List(visibleSceneLimitations, id: \.self) { code in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(SceneLimitationLabels.title(for: code))
+                    Text(LocalizedStringKey(SceneLimitationLabels.title(for: code)))
                     Text(code).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                 }.padding(.vertical, 3)
             }.listStyle(.inset)
@@ -373,7 +374,7 @@ struct NativeLibraryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView("预览不可用", systemImage: "photo.badge.exclamationmark",
-                    description: Text(scenePreviewError ?? "此场景没有可显示的受限静态画面。"))
+                    description: Text(LocalizedStringKey(scenePreviewError ?? "此场景没有可显示的受限静态画面。")))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.padding(20).frame(minWidth: 520, minHeight: 420)
@@ -439,7 +440,7 @@ struct NativeLibraryView: View {
                     Text("视频信息").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     inspectorMetadata("分辨率", "\(item.width) × \(item.height)")
                     inspectorMetadata("帧率", String(format: "%.2f FPS", item.fps))
-                    inspectorMetadata("时长", String(format: "%.1f 秒", item.duration))
+                    inspectorMetadata("时长", String(format: AppStrings.text("%.1f 秒", locale: locale), item.duration))
                     inspectorMetadata("编码", item.codec.uppercased())
                     inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.sizeBytes, countStyle: .file))
                 }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
@@ -459,8 +460,8 @@ struct NativeLibraryView: View {
     private var rotationSettings: some View {
         Form {
             Section {
-                LabeledContent("当前状态", value: model.rotationStatusText)
-                if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: model.rotationIntervalText) }
+                LabeledContent("当前状态", value: AppStrings.text(model.rotationStatusText, locale: locale))
+                if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: AppStrings.text(model.rotationIntervalText, locale: locale)) }
             } header: { Text("桌面视频轮播") } footer: { Text("轮播会定时更换桌面正在播放的视频。关闭应用窗口后，已开启的轮播仍会继续。") }
             Section {
                 if let directory = model.capabilities.libraryDirectory {
@@ -471,14 +472,14 @@ struct NativeLibraryView: View {
             } header: { Text("轮播范围") }
             Section("轮播设置") {
                 Picker("切换方式", selection: $mode) {
-                    ForEach(model.capabilities.rotationModes, id: \.self) { value in Text(value == "rand" ? "随机" : value == "next" ? "顺序" : "倒序").tag(value) }
+                    ForEach(model.capabilities.rotationModes, id: \.self) { value in Text(LocalizedStringKey(value == "rand" ? "随机" : value == "next" ? "顺序" : "倒序")).tag(value) }
                 }
-                Stepper(value: $minutes, in: 1...1440) { LabeledContent("间隔", value: "\(minutes) 分钟") }
+                Stepper(value: $minutes, in: 1...1440) { LabeledContent("间隔", value: "\(minutes) " + AppStrings.text("分钟", locale: locale)) }
                 HStack {
                     Button("应用并开启") { Task { await model.perform(.rotation(minutes * 60, mode)) } }.buttonStyle(.borderedProminent)
                     Button("关闭轮播") { Task { await model.perform(.stopRotation) } }
                 }
-                if let notice = model.state.notice { Text(notice).foregroundStyle(.orange) }
+                if let notice = model.state.notice { Text(LocalizedStringKey(notice)).foregroundStyle(.orange) }
             }.disabled(model.isWorking)
             Section { Text("“停止桌面播放”保留轮播设置，之后可能再次播放。要恢复静态系统桌面并关闭轮播，请选择“全部关闭”。").font(.callout).foregroundStyle(.secondary) }
         }.formStyle(.grouped)
@@ -491,9 +492,9 @@ struct NativeLibraryView: View {
                     .frame(width: 7, height: 7).overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2)).offset(x: 3, y: 0)
             }.frame(width: 32)
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面待机")
+                Text(LocalizedStringKey(model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面待机"))
                     .font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                Text(playbackSubtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                Text(LocalizedStringKey(playbackSubtitle)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)
             if selectedSceneName == nil {
                 HStack(spacing: 3) {
@@ -525,7 +526,8 @@ struct NativeLibraryView: View {
     private func control(_ icon: String, _ title: String, _ action: Action) -> some View {
         Button { Task { await model.perform(action) } } label: {
             Image(systemName: icon).font(.system(size: 12)).frame(width: 27, height: 27).contentShape(Rectangle())
-        }.buttonStyle(.borderless).help(title).accessibilityLabel(title).disabled(model.items.isEmpty || model.isWorking)
+        }.buttonStyle(.borderless).help(AppStrings.text(title, locale: locale))
+            .accessibilityLabel(AppStrings.text(title, locale: locale)).disabled(model.items.isEmpty || model.isWorking)
     }
     private func issueBanner(_ text: String) -> some View { Label(text, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading).padding(12) }
     private func importVideos() {
@@ -541,7 +543,7 @@ struct NativeLibraryView: View {
             HStack { Text("显示器与运行状态").font(.title2.bold()); Spacer(); Button("完成") { showDiagnostics = false }.keyboardShortcut(.cancelAction) }
             if model.loadingDiagnostics { ProgressView("正在读取…") }
             Text("手动刷新时的诊断快照，不代表实时画面运动。").font(.caption).foregroundStyle(.secondary)
-            ScrollView { Text(model.diagnostics.map { $0.displays + "\n" + $0.status } ?? "暂无诊断数据").font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            ScrollView { Text(model.diagnostics.map { $0.displays + "\n" + $0.status } ?? AppStrings.text("暂无诊断数据", locale: locale)).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             Text("负载为系统诊断快照，不能单凭 CPU 百分比断定硬件解码或功耗。").font(.caption).foregroundStyle(.secondary)
             Button("刷新诊断") { Task { await model.refreshDiagnostics() } }.disabled(model.loadingDiagnostics)
         }.padding(24).frame(width: 700, height: 480)
@@ -556,13 +558,14 @@ private struct VideoCover: View {
     var body: some View { LibraryCover(source: .video(item.thumbnail), symbol: "film") }
 }
 private struct VideoCard: View {
+    @Environment(\.locale) private var locale
     let item: Wallpaper
     let selected: Bool
     let playing: Bool
     let action: () -> Void
     var body: some View {
         GalleryCard(title: item.title, subtitle: "\(item.width) × \(item.height)",
-                    badge: String(format: "%.0f 秒", item.duration), selected: selected,
+                    badge: String(format: AppStrings.text("%.0f 秒", locale: locale), item.duration), selected: selected,
                     playing: playing, warning: item.warning != nil || item.decodeWarning,
                     accessibilityKind: "视频壁纸", playbackStatus: playing ? "正在桌面播放" : nil,
                     action: action) {
@@ -572,6 +575,7 @@ private struct VideoCard: View {
 }
 
 private struct GalleryCard<Cover: View>: View {
+    @Environment(\.locale) private var locale
     let title: String
     let subtitle: String
     let badge: String
@@ -590,9 +594,9 @@ private struct GalleryCard<Cover: View>: View {
     private var badgeText: String { playing ? (playbackStatus ?? "桌面播放中") : badge }
 
     private var accessibilityStatus: String {
-        let selection = selected ? "已选择" : "未选择"
+        let selection = AppStrings.text(selected ? "已选择" : "未选择", locale: locale)
         guard playing else { return selection }
-        return selection + "，" + (playbackStatus ?? "正在桌面播放")
+        return selection + ", " + AppStrings.text(playbackStatus ?? "正在桌面播放", locale: locale)
     }
     var body: some View {
         Button(action: action) { cardSurface }
@@ -603,7 +607,7 @@ private struct GalleryCard<Cover: View>: View {
             .animation(LibraryMotion.feedback(reduceMotion), value: hovered)
             .animation(LibraryMotion.selection(reduceMotion), value: selected)
             .animation(nil, value: reduceMotion)
-            .accessibilityLabel(Text(title + "，" + accessibilityKind))
+            .accessibilityLabel(Text(title + ", " + AppStrings.text(accessibilityKind, locale: locale)))
             .accessibilityValue(Text(accessibilityStatus))
             .help(title)
     }
@@ -627,7 +631,7 @@ private struct GalleryCard<Cover: View>: View {
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .bottomLeading) {
-                Label(badgeText, systemImage: badgeIcon)
+                Label(LocalizedStringKey(badgeText), systemImage: badgeIcon)
                     .font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .background(.black.opacity(0.38), in: Capsule()).padding(10)
@@ -660,7 +664,7 @@ private struct LibrarySearch: ViewModifier {
     let enabled: Bool
     let prompt: String
     @ViewBuilder func body(content: Content) -> some View {
-        if enabled { content.searchable(text: $text, placement: .toolbar, prompt: Text(prompt)) }
+        if enabled { content.searchable(text: $text, placement: .toolbar, prompt: Text(LocalizedStringKey(prompt))) }
         else { content }
     }
 }

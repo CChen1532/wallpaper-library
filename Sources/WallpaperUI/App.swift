@@ -61,37 +61,40 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     @NSApplicationDelegateAdaptor(WallpaperAppDelegate.self) private var delegate
     @StateObject private var model = AppServices.model
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
+    @AppStorage("appLanguage") private var language = AppLanguage.chinese
     @AppStorage("libraryPage") private var page = LibraryPage.library
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
-        Window("壁纸", id: "library") {
+        Window(AppStrings.text("壁纸", language: language), id: "library") {
             NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog)
+                .environment(\.locale, language.locale)
                 .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
         }.defaultSize(width: 1200, height: 800)
             .commands {
                 CommandGroup(replacing: .appSettings) {
-                    Button("设置…") {
+                    Button(AppStrings.text("设置…", language: language)) {
                         page = .settings
                         openWindow(id: "library")
                         NSApp.activate(ignoringOtherApps: true)
                     }.keyboardShortcut(",", modifiers: .command)
                 }
                 CommandGroup(after: .sidebar) {
-                    Menu("外观") {
-                        Picker("外观", selection: $appearance) {
-                            ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
+                    Menu(AppStrings.text("外观", language: language)) {
+                        Picker(AppStrings.text("外观", language: language), selection: $appearance) {
+                            ForEach(AppAppearance.allCases) { Text(AppStrings.text($0.label, language: language)).tag($0) }
                         }.pickerStyle(.inline)
                     }
                     Divider()
-                    Button("紧凑窗口") { resizeWindow(width: 980, height: 680) }
-                    Button("标准窗口") { resizeWindow(width: 1200, height: 800) }
+                    Button(AppStrings.text("紧凑窗口", language: language)) { resizeWindow(width: 980, height: 680) }
+                    Button(AppStrings.text("标准窗口", language: language)) { resizeWindow(width: 1200, height: 800) }
                     Divider()
-                    Button("停止所有壁纸") { Task { await model.perform(.off) } }
+                    Button(AppStrings.text("停止所有壁纸", language: language)) { Task { await model.perform(.off) } }
                         .keyboardShortcut(".", modifiers: [.command, .option])
                 }
             }
-        MenuBarExtra("壁纸", systemImage: "desktopcomputer") {
+        MenuBarExtra(AppStrings.text("壁纸", language: language), systemImage: "desktopcomputer") {
             WallpaperMenu().environmentObject(model).environmentObject(model.scenePlayer)
+                .environment(\.locale, language.locale)
         }
     }
     private func resizeWindow(width: CGFloat, height: CGFloat) {
@@ -104,8 +107,9 @@ private struct WallpaperMenu: View {
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.locale) private var locale
     var body: some View {
-        Text(scenePlayer.isActive ? scenePlayer.statusText : model.state.running ? "视频正在桌面播放" : "壁纸已停止")
+        Text(AppStrings.text(scenePlayer.isActive ? scenePlayer.statusText : model.state.running ? "视频正在桌面播放" : "壁纸已停止", locale: locale))
         if scenePlayer.isActive { Text(scenePlayer.title) }
         Button("打开资料库") {
             openWindow(id: "library")

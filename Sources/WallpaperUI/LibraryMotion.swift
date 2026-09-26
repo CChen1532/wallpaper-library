@@ -93,7 +93,7 @@ struct SidebarNavigationLabel: View {
 
     var body: some View {
         Label {
-            Text(title)
+            Text(LocalizedStringKey(title))
         } icon: {
             Image(systemName: symbol)
                 .scaleEffect(!reduced && hovered ? 1.08 : 1)

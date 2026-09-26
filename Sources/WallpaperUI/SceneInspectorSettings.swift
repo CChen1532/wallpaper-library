@@ -3,6 +3,7 @@ import SwiftUI
 
 /// Bindings capture the represented package instead of a shared selection draft.
 struct SceneInspectorSettings: View {
+    @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
@@ -75,41 +76,42 @@ struct SceneInspectorSettings: View {
         switch property.kind {
         case .boolean:
             HStack(spacing: 8) {
-                Text(property.label)
+                Text(LocalizedStringKey(property.label))
                 Spacer(minLength: 8)
-                Toggle(property.label, isOn: booleanBinding(property, values: values)).labelsHidden()
+                Toggle(LocalizedStringKey(property.label), isOn: booleanBinding(property, values: values))
+                    .labelsHidden().accessibilityLabel(AppStrings.text(property.label, locale: locale))
             }.padding(10).modifier(HoverHighlight())
         case .slider(let minimum, let maximum, let step):
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Text(property.label)
+                    Text(LocalizedStringKey(property.label))
                     Spacer(minLength: 8)
                     Text(numberBinding(property, values: values).wrappedValue.formatted()).foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
                 Slider(value: numberBinding(property, values: values), in: minimum...maximum, step: step)
-                    .accessibilityLabel(property.label)
+                    .accessibilityLabel(AppStrings.text(property.label, locale: locale))
             }.padding(10).modifier(HoverHighlight())
         case .choice(let choices):
             HStack(spacing: 8) {
-                Text(property.label)
+                Text(LocalizedStringKey(property.label))
                 Spacer(minLength: 8)
-                Picker(property.label, selection: stringBinding(property, values: values)) {
-                    ForEach(choices) { choice in Text(choice.label).tag(choice.value) }
+                Picker(LocalizedStringKey(property.label), selection: stringBinding(property, values: values)) {
+                    ForEach(choices) { choice in Text(LocalizedStringKey(choice.label)).tag(choice.value) }
                 }.labelsHidden().frame(width: 120)
             }.padding(10).modifier(HoverHighlight())
         case .color:
             HStack(spacing: 8) {
-                Text(property.label)
+                Text(LocalizedStringKey(property.label))
                 Spacer(minLength: 8)
-                ColorPicker(property.label, selection: colorBinding(property, values: values),
+                ColorPicker(LocalizedStringKey(property.label), selection: colorBinding(property, values: values),
                             supportsOpacity: colorHasOpacity(property))
                     .labelsHidden()
             }.padding(10).modifier(HoverHighlight())
         case .textInput:
             VStack(alignment: .leading, spacing: 5) {
-                Text(property.label)
-                TextField(property.label, text: stringBinding(property, values: values)).textFieldStyle(.roundedBorder)
+                Text(LocalizedStringKey(property.label))
+                TextField(LocalizedStringKey(property.label), text: stringBinding(property, values: values)).textFieldStyle(.roundedBorder)
             }.padding(10).modifier(HoverHighlight())
         }
     }
@@ -125,19 +127,19 @@ struct SceneInspectorSettings: View {
 
     private func toggle(_ label: String, _ keyPath: WritableKeyPath<ScenePreferences, Bool>) -> some View {
         HStack(spacing: 8) {
-            Text(label)
+            Text(LocalizedStringKey(label))
             Spacer(minLength: 8)
-            Toggle(label, isOn: value(keyPath)).labelsHidden().accessibilityLabel(label)
+            Toggle(LocalizedStringKey(label), isOn: value(keyPath)).labelsHidden().accessibilityLabel(AppStrings.text(label, locale: locale))
         }.padding(10).modifier(HoverHighlight())
     }
 
     private func picker<Value: Hashable, Options: View>(_ label: String,
         _ keyPath: WritableKeyPath<ScenePreferences, Value>, @ViewBuilder options: () -> Options) -> some View {
         HStack(spacing: 8) {
-            Text(label)
+            Text(LocalizedStringKey(label))
             Spacer(minLength: 8)
-            Picker(label, selection: value(keyPath), content: options)
-                .labelsHidden().accessibilityLabel(label).frame(width: 112)
+            Picker(LocalizedStringKey(label), selection: value(keyPath), content: options)
+                .labelsHidden().accessibilityLabel(AppStrings.text(label, locale: locale)).frame(width: 112)
         }.padding(10).modifier(HoverHighlight())
     }
 
@@ -184,9 +186,9 @@ struct SceneInspectorSettings: View {
                     .help("鼠标位置的采样频率，与画面帧率不同；需先开启鼠标交互。")
             }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
 
-            Text(preferences.mouseEnabled
+            Text(LocalizedStringKey(preferences.mouseEnabled
                  ? "效果取决于场景支持；采样频率不等于画面帧率。"
-                 : "开启鼠标交互后，可设置点击响应和采样频率。")
+                 : "开启鼠标交互后，可设置点击响应和采样频率。"))
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -223,7 +225,7 @@ struct SceneInspectorSettings: View {
                 }.frame(maxWidth: .infinity).disabled(model.isWorking)
                     .help("重新启动正在播放的这张壁纸以应用设置。")
             }
-            Text(settingsStatus(pendingChanges: pendingChanges))
+            Text(LocalizedStringKey(settingsStatus(pendingChanges: pendingChanges)))
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)
