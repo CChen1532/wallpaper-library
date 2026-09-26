@@ -61,7 +61,7 @@ bash scripts/check.sh --live --media
 ## 进度入口
 
 
-Scene实验进度：`WE场景-阶段2D离线视频帧验收.md`。核心位于 `Sources/WESceneCore`；
+早期 Scene 离线实验记录（历史）：`WE场景-阶段2D离线视频帧验收.md`。核心位于 `Sources/WESceneCore`；
 用 `bash scripts/check-scene.sh` 运行自检，`bash scripts/scene-probe.sh resources /path/scene.pkg` 生成只读 JSON 报告，
 `bash scripts/scene-probe.sh still /path/scene.pkg /tmp/scene.png` 可尝试导出受限静态基础图及同名诊断 JSON。
 没有可合成静态层时只写诊断、退出 3；静态图不能代替动态 scene 桌面播放。视频后端保持原有实现。
