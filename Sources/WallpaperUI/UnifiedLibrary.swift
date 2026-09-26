@@ -16,6 +16,9 @@ struct SceneCatalogPayload: Decodable {
         let packageBytes: Int64
         let capability: Capability?
         let error: String?
+        // Supplied by the background scan; it reloads settings without changing card identity.
+        var propertyMetadataStamp: String?
+        var propertyCatalogRevision: String { id + "|" + (propertyMetadataStamp ?? "") }
         var id: String { URL(fileURLWithPath: packagePath).standardizedFileURL.path }
         var folder: URL { URL(fileURLWithPath: packagePath).deletingLastPathComponent() }
         var root: URL { folder.deletingLastPathComponent() }
@@ -108,9 +111,11 @@ struct SceneCatalogPayload: Decodable {
                     let meta = (try? MaterialDiscovery.stamp(folder.appendingPathComponent("project.json"))) ?? ""
                     guard current + meta == candidate.stamp else { return nil }
                     guard let data = try? WESceneInspection.catalog(directory: folder.deletingLastPathComponent(), maxPreviewDimension: 480, sceneName: folder.lastPathComponent),
-                          let entry = try? JSONDecoder().decode(SceneCatalogPayload.self, from: data).entries.first,
+                          var entry = try? JSONDecoder().decode(SceneCatalogPayload.self, from: data).entries.first,
                           entry.error == nil,
-                          (try? MaterialDiscovery.stamp(candidate.url)) == current else { return nil }
+                          (try? MaterialDiscovery.stamp(candidate.url)) == current,
+                          ((try? MaterialDiscovery.stamp(folder.appendingPathComponent("project.json"))) ?? "") == meta else { return nil }
+                    entry.propertyMetadataStamp = meta
                     return entry
                 }.value
                 if let result { next[path] = (candidate.stamp, result) }

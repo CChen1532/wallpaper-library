@@ -50,4 +50,31 @@ func runCatalogChecks(_ c: inout Checker) throws {
     do { _ = try WESceneInspection.catalog(directory: linked, maxPreviewDimension: 4) }
     catch { refusedLinkedRoot = true }
     c.check(refusedLinkedRoot, "场景根目录符号链接拒绝")
+    let linkedPackage = root.appendingPathComponent("006-package-link", isDirectory: true)
+    try fm.createDirectory(at: linkedPackage, withIntermediateDirectories: false)
+    try fm.createSymbolicLink(at: linkedPackage.appendingPathComponent("scene.pkg"),
+                             withDestinationURL: valid.appendingPathComponent("scene.pkg"))
+    let hidden = root.appendingPathComponent(".hidden-scene", isDirectory: true)
+    try fm.createDirectory(at: hidden, withIntermediateDirectories: false)
+    try package.write(to: hidden.appendingPathComponent("scene.pkg"))
+    for index in 0..<1000 {
+        try Data().write(to: root.appendingPathComponent("unrelated-\(index).txt"))
+    }
+    func selectedEntries(_ name: String) throws -> [WESceneCatalogEntry] {
+        try JSONDecoder().decode(WESceneCatalogReport.self,
+            from: WESceneInspection.catalog(directory: root, maxPreviewDimension: 4, sceneName: name)).entries
+    }
+    let selected = try? selectedEntries("001-valid")
+    c.check(selected?.count == 1 && selected?.first?.name == "001-valid" && selected?.first?.error == nil,
+            "定向单场景检查不受父目录1000个无关条目限制")
+    var refusedLargeRoot = false
+    do { _ = try WESceneInspection.catalog(directory: root, maxPreviewDimension: 4) }
+    catch { refusedLargeRoot = true }
+    c.check(refusedLargeRoot, "全目录检查继续保留1000项上限")
+    c.check((try? selectedEntries("005-link"))?.isEmpty == true, "定向检查不跟随场景目录符号链接")
+    c.check((try? selectedEntries("006-package-link"))?.isEmpty == true, "定向检查不跟随场景包符号链接")
+    c.check((try? selectedEntries(".hidden-scene"))?.isEmpty == true, "定向检查不导入隐藏场景")
+    let invalidNames = [".", "..", "../\(root.lastPathComponent)/001-valid", "001-valid/../001-valid", valid.path]
+    c.check(invalidNames.allSatisfy { (try? selectedEntries($0))?.isEmpty != false },
+            "定向场景名不能通过绝对或相对路径逃逸")
 }

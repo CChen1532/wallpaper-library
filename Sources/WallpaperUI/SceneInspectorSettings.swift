@@ -9,6 +9,7 @@ struct SceneInspectorSettings: View {
     @ObservedObject var store: ScenePreferencesStore
     @ObservedObject var properties: SceneUserPropertiesStore
     let package: URL
+    let catalogRevision: String
     @State private var showPlayback = false
     @State private var catalog: ScenePropertyCatalog = .empty
     @State private var catalogLoading = true
@@ -231,8 +232,9 @@ struct SceneInspectorSettings: View {
                 .contentTransition(.opacity)
                 .animation(LibraryMotion.selection(reduceMotion), value: isPlaying && !pendingChanges)
         }.font(.callout).toggleStyle(.switch).controlSize(.small)
-            .task(id: ScenePreferencesStore.identity(for: package)) {
+            .task(id: catalogRevision) {
                 catalogLoading = true
+                catalog = .empty
                 let loaded = await properties.loadCatalogInBackground(for: package)
                 guard !Task.isCancelled else { return }
                 catalog = loaded

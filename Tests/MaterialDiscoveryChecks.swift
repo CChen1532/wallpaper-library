@@ -58,6 +58,14 @@ import Foundation
         check(try MaterialDiscovery.scan(root.appendingPathComponent("escape")).isEmpty, "项目相对路径不能逃出自身目录")
         let backend = PhontoBackend(home: root, directoryOverride: root.appendingPathComponent("mixed"))
         do { try backend.validateLibraryFile(outside); fatalError("allowed outside root") } catch { check(true, "播放仍拒绝未登记目录") }
+        let directoryCollision = try file("package-directory/movie.mp4")
+        try fm.createDirectory(at: root.appendingPathComponent("package-directory/scene.pkg"), withIntermediateDirectories: true)
+        check(try MaterialDiscovery.scan(root.appendingPathComponent("package-directory")).map(\.url) == [directoryCollision],
+              "名为scene.pkg的目录不遮蔽同层普通视频")
+        let symlinkCollision = try file("package-symlink/movie.mp4")
+        try fm.createSymbolicLink(at: root.appendingPathComponent("package-symlink/scene.pkg"), withDestinationURL: scene)
+        check(try MaterialDiscovery.scan(root.appendingPathComponent("package-symlink")).map(\.url) == [symlinkCollision],
+              "忽略scene.pkg符号链接并继续发现同层视频")
         print("\(count) discovery checks passed")
     }
 }

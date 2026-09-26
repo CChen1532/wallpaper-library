@@ -44,10 +44,12 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
         terminating = true
-        polling?.cancel()
         AppServices.catalog.stop()
         Task {
+            // Shutdown must see an in-flight video activation before polling
+            // cancellation can erase it; the model owns cancellation/rollback.
             await AppServices.model.shutdownScene()
+            polling?.cancel()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

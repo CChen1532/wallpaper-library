@@ -39,6 +39,22 @@ struct InventoryBackend: WallpaperBackend {
         while catalog.lastScan == nil && start.duration(to: .now) < .seconds(15) { try await Task.sleep(for: .milliseconds(100)) }
         check(catalog.scenes.count == 1, "启动自动识别场景，重叠根目录去重")
         check(await counter.reads == 1, "重复start不创建多个定时器")
+        let initial = catalog.scenes[0]
+        let package = URL(fileURLWithPath: initial.packagePath)
+        let originalProperties = await model.sceneUserProperties.loadCatalogInBackground(for: package)
+        check(originalProperties.properties.isEmpty, "元数据更新前作者属性为空")
+        try Data(#"{"type":"scene","title":"Same title","general":{"properties":{"enabled":{"type":"bool","text":"Effect","value":true}}}}"#.utf8)
+            .write(to: package.deletingLastPathComponent().appendingPathComponent("project.json"), options: .atomic)
+        await catalog.refresh()
+        let updated = catalog.scenes[0]
+        check(updated.id == initial.id, "更新作者属性保留图库和详情身份")
+        check(updated.propertyCatalogRevision != initial.propertyCatalogRevision,
+              "同包元数据更新必须改变侧栏属性任务修订标识")
+        let refreshedProperties = await model.sceneUserProperties.loadCatalogInBackground(for: package)
+        check(refreshedProperties.properties.map(\.id) == ["enabled"], "修订后重新读取获得新增作者控件")
+        await catalog.refresh()
+        check(catalog.scenes[0].propertyCatalogRevision == updated.propertyCatalogRevision,
+              "未变化的自动扫描不重启属性加载任务")
         model.selected = "/fixture/kept.mp4"
         try scene("two")
         while catalog.scenes.count < 2 && start.duration(to: .now) < .seconds(70) { try await Task.sleep(for: .milliseconds(200)) }

@@ -215,7 +215,9 @@ struct SceneLaunchConfiguration: Sendable {
                         if let image = backdrop?.registrationURL {
                             try await SpaceWallpaperSettingsController.activate(displayID: move, imageURL: image)
                         }
-                        await self?.backdropActivated(token: token, image: backdrop?.previewURL)
+                        if let backdrop {
+                            await self?.backdropActivated(token: token, image: backdrop.previewURL)
+                        }
                         await self?.moved(to: move, token: token)
                     }
                     try await Task.sleep(for: .milliseconds(250))

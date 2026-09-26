@@ -88,17 +88,26 @@ private struct VideoBackdropTarget: Equatable {
     @Published private(set) var issue: String?
     private var target: VideoBackdropTarget?
     private var lease: SceneBackdropLease?
+    private var activationTask: Task<Void, Error>?
+    private var transitionWaiters: [CheckedContinuation<Void, Never>] = []
     private let configuration: () throws -> SceneBackdropConfiguration
     private let runner: any CommandExecuting
     private let ffmpeg: URL
+    private let activateSystemWallpaper: @MainActor (UInt32, URL) async throws -> Void
 
     init(configuration: @escaping () throws -> SceneBackdropConfiguration = { try .bundled() },
          runner: any CommandExecuting = CommandRunner(),
-         ffmpeg: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ffmpeg")) {
+         ffmpeg: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ffmpeg"),
+         activateSystemWallpaper: @escaping @MainActor (UInt32, URL) async throws -> Void = { display, image in
+             try await SpaceWallpaperSettingsController.activate(displayID: display, imageURL: image)
+         }) {
         self.configuration = configuration
         self.runner = runner
         self.ffmpeg = ffmpeg
+        self.activateSystemWallpaper = activateSystemWallpaper
     }
+
+    var hasSession: Bool { activationTask != nil || lease != nil }
 
     func matches(video: URL, preferences: VideoBackdropPreferences) -> Bool {
         if restorationPending { return false }
@@ -115,8 +124,22 @@ private struct VideoBackdropTarget: Equatable {
     func activate(video: URL, preferences: VideoBackdropPreferences, displayID: UInt32) async throws {
         guard !transitioning else { throw BackendError.message("视频过渡底图正在切换") }
         transitioning = true
-        defer { transitioning = false }
+        let task = Task { @MainActor in
+            defer {
+                activationTask = nil
+                finishTransition()
+            }
+            try Task.checkCancellation()
+            try await prepare(video: video, preferences: preferences, displayID: displayID)
+        }
+        activationTask = task
+        try await withTaskCancellationHandler(operation: { try await task.value },
+                                              onCancel: { task.cancel() })
+    }
+
+    private func prepare(video: URL, preferences: VideoBackdropPreferences, displayID: UInt32) async throws {
         try await finishLease()
+        try Task.checkCancellation()
         guard preferences.enabled else { issue = nil; return }
         try requireRestoredBackdrop()
         guard let screen = NSScreen.screens.first(where: {
@@ -128,18 +151,24 @@ private struct VideoBackdropTarget: Equatable {
         settings.sourcePackage = video
         do {
             try await SpaceBackdropCompatibility.check(settings, displayID: displayID)
+            try Task.checkCancellation()
             let frame = try await VideoBackdropFrame.capture(video: video, second: preferences.frameSecond,
                                                               width: width, height: height, state: settings.state,
                                                               ffmpeg: ffmpeg, runner: runner)
+            try Task.checkCancellation()
             let session = SceneBackdropLease(configuration: settings)
             lease = session
-            try await Task.detached(priority: .userInitiated) {
+            let registration = Task.detached(priority: .userInitiated) {
                 try session.activatePreparedImage(displayID: displayID, image: frame)
-            }.value
+            }
+            try await withTaskCancellationHandler(operation: { try await registration.value },
+                                                  onCancel: { registration.cancel() })
+            try Task.checkCancellation()
             guard let registered = session.registrationURL else {
                 throw BackendError.message("系统未登记视频过渡静帧")
             }
-            try await SpaceWallpaperSettingsController.activate(displayID: displayID, imageURL: registered)
+            try await activateSystemWallpaper(displayID, registered)
+            try Task.checkCancellation()
             target = VideoBackdropTarget(path: video.path, preferences: preferences, displayID: displayID)
             activePath = video.path
             imageURL = frame
@@ -149,6 +178,7 @@ private struct VideoBackdropTarget: Equatable {
             let compatibility = error as? SpaceBackdropCompatibilityFailure
             do { try await finishLease() }
             catch { issue = original + "；恢复底图失败：" + error.localizedDescription; throw BackendError.message(issue!) }
+            if error is CancellationError { issue = nil; throw CancellationError() }
             issue = original
             if let compatibility { throw compatibility }
             throw BackendError.message(original)
@@ -156,12 +186,24 @@ private struct VideoBackdropTarget: Equatable {
     }
 
     func stop() async throws {
-        guard !transitioning else { throw BackendError.message("视频过渡底图正在切换") }
+        // The activation owner restores its lease before waking stop/quit.
+        // Waiters also serialize concurrent stop calls and recovery operations.
+        while transitioning {
+            activationTask?.cancel()
+            await withCheckedContinuation { transitionWaiters.append($0) }
+        }
         transitioning = true
-        defer { transitioning = false }
+        defer { finishTransition() }
         try await finishLease()
         try requireRestoredBackdrop()
         issue = nil
+    }
+
+    private func finishTransition() {
+        transitioning = false
+        let waiters = transitionWaiters
+        transitionWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     private func finishLease() async throws {
@@ -181,7 +223,7 @@ private struct VideoBackdropTarget: Equatable {
     func recover() async throws {
         guard lease == nil, !transitioning else { return }
         transitioning = true
-        defer { transitioning = false }
+        defer { finishTransition() }
         let settings = try configuration()
         try await Task.detached(priority: .userInitiated) { try SceneBackdropLease.recover(settings) }.value
         restorationPending = settings.recoveryPending

@@ -38,12 +38,10 @@ enum MaterialDiscovery {
             let attributes = try folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard attributes.isDirectory == true, attributes.isSymbolicLink != true else { return }
             let pkg = folder.appendingPathComponent("scene.pkg")
-            if fm.fileExists(atPath: pkg.path) {
-                if let signature = try? stamp(pkg) {
-                    let metadata = (try? stamp(folder.appendingPathComponent("project.json"))) ?? ""
-                    results.append(.init(url: pkg.standardizedFileURL, kind: .scene, stamp: signature + metadata))
-                }
-                return // Scene assets and preview.mp4 are never separate wallpapers.
+            if let signature = try? stamp(pkg) {
+                let metadata = (try? stamp(folder.appendingPathComponent("project.json"))) ?? ""
+                results.append(.init(url: pkg.standardizedFileURL, kind: .scene, stamp: signature + metadata))
+                return // Only a regular scene package owns its accompanying assets and preview.
             }
             guard depth <= 8 else { return }
             let children = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])

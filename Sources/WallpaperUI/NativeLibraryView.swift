@@ -292,7 +292,8 @@ struct NativeLibraryView: View {
                 } else if let sceneRoot {
                     let package = sceneRoot.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
                     SceneInspectorSettings(store: model.scenePreferences,
-                                           properties: model.sceneUserProperties, package: package)
+                                           properties: model.sceneUserProperties, package: package,
+                                           catalogRevision: item.propertyCatalogRevision)
                         .id(ScenePreferencesStore.identity(for: package))
                 }
                 Divider()

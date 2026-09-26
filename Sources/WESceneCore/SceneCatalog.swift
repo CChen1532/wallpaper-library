@@ -121,9 +121,11 @@ extension WESceneInspection {
         }
         let children = try fm.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
+            .filter { sceneName == nil || $0.lastPathComponent == sceneName }
+        // A targeted scan inspects one actual child; unrelated siblings do not use its budget.
         guard children.count <= 1000 else { throw ProbeError.invalid("场景根目录条目超过1000") }
         var packages: [(String, String?, URL, Int64)] = []
-        for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where sceneName == nil || child.lastPathComponent == sceneName {
+        for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             try Task.checkCancellation()
             let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isDirectory == true, values.isSymbolicLink != true else { continue }

@@ -142,6 +142,8 @@ import UniformTypeIdentifiers
         try await Task.sleep(for: .milliseconds(700))
         check(following.displayID == 1, "新焦点不足1.5秒时旧屏继续播放")
         try await wait { following.displayID == 3 }
+        check(!following.automaticBackdropActive && following.automaticBackdropImage == nil,
+              "关闭底图的场景跨屏后不会误报已匹配")
         focus.displayID = 1
         await following.stop()
         check(!hasLivePID("follow") && !log("follow").contains("displayID\":1"), "停止取消尚未完成的焦点交接")
@@ -680,6 +682,66 @@ import UniformTypeIdentifiers
         try pendingJournal.write(to: backdropConfig.state.appendingPathComponent("session.plist"))
         try SceneBackdropLease.recover(backdropConfig)
         check(!backdropConfig.recoveryPending, "重启恢复入口处理遗留账本")
+        // Interrupt a real isolated lease at the system activation boundary.
+        // The injected callback never touches macOS Wallpaper settings.
+        guard let display = NSScreen.screens.first,
+              let displayID = (display.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        else { throw BackendError.message("Video backdrop checks require a display") }
+        let video = root.appendingPathComponent("race.mp4")
+        try Data([1]).write(to: video)
+        let videoHelper = root.appendingPathComponent("video-helper.py")
+        let helperSource = try String(contentsOf: backdropConfig.helper, encoding: .utf8)
+        try helperSource.replacingOccurrences(of: "state = pathlib.Path", with:
+            "if 'check-compatibility' in sys.argv:\n    print('WALLPAPER_COMPATIBILITY_OK'); sys.exit(0)\nstate = pathlib.Path")
+            .write(to: videoHelper, atomically: true, encoding: .utf8)
+        for operation in ["stop", "off", "shutdown", "normal"] {
+            let state = root.appendingPathComponent("video-race-" + operation)
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            let settings = SceneBackdropConfiguration(helper: videoHelper, inventory: root, state: state)
+            let gate = VideoActivationGate()
+            let controller = VideoBackdropController(configuration: { settings }, runner: VideoFrameFixture(),
+                activateSystemWallpaper: { _, _ in try await gate.enter() })
+            let raceBackend = SceneTestBackend()
+            let raceModel = LibraryModel(backend: raceBackend, videoBackdrop: controller)
+            let activation = Task { try await controller.activate(video: video, preferences: .init(), displayID: displayID) }
+            try await wait { gate.entered }
+            check(settings.recoveryPending && controller.activePath == nil,
+                  "视频\(operation)测试确实停在已建lease但尚未激活阶段")
+            if operation == "normal" {
+                gate.release()
+                try await activation.value
+                check(controller.activePath == video.path && gate.completed == 1, "未取消的视频底图正常完成激活")
+                try await controller.stop()
+            } else {
+                var stopFinished = false
+                var stopError: String?
+                let stopping = Task {
+                    do {
+                        switch operation {
+                        case "off": await raceModel.perform(.off)
+                        case "shutdown": await raceModel.shutdownScene()
+                        default: try await controller.stop()
+                        }
+                    } catch { stopError = error.localizedDescription }
+                    stopFinished = true
+                }
+                try await wait { stopFinished || gate.cancelled }
+                let returnedEarly = stopFinished
+                gate.release()
+                _ = try? await activation.value
+                await stopping.value
+                let leftActive = controller.activePath != nil || settings.recoveryPending
+                // Clean up even on the old implementation before reporting failure.
+                try? await controller.stop()
+                check(!returnedEarly && !leftActive && gate.completed == 0 && stopError == nil,
+                      "视频\(operation)取消并等待准备任务复原，不允许晚到激活")
+                if operation == "shutdown" {
+                    check(await raceBackend.actions == ["off"], "退出也会停止仍在准备底图的视频引擎")
+                }
+            }
+            check(!settings.recoveryPending && !controller.transitioning && controller.activePath == nil,
+                  "视频\(operation)完成后无恢复账本或过渡状态残留")
+        }
         print("\(count) Scene integration checks passed")
     }
 
@@ -745,5 +807,36 @@ private final class BackdropFixture: SceneBackdropControlling, @unchecked Sendab
         guard active else { return }
         if failRestore { throw BackendError.message("fixture restore failure") }
         recorded.append("restore"); active = false
+    }
+}
+
+@MainActor private final class VideoActivationGate {
+    var entered = false
+    var cancelled = false
+    var completed = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+    func enter() async throws {
+        entered = true
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation = $0 }
+        } onCancel: {
+            Task { @MainActor in self.cancelled = true }
+        }
+        try Task.checkCancellation()
+        completed += 1
+    }
+    func release() { continuation?.resume(); continuation = nil }
+}
+
+private struct VideoFrameFixture: CommandExecuting {
+    func run(_ executable: String, _ args: [String], timeout: Double) async throws -> CommandResult {
+        let filter = args[args.firstIndex(of: "-vf")! + 1]
+        let fields = filter.split(separator: ":")
+        let width = Int(fields[0].dropFirst("scale=".count))!, height = Int(fields[1])!
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args.last!))
+        return CommandResult(code: 0, text: "")
     }
 }

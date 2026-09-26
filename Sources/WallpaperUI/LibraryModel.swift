@@ -168,7 +168,7 @@ import Combine
     func shutdownScene() async {
         shuttingDown = true
         await stopScene()
-        if videoBackdrop.activePath != nil {
+        if videoBackdrop.hasSession {
             do { try await backend.perform(.off) }
             catch { self.error = "退出时停止视频失败：" + error.localizedDescription }
         }
@@ -241,7 +241,7 @@ import Combine
                 error = "检测到视频播放或轮播从外部开启，已停止场景以避免重叠。"
             }
             state = value; stateIssue = nil
-            await syncVideoBackdrop(for: value, force: forceVideoBackdrop)
+            await syncVideoBackdrop(for: value, force: forceVideoBackdrop, revision: revision)
         } catch is CancellationError { return }
         catch {
             guard revision == stateRevision else { return }
@@ -249,14 +249,20 @@ import Combine
         }
     }
 
-    private func syncVideoBackdrop(for value: PlaybackState, force: Bool) async {
-        guard backdropsReady else { return }
+    private func syncVideoBackdrop(for value: PlaybackState, force: Bool, revision: Int) async {
+        guard backdropsReady, revision == stateRevision, !shuttingDown else { return }
         guard !scenePlayer.isActive else { return }
         guard let path = value.currentPath, !path.isEmpty else {
             lastVideoBackdropAttempt = nil
-            if videoBackdrop.activePath != nil {
-                do { try await videoBackdrop.stop(); videoBackdropIssue = nil }
-                catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
+            if videoBackdrop.hasSession {
+                do {
+                    try await videoBackdrop.stop()
+                    guard revision == stateRevision, !shuttingDown else { return }
+                    videoBackdropIssue = nil
+                } catch {
+                    guard revision == stateRevision, !shuttingDown else { return }
+                    videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription
+                }
             }
             return
         }
@@ -280,13 +286,17 @@ import Combine
             } else {
                 try await videoBackdrop.stop()
             }
+            guard revision == stateRevision, !shuttingDown else { return }
             videoBackdropIssue = nil
-        } catch let mismatch as SpaceBackdropCompatibilityFailure {
+        } catch is CancellationError { return }
+        catch let mismatch as SpaceBackdropCompatibilityFailure {
+            guard revision == stateRevision, !shuttingDown else { return }
             preferences.enabled = false
             videoBackdropPreferences.save(preferences, for: video)
             backdropCompatibilityIssue = "已自动关闭此视频的过渡底图：" + mismatch.localizedDescription
             videoBackdropIssue = nil
         } catch {
+            guard revision == stateRevision, !shuttingDown else { return }
             videoBackdropIssue = "视频 Space 过渡底图未匹配：" + error.localizedDescription
             if force { self.error = videoBackdropIssue }
         }
@@ -319,6 +329,12 @@ import Combine
             default: break
             }
             try await backend.perform(action)
+            switch action {
+            case .stop, .off:
+                try await videoBackdrop.stop()
+                lastVideoBackdropAttempt = nil
+            default: break
+            }
         }
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }
