@@ -69,7 +69,7 @@ struct VideoInspectorSettings: View {
                     .disabled(model.isWorking)
             }
             if let issue = model.videoBackdropIssue {
-                Label(issue, systemImage: "exclamationmark.triangle")
+                Label(AppStrings.text(issue, locale: locale), systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
         }

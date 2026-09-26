@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ApplicationServices
 
@@ -10,6 +11,7 @@ struct WallpaperSettingsView: View {
     @AppStorage("appLanguage") private var language = AppLanguage.chinese
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
     @State private var accessibilityTrusted = false
+    @State private var copiedVersionInfo = false
     let chooseFolder: () -> Void
     let showDiagnostics: () -> Void
 
@@ -41,7 +43,7 @@ struct WallpaperSettingsView: View {
                         .disabled(catalog.scanning)
                 }
                 ForEach(catalog.issues, id: \.self) { issue in
-                    Label(issue, systemImage: "exclamationmark.triangle")
+                    Label(AppStrings.text(issue, locale: locale), systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 }
                 Text("自动轮播仍使用原视频素材目录。其他文件夹中的视频可以单独播放。")
@@ -57,7 +59,7 @@ struct WallpaperSettingsView: View {
                 Text("默认关闭。开启后会临时修改 macOS 系统壁纸，以场景截图承接 Space 过渡；停止、换片或退出时恢复原设置。")
                     .font(.callout).foregroundStyle(.secondary)
                 if let issue = model.backdropCompatibilityIssue {
-                    Text(issue).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                    Text(AppStrings.text(issue, locale: locale)).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
                 }
                 if let url = scenePlayer.automaticBackdropImage, let image = NSImage(contentsOf: url) {
                     LabeledContent("当前壁纸底图", value: scenePlayer.title)
@@ -82,10 +84,10 @@ struct WallpaperSettingsView: View {
                         .disabled(model.isWorking)
                 }
                 if let issue = model.videoBackdropIssue {
-                    Text(issue).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                    Text(AppStrings.text(issue, locale: locale)).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
                 }
                 if let error = scenePlayer.error {
-                    Text(error).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(AppStrings.text(error, locale: locale)).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             } header: {
                 Text("场景 Space 切换")
@@ -93,15 +95,58 @@ struct WallpaperSettingsView: View {
                 Text("视频的过渡底图可在每个视频的详情栏单独设置。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
             }
             Section("关于") {
+                LabeledContent(AppStrings.text("应用", locale: locale), value: "WallpaperUI")
+                LabeledContent("版本", value: versionText)
+                LabeledContent("构建", value: buildText)
+                LabeledContent("版权", value: "© 2026 Cheng (CChen1532)")
+                Text("本应用源码采用 MIT 许可；内置的 Mirage 场景运行时采用 GPL-3.0。")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("打开项目主页") { openProjectHomepage() }
+                    Button("在访达中显示许可文件") { revealLicenseFiles() }
+                    Button("复制版本信息") { copyVersionInfo() }
+                }
+                if copiedVersionInfo {
+                    Text("已复制版本信息").font(.callout).foregroundStyle(.secondary)
+                }
                 LabeledContent("辅助功能授权") { Text(LocalizedStringKey(accessibilityTrusted ? "已授权" : "未授权")) }
                 Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
                 Button("显示器与运行状态", action: showDiagnostics)
-                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? AppStrings.text("开发版", locale: locale)) + AppStrings.text(" 预览版", locale: locale))
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden)
         .frame(maxWidth: 640)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { accessibilityTrusted = AXIsProcessTrusted() }
+    }
+
+    private var versionText: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? AppStrings.text("开发版", locale: locale)
+        return version + AppStrings.text(" 预览版", locale: locale)
+    }
+
+    private var buildText: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "-"
+    }
+
+    private func openProjectHomepage() {
+        guard let url = URL(string: "https://github.com/CChen1532/wallpaper-library") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func revealLicenseFiles() {
+        guard let resources = Bundle.main.resourceURL else { return }
+        let licenses = resources.appendingPathComponent("SceneRuntime/Contents/Resources/Licenses")
+        let target = FileManager.default.fileExists(atPath: licenses.path) ? licenses : resources
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
+    private func copyVersionInfo() {
+        let info = "WallpaperUI " + versionText + " (" + buildText + ") · macOS "
+            + ProcessInfo.processInfo.operatingSystemVersionString
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(info, forType: .string)
+        copiedVersionInfo = true
     }
 }

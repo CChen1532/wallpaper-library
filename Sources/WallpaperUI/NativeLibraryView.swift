@@ -71,8 +71,8 @@ struct NativeLibraryView: View {
             VStack(spacing: 0) {
                 if let issue = model.stateIssue { issueBanner(AppStrings.text("状态暂不可用：", locale: locale) + issue) }
                 if let issue = model.libraryIssue { issueBanner(AppStrings.text("素材读取失败：", locale: locale) + issue) }
-                if let issue = model.videoBackdropIssue { issueBanner(issue) }
-                if let issue = model.backdropCompatibilityIssue { issueBanner(issue) }
+                if let issue = model.videoBackdropIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
+                if let issue = model.backdropCompatibilityIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
                 if page == .settings {
                     WallpaperSettingsView(chooseFolder: chooseSceneDirectory) {
                         showDiagnostics = true; Task { await model.refreshDiagnostics() }
@@ -117,7 +117,7 @@ struct NativeLibraryView: View {
             if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
         .onChange(of: page) { _, newValue in search = ""; if newValue == .rotation { syncRotationFields() } }
-        .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(model.error ?? "") }
+        .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(AppStrings.text(model.error ?? "", locale: locale)) }
         .confirmationDialog("将所选视频移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("移入废纸篓", role: .destructive) { Task { await model.trashSelected() } }
             Button("取消", role: .cancel) {}
@@ -152,7 +152,7 @@ struct NativeLibraryView: View {
                     if catalog.scanning { ProgressView().controlSize(.small) }
                     Text("每分钟自动检查").font(.caption).foregroundStyle(.secondary)
                 }.padding(.horizontal, 24).padding(.vertical, 14)
-                if let sceneError { issueBanner(sceneError) }
+                if let sceneError { issueBanner(AppStrings.text(sceneError, locale: locale)) }
                 if galleryEntries.isEmpty && !catalog.scanning {
                     ContentUnavailableView {
                         Label(LocalizedStringKey(query.isEmpty ? "还没有壁纸" : "没有匹配的壁纸"), systemImage: "photo.on.rectangle")
@@ -269,7 +269,7 @@ struct NativeLibraryView: View {
                     Label("动态场景", systemImage: "square.3.layers.3d").font(.caption).foregroundStyle(.secondary)
                 }
                 if let error = item.error {
-                    Label(error, systemImage: "exclamationmark.triangle")
+                    Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
                         .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
                 } else if item.capability?.resourceInspectionAvailable == false {
                     Label("大型场景包已通过文件索引检查；为避免界面卡顿，跳过受限静态分析。仍可尝试动态播放。", systemImage: "info.circle")
