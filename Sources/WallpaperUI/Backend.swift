@@ -55,13 +55,34 @@ struct PhontoBackend: WallpaperBackend {
     var directory: URL { directoryOverride ?? home.appendingPathComponent("Movies/Wallpapers") }
     var capabilities: BackendCapabilities { .init(name: "phonto", libraryDirectory: directory, rotationModes: ["rand"], canImport: true, canTrash: true) }
     var command: String { home.appendingPathComponent(".local/bin/phonto-wall").path }
+    var materialRoots: [URL] { directoryOverride != nil ? [directory] : MaterialDiscovery.roots(home: home) }
     func library() async throws -> [Wallpaper] {
-        let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey]).filter { $0.pathExtension == "mp4" }.sorted { $0.path < $1.path }
+        let roots = materialRoots
+        let candidates = try await Task.detached(priority: .utility) {
+            var found: [String: MaterialDiscovery.Candidate] = [:]
+            var failures: [String] = []
+            for root in roots {
+                do { for item in try MaterialDiscovery.scan(root) where item.kind == .video { found[item.url.path] = item } }
+                catch { failures.append(root.lastPathComponent + ": " + error.localizedDescription) }
+            }
+            if found.isEmpty, !failures.isEmpty { throw BackendError.message(failures.joined(separator: "\n")) }
+            return found.values.sorted { $0.url.path < $1.url.path }
+        }.value
+        // Observe new/changed files twice; stable cached files require no delay or probe.
+        var needsStabilityCheck = false
+        for candidate in candidates {
+            if await VideoLibraryCache.shared.get(candidate.url, stamp: candidate.stamp) == nil { needsStabilityCheck = true; break }
+        }
+        if needsStabilityCheck { try await Task.sleep(for: .seconds(1)) }
+        let urls = candidates.filter { (try? MaterialDiscovery.stamp($0.url)) == $0.stamp }.map(\.url)
+
         let cache = home.appendingPathComponent("Library/Caches/WallpaperUI/Thumbnails")
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         var results: [Wallpaper] = []
         for url in urls {
             try Task.checkCancellation()
+            guard let signature = try? MaterialDiscovery.stamp(url) else { continue }
+            if let cached = await VideoLibraryCache.shared.get(url, stamp: signature) { results.append(cached); continue }
             var item = Wallpaper(url: url)
             do {
                 let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey])
@@ -90,6 +111,8 @@ struct PhontoBackend: WallpaperBackend {
                 item.thumbnail = target
             } catch is CancellationError { throw CancellationError() }
             catch { item.warning = error.localizedDescription; item.playable = item.width > 0 && item.height > 0 }
+            guard (try? MaterialDiscovery.stamp(url)) == signature else { continue }
+            await VideoLibraryCache.shared.save(item, stamp: signature)
             results.append(item)
         }
         return results
@@ -171,9 +194,9 @@ struct PhontoBackend: WallpaperBackend {
         }
     }
     func validateLibraryFile(_ url: URL) throws {
-        guard url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else { throw BackendError.message("素材必须位于壁纸目录中。") }
+        guard materialRoots.contains(where: { url.standardizedFileURL.path.hasPrefix($0.standardizedFileURL.path + "/") }), url.resolvingSymlinksInPath().standardizedFileURL == url.standardizedFileURL else { throw BackendError.message("素材必须位于壁纸目录中。") }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard url.pathExtension == "mp4", values.isRegularFile == true, values.isSymbolicLink != true else { throw BackendError.message("请选择素材目录中的 MP4 普通文件。") }
+        guard url.pathExtension.lowercased() == "mp4", values.isRegularFile == true, values.isSymbolicLink != true else { throw BackendError.message("请选择素材目录中的 MP4 普通文件。") }
     }
     func importFiles(_ urls: [URL]) async -> [String] {
         var problems: [String] = []

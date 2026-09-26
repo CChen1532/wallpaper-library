@@ -1,6 +1,6 @@
 # 壁纸库
 
-当前 UI：0.2.5 侧边栏动效预览版。左侧导航加入悬停淡亮和图标反馈，右侧设置行、展开标题与访达链接补齐悬停效果；每张场景壁纸的设置继续独立保存。验收边界见 `UI-阶段2BG-侧边栏动效.md`。
+当前 UI：0.2.23 统一壁纸库预览版。场景和视频合并为“全部壁纸”，自动识别类型，每60秒检查登记的素材文件夹并添加新素材。详见 `UI-阶段2BY-统一壁纸库与自动发现.md`。
 
 macOS 14+ 原生 SwiftUI 壁纸前端，视频使用已有 phonto-wall，场景使用随应用打包的 Mirage Scene 运行时。打开 `dist/WallpaperUI.app` 即可使用。首次访问桌面目录时请允许系统权限请求。
 
@@ -11,6 +11,8 @@ bash scripts/build-app.sh
 bash scripts/check.sh
 bash scripts/check-scene-playback.sh
 bash scripts/check-covers.sh
+bash scripts/check-material-discovery.sh
+bash scripts/check-unified-library.sh
 python3 scripts/check-scene-input.py
 bash scripts/check.sh --live
 bash scripts/check.sh --live --media

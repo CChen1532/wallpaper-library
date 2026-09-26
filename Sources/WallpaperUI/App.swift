@@ -12,7 +12,10 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
-@MainActor private enum AppServices { static let model = LibraryModel() }
+@MainActor private enum AppServices {
+    static let model = LibraryModel()
+    static let catalog = UnifiedLibrary(model: model)
+}
 
 @MainActor final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     private var polling: Task<Void, Never>?
@@ -21,6 +24,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppServices.catalog.start()
         polling = Task {
             await AppServices.model.recoverBackdrops()
             while !Task.isCancelled {
@@ -41,6 +45,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         guard !terminating else { return .terminateLater }
         terminating = true
         polling?.cancel()
+        AppServices.catalog.stop()
         Task {
             await AppServices.model.shutdownScene()
             sender.reply(toApplicationShouldTerminate: true)
@@ -54,11 +59,11 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     @NSApplicationDelegateAdaptor(WallpaperAppDelegate.self) private var delegate
     @StateObject private var model = AppServices.model
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
-    @AppStorage("libraryPage") private var page = LibraryPage.scenes
+    @AppStorage("libraryPage") private var page = LibraryPage.library
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
-        Window("视频壁纸", id: "library") {
-            NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer)
+        Window("壁纸", id: "library") {
+            NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog)
                 .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
         }.defaultSize(width: 1200, height: 800)
             .commands {
@@ -83,7 +88,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                         .keyboardShortcut(".", modifiers: [.command, .option])
                 }
             }
-        MenuBarExtra("视频壁纸", systemImage: "desktopcomputer") {
+        MenuBarExtra("壁纸", systemImage: "desktopcomputer") {
             WallpaperMenu().environmentObject(model).environmentObject(model.scenePlayer)
         }
     }
@@ -115,6 +120,6 @@ private struct WallpaperMenu: View {
                 .disabled(model.isWorking)
         }
         Divider()
-        Button("退出视频壁纸") { NSApp.terminate(nil) }
+        Button("退出壁纸") { NSApp.terminate(nil) }
     }
 }

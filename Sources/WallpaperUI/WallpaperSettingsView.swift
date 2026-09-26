@@ -2,6 +2,7 @@ import SwiftUI
 import ApplicationServices
 
 struct WallpaperSettingsView: View {
+    @EnvironmentObject private var catalog: UnifiedLibrary
     @EnvironmentObject private var model: LibraryModel
     @EnvironmentObject private var scenePlayer: ScenePlayer
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
@@ -15,6 +16,17 @@ struct WallpaperSettingsView: View {
                 Picker("应用外观", selection: $appearance) {
                     ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
                 }
+            }
+            Section("素材文件夹") {
+                Text("每60秒自动识别新场景与 MP4 视频，应用运行时持续检查。")
+                    .font(.callout).foregroundStyle(.secondary)
+                ForEach(catalog.roots, id: \.path) { root in
+                    Text(root.path).font(.caption).textSelection(.enabled)
+                }
+                if let date = catalog.lastScan { LabeledContent("上次检查", value: date.formatted(date: .omitted, time: .standard)) }
+                Button("立即检查") { Task { await catalog.refresh() } }.disabled(catalog.scanning)
+                Text("自动轮播仍使用原视频素材目录。其他文件夹中的视频可以单独播放。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("壁纸设置") {
                 Text("选中壁纸后，在右侧详情栏调整播放与交互。每张壁纸单独保存。")

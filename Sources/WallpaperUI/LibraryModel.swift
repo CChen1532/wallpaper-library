@@ -206,6 +206,13 @@ import Combine
         await readLibrary()
         await readState()
     }
+    /// Inventory refresh has no playback/state/backdrop side effects.
+    func refreshDiscoveredLibrary() async {
+        guard !isWorking else { return }
+        loading = true
+        defer { loading = false }
+        await readLibrary()
+    }
     private func readLibrary() async {
         do {
             items = try await backend.library()
@@ -255,7 +262,7 @@ import Combine
         }
         let video = URL(fileURLWithPath: path)
         guard let directory = capabilities.libraryDirectory,
-              video.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else { return }
+              (video.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL || items.contains(where: { $0.id == path })) else { return }
         var preferences = videoBackdropPreferences.preferences(for: video)
         if let item = items.first(where: { $0.id == path }) {
             preferences.frameSecond = min(preferences.frameSecond, max(0, Int(item.duration.rounded(.down)) - 1))

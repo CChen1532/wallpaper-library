@@ -3,40 +3,23 @@ import AppKit
 import UniformTypeIdentifiers
 import WESceneCore
 
-enum LibraryPage: String, Hashable { case videos, scenes, rotation, settings }
-private struct SceneCatalogPayload: Decodable {
-    struct Entry: Decodable, Identifiable {
-        struct Capability: Decodable {
-            let resourceInspectionAvailable: Bool
-            let restrictedStaticPreviewAvailable: Bool
-            let desktopScenePlayable: Bool
-            let limitationCodes: [String]
-        }
-        let name: String
-        let title: String?
-        let packageBytes: Int64
-        let capability: Capability?
-        let error: String?
-        var id: String { name }
-    }
-    let entries: [Entry]
-}
+enum LibraryPage: String, Hashable { case library, videos, scenes, rotation, settings }
 struct NativeLibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
-    @AppStorage("libraryPage") private var page = LibraryPage.scenes
-    @AppStorage("sceneLibraryPath") private var savedSceneRoot = ""
+    @AppStorage("libraryPage") private var page = LibraryPage.library
+    @EnvironmentObject private var catalog: UnifiedLibrary
     @State private var search = ""
     @State private var minutes = 60
     @State private var mode = "rand"
     @State private var confirmTrash = false
     @State private var showDiagnostics = false
-    @State private var sceneRoot: URL?
-    @State private var sceneEntries: [SceneCatalogPayload.Entry] = []
+    private var sceneRoot: URL? { selectedScene?.root }
+    private var sceneEntries: [SceneCatalogPayload.Entry] { catalog.scenes }
     @State private var selectedSceneName: String?
-    @State private var sceneLoading = false
-    @State private var sceneError: String?
+    private var sceneLoading: Bool { catalog.scanning }
+    private var sceneError: String? { catalog.issues.first }
     @State private var visibleSceneLimitations: [String] = []
     @State private var showSceneLimitations = false
     @State private var showScenePreview = false
@@ -44,23 +27,22 @@ struct NativeLibraryView: View {
     @State private var scenePreviewImage: NSImage?
     @State private var scenePreviewError: String?
     @State private var scenePreviewLoading = false
-    @FocusState private var focusedVideo: String?
-    @FocusState private var focusedScene: String?
+    @FocusState private var focusedWallpaper: String?
     @State private var showPlaybackNotes = false
     private var filtered: [Wallpaper] { model.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
         sceneEntries.filter { search.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(search) || $0.name.localizedCaseInsensitiveContains(search) }
     }
     private var selectedScene: SceneCatalogPayload.Entry? {
-        filteredScenes.first { $0.name == selectedSceneName }
+        filteredScenes.first { $0.id == selectedSceneName }
     }
     private var selectedSceneLimitations: [String] {
         guard let selectedSceneName else { return [] }
-        return filteredScenes.first(where: { $0.name == selectedSceneName })?.capability?.limitationCodes.filter { $0 != "nativeGravityScene" } ?? []
+        return filteredScenes.first(where: { $0.id == selectedSceneName })?.capability?.limitationCodes.filter { $0 != "nativeGravityScene" } ?? []
     }
     private var selectedPreviewScene: SceneCatalogPayload.Entry? {
         guard let selectedSceneName,
-              let entry = filteredScenes.first(where: { $0.name == selectedSceneName }),
+              let entry = filteredScenes.first(where: { $0.id == selectedSceneName }),
               entry.error == nil, entry.capability?.restrictedStaticPreviewAvailable == true,
               entry.packageBytes > 0, entry.packageBytes <= SceneStaticPreviewLoader.maxPackageBytes else { return nil }
         return entry
@@ -69,8 +51,8 @@ struct NativeLibraryView: View {
         NavigationSplitView {
             List(selection: Binding<LibraryPage?>(get: { page }, set: { if let value = $0 { page = value } })) {
                 Section("资料库") {
-                    SidebarNavigationLabel(title: "场景壁纸", symbol: "square.3.layers.3d", selected: page == .scenes).badge(sceneEntries.count).tag(LibraryPage.scenes)
-                    SidebarNavigationLabel(title: "视频壁纸", symbol: "play.rectangle", selected: page == .videos).badge(model.items.count).tag(LibraryPage.videos)
+                    SidebarNavigationLabel(title: "全部壁纸", symbol: "photo.on.rectangle", selected: page == .library)
+                        .badge(sceneEntries.count + model.items.count).tag(LibraryPage.library)
                 }
                 Section("管理") {
                     SidebarNavigationLabel(title: "自动轮播", symbol: "arrow.triangle.2.circlepath", selected: page == .rotation).tag(LibraryPage.rotation)
@@ -91,58 +73,42 @@ struct NativeLibraryView: View {
                     }
                 }
                 else if page == .rotation { rotationSettings }
-                else if page == .scenes { sceneLibrary }
-                else { videoLibrary }
+                else { unifiedLibrary }
                 if page != .settings { Divider(); desktopControls }
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .navigationTitle(page == .settings ? "设置" : page == .rotation ? "自动轮播" : page == .scenes ? "场景壁纸" : "视频壁纸")
-            .modifier(LibrarySearch(text: $search, enabled: page == .scenes || page == .videos,
-                                    prompt: page == .scenes ? "搜索场景" : "搜索视频"))
+            .navigationTitle(page == .settings ? "设置" : page == .rotation ? "自动轮播" : "全部壁纸")
+            .modifier(LibrarySearch(text: $search, enabled: page == .library, prompt: "搜索壁纸"))
             .toolbar {
                 ToolbarItemGroup {
-                    if page == .scenes {
-                        Button(action: chooseSceneDirectory) { Label("选择场景目录", systemImage: "folder.badge.plus") }.disabled(sceneLoading)
-                        Button { if let sceneRoot { Task { await loadScenes(from: sceneRoot) } } } label: { Label("刷新场景", systemImage: "arrow.clockwise") }.disabled(sceneLoading || sceneRoot == nil)
+                    if page == .library {
+                        Button(action: chooseSceneDirectory) { Label("添加素材文件夹", systemImage: "folder.badge.plus") }
+                        Button { Task { await catalog.refresh() } } label: { Label("检查新素材", systemImage: "arrow.clockwise") }
+                            .disabled(catalog.scanning).keyboardShortcut("r", modifiers: .command)
                         Menu {
-                          Button("引力之旅 · 双版本", systemImage: "sparkles") {
-                              guard let root = Bundle.main.resourceURL?.appendingPathComponent("GravityScenes") else { return }
-                              sceneRoot = root; savedSceneRoot = root.path
-                              Task { await loadScenes(from: root) }
-                          }
-                          Divider()
-                          Button {
-                            visibleSceneLimitations = selectedSceneLimitations
-                            showSceneLimitations = true
-                          } label: { Label("静态检查详情", systemImage: "info.circle") }
-                          .disabled(selectedSceneLimitations.isEmpty || sceneLoading)
-                          Button(action: beginScenePreview) { Label("受限静态预览", systemImage: "photo") }
-                            .disabled(selectedPreviewScene == nil || sceneLoading || scenePreviewLoading)
+                            Button(action: importVideos) { Label("导入视频文件", systemImage: "plus") }
+                                .disabled(model.isWorking || !model.capabilities.canImport)
+                            Divider()
+                            Button("静态检查详情", systemImage: "info.circle") {
+                                visibleSceneLimitations = selectedSceneLimitations; showSceneLimitations = true
+                            }.disabled(selectedSceneLimitations.isEmpty)
+                            Button("受限静态预览", systemImage: "photo", action: beginScenePreview)
+                                .disabled(selectedPreviewScene == nil || scenePreviewLoading)
+                            Button("显示器与运行状态", systemImage: "desktopcomputer") {
+                                showDiagnostics = true; Task { await model.refreshDiagnostics() }
+                            }
                         } label: { Label("更多", systemImage: "ellipsis.circle") }
-                    } else if page == .videos {
-                        Button(action: importVideos) { Label("导入视频", systemImage: "plus") }.help("导入 MP4 视频").keyboardShortcut("o", modifiers: .command).disabled(model.isWorking || !model.capabilities.canImport)
-                        Button { Task { await model.refreshLibrary() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.help("刷新资料库").keyboardShortcut("r", modifiers: .command).disabled(model.isWorking)
                     }
-                    if page == .videos { Menu {
-                        Button("打开视频文件夹", systemImage: "folder") { if let url = model.capabilities.libraryDirectory { NSWorkspace.shared.open(url) } }.disabled(model.capabilities.libraryDirectory == nil)
-                        Button("显示器与运行状态", systemImage: "desktopcomputer") { showDiagnostics = true; Task { await model.refreshDiagnostics() } }
-                    } label: { Label("更多", systemImage: "ellipsis.circle") }.help("更多操作") }
                 }
             }
         }
         .task {
-            async let videoRefresh: Void = model.refreshLibrary()
-            if sceneRoot == nil {
-                let initial = savedSceneRoot.isEmpty
-                    ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies/Wallpapers2")
-                    : URL(fileURLWithPath: savedSceneRoot, isDirectory: true)
-                if FileManager.default.fileExists(atPath: initial.path) {
-                    sceneRoot = initial
-                    await loadScenes(from: initial)
-                }
-            }
-            await videoRefresh
+            if page == .scenes || page == .videos { page = .library }
+            catalog.start()
             syncRotationFields()
+        }
+        .onChange(of: catalog.scenes.map(\.id)) { _, ids in
+            if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
         .onChange(of: page) { _, newValue in search = ""; if newValue == .rotation { syncRotationFields() } }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(model.error ?? "") }
@@ -164,123 +130,84 @@ struct NativeLibraryView: View {
         }.padding(.horizontal, 22).padding(.vertical, 14)
     }
 
-    private var videoLibrary: some View {
+    private struct GalleryEntry: Identifiable {
+        let id: String
+        let title: String
+        let scene: SceneCatalogPayload.Entry?
+        let video: Wallpaper?
+    }
+    private var galleryEntries: [GalleryEntry] {
+        (filteredScenes.map { GalleryEntry(id: $0.id, title: $0.title ?? $0.name, scene: $0, video: nil) }
+         + filtered.map { GalleryEntry(id: $0.id, title: $0.title, scene: nil, video: $0) })
+            .sorted { $0.title == $1.title ? $0.id < $1.id : $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    private var unifiedLibrary: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                galleryHeading(count: filtered.count)
-                if model.loading { ProgressView("正在读取视频…").padding() }
-                if !model.loading && filtered.isEmpty {
-                    ContentUnavailableView(search.isEmpty ? "没有视频" : "没有匹配的视频", systemImage: "film.stack", description: Text(search.isEmpty ? "导入 MP4 视频以添加壁纸。" : "试试其他关键词。"))
-                        .frame(maxHeight: .infinity)
+                HStack {
+                    Text("\(galleryEntries.count) 项").foregroundStyle(.secondary)
+                    Spacer()
+                    if catalog.scanning { ProgressView().controlSize(.small) }
+                    Text("每分钟自动检查").font(.caption).foregroundStyle(.secondary)
+                }.padding(.horizontal, 24).padding(.vertical, 14)
+                if let sceneError { issueBanner(sceneError) }
+                if galleryEntries.isEmpty && !catalog.scanning {
+                    ContentUnavailableView("没有匹配的壁纸", systemImage: "photo.on.rectangle",
+                        description: Text(search.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词。"))
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVGrid(columns: galleryColumns, spacing: 20) {
-                                ForEach(filtered) { item in
-                                    VideoCard(item: item, selected: model.selected == item.id,
-                                              playing: model.stateIssue == nil && model.state.running && model.state.currentPath == item.id) {
-                                        model.selected = item.id; focusedVideo = item.id
-                                    }
-                                    .id(item.id)
-                                    .focused($focusedVideo, equals: item.id)
-                                    .onMoveCommand { direction in
-                                        moveVideoSelection(direction)
-                                    }
+                                ForEach(galleryEntries) { entry in
+                                    Group {
+                                        if let scene = entry.scene { sceneCard(scene) }
+                                        else if let video = entry.video {
+                                            VideoCard(item: video, selected: selectedSceneName == nil && model.selected == video.id,
+                                                playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id) {
+                                                selectedSceneName = nil; model.selected = video.id; focusedWallpaper = video.id
+                                            }
+                                        }
+                                    }.id(entry.id).focused($focusedWallpaper, equals: entry.id)
+                                        .onMoveCommand { moveWallpaperSelection($0) }
                                 }
                             }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
+                        }.onChange(of: focusedWallpaper) { _, id in
+                            if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
                         }
-                        .onChange(of: focusedVideo) { _, id in if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } } }
                     }
                 }
             }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             Group {
-                if let item = model.selectedWallpaper { videoDetails(item) }
-                else { inspectorPlaceholder("未选择视频", subtitle: "点选视频，查看详情并设为桌面壁纸。", icon: "play.rectangle") }
+                if let scene = selectedScene { sceneDetails(scene) }
+                else if let video = model.selectedWallpaper { videoDetails(video) }
+                else { inspectorPlaceholder("未选择壁纸", subtitle: "点选壁纸，查看详情并调整设置。", icon: "photo.on.rectangle") }
             }.frame(width: 320)
         }
     }
-
-    private var sceneLibrary: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                galleryHeading(count: filteredScenes.count, preview: true)
-                if !model.sceneRuntimeAvailable { issueBanner("场景运行组件缺失，请使用包含 Scene 的完整构建。") }
-                if let error = scenePlayer.error { issueBanner(error) }
-                if let sceneError { issueBanner("场景读取失败：" + sceneError) }
-                if sceneLoading { ProgressView("正在读取场景…").padding() }
-                if sceneRoot == nil {
-                    ContentUnavailableView {
-                        Label("添加场景壁纸", systemImage: "square.3.layers.3d")
-                    } description: {
-                        Text("选择包含场景的素材文件夹。")
-                    } actions: {
-                        Button("选择文件夹", action: chooseSceneDirectory).buttonStyle(.borderedProminent)
-                    }.frame(maxHeight: .infinity)
-                } else if !sceneLoading && sceneEntries.isEmpty && sceneError == nil {
-                    ContentUnavailableView("尚未找到场景", systemImage: "square.3.layers.3d",
-                        description: Text("请选择包含 scene.pkg 子目录的素材文件夹。"))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if !sceneLoading && filteredScenes.isEmpty && sceneError == nil {
-                    ContentUnavailableView("没有匹配的场景", systemImage: "magnifyingglass",
-                        description: Text("试试其他标题或目录编号。"))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVGrid(columns: galleryColumns, spacing: 20) {
-                                ForEach(filteredScenes) { item in
-                                    sceneCard(item).id(item.name)
-                                        .focused($focusedScene, equals: item.name)
-                                        .onMoveCommand { direction in moveSceneSelection(direction) }
-                                }
-                            }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
-                        }
-                        .onChange(of: focusedScene) { _, id in if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } } }
-                    }
-                }
-            }.frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            Group {
-                if let item = selectedScene { sceneDetails(item) }
-                else { inspectorPlaceholder("未选择场景", subtitle: "点选场景，查看详情并设为桌面壁纸。", icon: "square.3.layers.3d") }
-            }.frame(width: 320)
-        }
+    private func moveWallpaperSelection(_ direction: MoveCommandDirection) {
+        let entries = galleryEntries
+        guard !entries.isEmpty else { return }
+        let index = entries.firstIndex { $0.id == (selectedSceneName ?? model.selected) } ?? 0
+        let step: Int
+        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -2; case .down: step = 2; default: return }
+        let entry = entries[min(max(index + step, 0), entries.count - 1)]
+        selectedSceneName = entry.scene?.id; model.selected = entry.video?.id; focusedWallpaper = entry.id
     }
 
     private func sceneCard(_ item: SceneCatalogPayload.Entry) -> some View {
-        let playing = scenePlayer.isActive && scenePlayer.package == sceneRoot?.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
+        let playing = scenePlayer.isActive && scenePlayer.package == URL(fileURLWithPath: item.packagePath)
         let title = item.title ?? item.name
         return GalleryCard(title: title,
                            subtitle: ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file),
-                           badge: "场景", selected: selectedSceneName == item.name,
+                           badge: "场景", selected: selectedSceneName == item.id,
                            playing: playing, warning: item.error != nil || item.capability?.resourceInspectionAvailable == false,
                            accessibilityKind: "场景壁纸",
                            playbackStatus: playing ? scenePlayer.statusText : nil) {
-            selectedSceneName = item.name; focusedScene = item.name
+            selectedSceneName = item.id; model.selected = nil; focusedWallpaper = item.id
         } cover: {
-            SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
+            SceneCover(folder: item.folder)
         }
-    }
-
-    private func moveSceneSelection(_ direction: MoveCommandDirection) {
-        let ids = filteredScenes.map(\.name)
-        guard !ids.isEmpty else { return }
-        let index = ids.firstIndex(of: selectedSceneName ?? "") ?? 0
-        let step: Int
-        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -2; case .down: step = 2; default: return }
-        selectedSceneName = ids[min(max(index + step, 0), ids.count - 1)]
-        focusedScene = selectedSceneName
-    }
-
-    private func moveVideoSelection(_ direction: MoveCommandDirection) {
-        let ids = filtered.map(\.id)
-        guard !ids.isEmpty else { return }
-        let index = ids.firstIndex(of: model.selected ?? "") ?? 0
-        let step: Int
-        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -2; case .down: step = 2; default: return }
-        model.selected = ids[min(max(index + step, 0), ids.count - 1)]
-        focusedVideo = model.selected
     }
 
     private func inspectorPlaceholder(_ title: String, subtitle: String, icon: String) -> some View {
@@ -304,10 +231,11 @@ struct NativeLibraryView: View {
     }
 
     private func sceneDetails(_ item: SceneCatalogPayload.Entry) -> some View {
-        ScrollView {
+        let sceneRoot: URL? = item.root
+        return ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                inspectorHeading("场景详情") { selectedSceneName = nil; focusedScene = nil }
-                SceneCover(folder: sceneRoot?.appendingPathComponent(item.name))
+                inspectorHeading("场景详情") { selectedSceneName = nil; focusedWallpaper = nil }
+                SceneCover(folder: item.folder)
                     .modifier(ArtworkCrossfade(identity: (sceneRoot?.path ?? "") + "/" + item.name))
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -443,55 +371,28 @@ struct NativeLibraryView: View {
                     return try SceneStaticPreviewLoader.load(root: sceneRoot, sceneName: item.name,
                                                              expectedBytes: item.packageBytes)
                 }.value
-                guard showScenePreview, self.sceneRoot == sceneRoot, selectedSceneName == item.name else { return }
+                guard showScenePreview, self.sceneRoot == sceneRoot, selectedSceneName == item.id else { return }
                 guard let image = SceneStaticPreviewLoader.image(from: raster) else {
                     scenePreviewError = "像素缓冲区无法转换为图片"
                     return
                 }
                 scenePreviewImage = image
             } catch {
-                guard showScenePreview, self.sceneRoot == sceneRoot, selectedSceneName == item.name else { return }
+                guard showScenePreview, self.sceneRoot == sceneRoot, selectedSceneName == item.id else { return }
                 scenePreviewError = error.localizedDescription
             }
         }
     }
     private func chooseSceneDirectory() {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        panel.message = "选择包含 Wallpaper Engine 场景子目录的文件夹"
-        if panel.runModal() == .OK, let url = panel.url {
-            sceneRoot = url
-            savedSceneRoot = url.path
-            sceneEntries = []
-            selectedSceneName = nil
-            Task { await loadScenes(from: url) }
-        }
-    }
-    private func loadScenes(from root: URL) async {
-        guard !sceneLoading else { return }
-        sceneLoading = true; sceneError = nil
-        defer { sceneLoading = false }
-        do {
-            let data = try await Task.detached(priority: .userInitiated) {
-                let scoped = root.startAccessingSecurityScopedResource()
-                defer { if scoped { root.stopAccessingSecurityScopedResource() } }
-                return try WESceneInspection.catalog(directory: root, maxPreviewDimension: 480)
-            }.value
-            guard sceneRoot == root else { return }
-            sceneEntries = try JSONDecoder().decode(SceneCatalogPayload.self, from: data).entries
-            if !sceneEntries.contains(where: { $0.name == selectedSceneName }) {
-                selectedSceneName = sceneEntries.first(where: { $0.name == "1000000001" })?.name ?? sceneEntries.first?.name
-            }
-        } catch is CancellationError { return }
-        catch {
-            guard sceneRoot == root else { return }
-            sceneEntries = []; sceneError = error.localizedDescription
-        }
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = true
+        panel.message = "添加素材文件夹，自动识别场景与 MP4 视频，每分钟检查新素材。"
+        if panel.runModal() == .OK { for url in panel.urls { catalog.addFolder(url) } }
     }
     private func videoDetails(_ item: Wallpaper) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                inspectorHeading("视频详情") { model.selected = nil; focusedVideo = nil }
+                inspectorHeading("视频详情") { model.selected = nil; focusedWallpaper = nil }
                 VideoCover(item: item).modifier(ArtworkCrossfade(identity: item.id)).aspectRatio(4 / 3, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("视频封面").padding(10) }
@@ -561,7 +462,7 @@ struct NativeLibraryView: View {
                     .font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text(playbackSubtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            if page != .scenes {
+            if selectedSceneName == nil {
                 HStack(spacing: 3) {
                     control("backward.end.fill", "上一段视频", .previous)
                     control("shuffle", "随机视频", .random)

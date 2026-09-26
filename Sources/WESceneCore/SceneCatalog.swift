@@ -110,7 +110,7 @@ extension WESceneInspection {
     }
 
     /// One directory level only; no symlinks, writes, scripts, or desktop operations.
-    public static func catalog(directory: URL, maxPreviewDimension: Int = 640) throws -> Data {
+    public static func catalog(directory: URL, maxPreviewDimension: Int = 640, sceneName: String? = nil) throws -> Data {
         guard (1...960).contains(maxPreviewDimension) else {
             throw ProbeError.invalid("场景目录预览最长边必须在1...960")
         }
@@ -123,7 +123,7 @@ extension WESceneInspection {
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
         guard children.count <= 1000 else { throw ProbeError.invalid("场景根目录条目超过1000") }
         var packages: [(String, String?, URL, Int64)] = []
-        for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+        for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where sceneName == nil || child.lastPathComponent == sceneName {
             try Task.checkCancellation()
             let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
