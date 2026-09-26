@@ -120,8 +120,9 @@ struct NativeLibraryView: View {
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
     }
-    // Keep thumbnails compact; wider windows add columns instead of enlarging cards.
+    // Fill each row within a bounded card size; wider windows still add columns.
     private let galleryCardWidth: CGFloat = 192
+    private let galleryMaximumCardWidth: CGFloat = 240
     private let galleryGap: CGFloat = 14
     private let galleryInset: CGFloat = 20
 
@@ -153,8 +154,9 @@ struct NativeLibraryView: View {
                     GeometryReader { geometry in
                         // Reserve space for a non-overlay macOS scroll bar as well.
                         let usableWidth = max(1, geometry.size.width - galleryInset * 2 - 16)
-                        let cardWidth = min(galleryCardWidth, usableWidth)
-                        let columnCount = max(1, Int((usableWidth + galleryGap) / (cardWidth + galleryGap)))
+                        let columnCount = max(1, Int((usableWidth + galleryGap) / (galleryCardWidth + galleryGap)))
+                        let cardWidth = min(galleryMaximumCardWidth, (usableWidth - CGFloat(columnCount - 1) * galleryGap) / CGFloat(columnCount))
+                        let gridWidth = cardWidth * CGFloat(columnCount) + CGFloat(columnCount - 1) * galleryGap
                         let columns = Array(repeating: GridItem(.fixed(cardWidth), spacing: galleryGap, alignment: .top), count: columnCount)
                         ScrollViewReader { proxy in
                             ScrollView {
@@ -171,12 +173,19 @@ struct NativeLibraryView: View {
                                         }.id(entry.id).focused($focusedWallpaper, equals: entry.id)
                                             .onMoveCommand { moveWallpaperSelection($0, columns: columnCount) }
                                     }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(width: gridWidth, alignment: .leading)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                // One transaction keeps column changes and card resizing in sync.
+                                .animation(LibraryMotion.reflow(reduceMotion), value: [CGFloat(columnCount), cardWidth])
+                                .animation(nil, value: reduceMotion)
                                     .padding(.horizontal, galleryInset).padding(.bottom, 20).padding(.top, 3)
                             }.onChange(of: focusedWallpaper) { _, id in
                                 if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
                             }.onChange(of: columnCount) { _, _ in
-                                if let id = focusedWallpaper { proxy.scrollTo(id) }
+                                if let id = focusedWallpaper {
+                                    withAnimation(LibraryMotion.reflow(reduceMotion)) { proxy.scrollTo(id) }
+                                }
                             }
                         }
                     }
@@ -585,6 +594,7 @@ private struct GalleryCard<Cover: View>: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(borderColor, lineWidth: selected ? 1.5 : 0.5))
+        .shadow(color: Color.accentColor.opacity(selected ? 0.13 : 0), radius: selected ? 5 : 0)
         .shadow(color: Color.black.opacity(hovered ? 0.09 : 0.015), radius: hovered ? CGFloat(9) : CGFloat(2), x: 0, y: hovered ? 3 : 1)
         .offset(y: hovered && !reduceMotion ? -2 : 0)
         .contentShape(RoundedRectangle(cornerRadius: 10))
