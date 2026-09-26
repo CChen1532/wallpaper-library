@@ -120,15 +120,10 @@ struct NativeLibraryView: View {
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
     }
-    private let galleryColumns = [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)]
-
-    private func galleryHeading(count: Int, preview: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            Text("\(count) 项").font(.callout).foregroundStyle(.secondary)
-            Spacer()
-            if preview { Text("预览版").font(.caption).foregroundStyle(.secondary) }
-        }.padding(.horizontal, 22).padding(.vertical, 14)
-    }
+    // Keep thumbnails compact; wider windows add columns instead of enlarging cards.
+    private let galleryCardWidth: CGFloat = 192
+    private let galleryGap: CGFloat = 14
+    private let galleryInset: CGFloat = 20
 
     private struct GalleryEntry: Identifiable {
         let id: String
@@ -155,24 +150,34 @@ struct NativeLibraryView: View {
                     ContentUnavailableView("没有匹配的壁纸", systemImage: "photo.on.rectangle",
                         description: Text(search.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词。"))
                 } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVGrid(columns: galleryColumns, spacing: 20) {
-                                ForEach(galleryEntries) { entry in
-                                    Group {
-                                        if let scene = entry.scene { sceneCard(scene) }
-                                        else if let video = entry.video {
-                                            VideoCard(item: video, selected: selectedSceneName == nil && model.selected == video.id,
-                                                playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id) {
-                                                selectedSceneName = nil; model.selected = video.id; focusedWallpaper = video.id
+                    GeometryReader { geometry in
+                        // Reserve space for a non-overlay macOS scroll bar as well.
+                        let usableWidth = max(1, geometry.size.width - galleryInset * 2 - 16)
+                        let cardWidth = min(galleryCardWidth, usableWidth)
+                        let columnCount = max(1, Int((usableWidth + galleryGap) / (cardWidth + galleryGap)))
+                        let columns = Array(repeating: GridItem(.fixed(cardWidth), spacing: galleryGap, alignment: .top), count: columnCount)
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVGrid(columns: columns, alignment: .leading, spacing: galleryGap) {
+                                    ForEach(galleryEntries) { entry in
+                                        Group {
+                                            if let scene = entry.scene { sceneCard(scene) }
+                                            else if let video = entry.video {
+                                                VideoCard(item: video, selected: selectedSceneName == nil && model.selected == video.id,
+                                                    playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id) {
+                                                    selectedSceneName = nil; model.selected = video.id; focusedWallpaper = video.id
+                                                }
                                             }
-                                        }
-                                    }.id(entry.id).focused($focusedWallpaper, equals: entry.id)
-                                        .onMoveCommand { moveWallpaperSelection($0) }
-                                }
-                            }.padding(.horizontal, 24).padding(.bottom, 24).padding(.top, 3)
-                        }.onChange(of: focusedWallpaper) { _, id in
-                            if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
+                                        }.id(entry.id).focused($focusedWallpaper, equals: entry.id)
+                                            .onMoveCommand { moveWallpaperSelection($0, columns: columnCount) }
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, galleryInset).padding(.bottom, 20).padding(.top, 3)
+                            }.onChange(of: focusedWallpaper) { _, id in
+                                if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
+                            }.onChange(of: columnCount) { _, _ in
+                                if let id = focusedWallpaper { proxy.scrollTo(id) }
+                            }
                         }
                     }
                 }
@@ -185,12 +190,12 @@ struct NativeLibraryView: View {
             }.frame(width: 320)
         }
     }
-    private func moveWallpaperSelection(_ direction: MoveCommandDirection) {
+    private func moveWallpaperSelection(_ direction: MoveCommandDirection, columns: Int) {
         let entries = galleryEntries
         guard !entries.isEmpty else { return }
         let index = entries.firstIndex { $0.id == (selectedSceneName ?? model.selected) } ?? 0
         let step: Int
-        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -2; case .down: step = 2; default: return }
+        switch direction { case .left: step = -1; case .right: step = 1; case .up: step = -columns; case .down: step = columns; default: return }
         let entry = entries[min(max(index + step, 0), entries.count - 1)]
         selectedSceneName = entry.scene?.id; model.selected = entry.video?.id; focusedWallpaper = entry.id
     }
@@ -585,7 +590,7 @@ private struct GalleryCard<Cover: View>: View {
         .contentShape(RoundedRectangle(cornerRadius: 10))
     }
     private var artwork: some View {
-        HoverArtwork(active: hovered) { cover() }.aspectRatio(16 / 10, contentMode: .fit)
+        HoverArtwork(active: hovered) { cover() }.aspectRatio(16 / 9, contentMode: .fit)
             .overlay(alignment: .bottom) {
                 LinearGradient(colors: [.clear, .black.opacity(0.38)], startPoint: .center, endPoint: .bottom)
                     .allowsHitTesting(false)
@@ -607,7 +612,7 @@ private struct GalleryCard<Cover: View>: View {
             }
     }
     private var caption: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 4) {
@@ -615,7 +620,7 @@ private struct GalleryCard<Cover: View>: View {
                 Spacer(minLength: 0)
                 if warning { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange) }
             }.font(.system(size: 11))
-        }.padding(13)
+        }.padding(10)
     }
 }
 
