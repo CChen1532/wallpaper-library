@@ -1,5 +1,8 @@
 import Foundation
 import Darwin
+#if canImport(GravitySceneCore)
+import GravitySceneCore
+#endif
 
 struct WESceneCatalogEntry: Codable {
     let name: String
@@ -141,6 +144,15 @@ extension WESceneInspection {
                 continue
             }
             do {
+                if let gravity = try GravityScene.load(pkg) {
+                    let capability = WESceneCapabilityReport(schemaVersion: 1, packageVersion: GravityScene.format,
+                        resourceInspectionAvailable: true, restrictedStaticPreviewAvailable: false,
+                        desktopScenePlayable: true, faithfulSceneRendering: true, previewFailure: nil,
+                        limitationCodes: ["nativeGravityScene"], description: gravity.preset.title + " · 原生 Metal 自动场景")
+                    entries.append(.init(name: name, title: title, packagePath: pkg.path, packageBytes: bytes,
+                                         capability: capability, error: nil))
+                    continue
+                }
                 if bytes > deepInspectionMaxBytes {
                     let version = try largePackageVersion(at: pkg, expectedBytes: bytes)
                     let capability = WESceneCapabilityReport(schemaVersion: 1, packageVersion: version,

@@ -1,6 +1,9 @@
 import AppKit
 import Combine
 import Foundation
+#if canImport(GravitySceneCore)
+import GravitySceneCore
+#endif
 #if canImport(MirageSceneBridge)
 import MirageSceneBridge
 #endif
@@ -21,6 +24,20 @@ struct SceneLaunchConfiguration: Sendable {
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
                         expectedBytes: Int64, displayID: UInt32, preferences: ScenePreferences = .init()) throws -> Self {
         let package = try validatedPackage(root: root, name: name, expectedBytes: expectedBytes)
+        if let native = try GravityScene.load(package) {
+            let executable = runtimeURL.deletingLastPathComponent().appendingPathComponent("GravitySceneRenderer")
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+                throw BackendError.message("当前应用缺少引力场景渲染器，请重新构建应用")
+            }
+            var automatic = preferences
+            automatic.mouseEnabled = false
+            automatic.mouseButtonsEnabled = false
+            automatic.fps = native.preset.fps
+            return Self(executable: executable,
+                        arguments: ["--preset", native.preset.rawValue, "--display-id", String(displayID),
+                                    "--control-stdin", "--deferred-show"], environment: nil,
+                        package: package, title: title, displayID: displayID, preferences: automatic)
+        }
         let position: Double
         switch preferences.cropMode {
         case "auto": position = name == "1000000001" ? 1 : 0.5
@@ -64,7 +81,7 @@ struct SceneLaunchConfiguration: Sendable {
 
     mutating func setUserProperties(_ launch: ScenePropertyLaunch) {
         userPropertyValues = launch.effectiveValues
-        if let file = launch.file {
+        if executable.lastPathComponent != "GravitySceneRenderer", let file = launch.file {
             // Mirage reads this before scene parsing and before the first captured frame.
             arguments.insert(contentsOf: ["--user-properties", file.path], at: arguments.count - 2)
         }

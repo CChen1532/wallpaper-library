@@ -12,6 +12,27 @@ import UniformTypeIdentifiers
             count += 1
             print("PASS: " + name)
         }
+        let nativeRoot = FileManager.default.temporaryDirectory.appendingPathComponent("gravity-checks-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: nativeRoot.appendingPathComponent("native"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: nativeRoot) }
+        let manifest = nativeRoot.appendingPathComponent("native/scene.pkg")
+        let manifestData = Data(#"{"format":"wallpaperui.gravity.v1","preset":"efficient"}"#.utf8)
+        try manifestData.write(to: manifest)
+        check((try GravityScene.load(manifest))?.preset == .efficient, "原生引力包仅接受声明式预设")
+        let nativeRenderer = nativeRoot.appendingPathComponent("GravitySceneRenderer")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: nativeRenderer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: nativeRenderer.path)
+        let nativeLaunch = try SceneLaunchConfiguration.prepare(runtimeURL: nativeRoot.appendingPathComponent("SceneRuntime"),
+            root: nativeRoot, name: "native", title: "Gravity", expectedBytes: Int64(manifestData.count), displayID: 1)
+        check(nativeLaunch.executable == nativeRenderer && nativeLaunch.arguments.contains("efficient") &&
+              nativeLaunch.arguments.contains("--deferred-show") && !nativeLaunch.preferences.mouseEnabled,
+              "原生引力场景选择专用渲染器并禁用交互、等待底图后显示")
+        try Data(#"{"format":"wallpaperui.gravity.v1","preset":"arbitrary-code"}"#.utf8).write(to: manifest)
+        do { _ = try GravityScene.load(manifest); preconditionFailure("invalid preset accepted") }
+        catch { check(true, "原生包拒绝未知预设") }
+        try FileManager.default.removeItem(at: manifest)
+        try FileManager.default.createSymbolicLink(at: manifest, withDestinationURL: nativeRenderer)
+        check((try GravityScene.load(manifest)) == nil, "原生包拒绝符号链接")
         var stability = SystemWallpaperStabilityGate()
         check(!stability.observe(matches: true, at: 0) &&
               !stability.observe(matches: true, at: 0.2) &&

@@ -56,7 +56,7 @@ struct NativeLibraryView: View {
     }
     private var selectedSceneLimitations: [String] {
         guard let selectedSceneName else { return [] }
-        return filteredScenes.first(where: { $0.name == selectedSceneName })?.capability?.limitationCodes ?? []
+        return filteredScenes.first(where: { $0.name == selectedSceneName })?.capability?.limitationCodes.filter { $0 != "nativeGravityScene" } ?? []
     }
     private var selectedPreviewScene: SceneCatalogPayload.Entry? {
         guard let selectedSceneName,
@@ -105,6 +105,12 @@ struct NativeLibraryView: View {
                         Button(action: chooseSceneDirectory) { Label("选择场景目录", systemImage: "folder.badge.plus") }.disabled(sceneLoading)
                         Button { if let sceneRoot { Task { await loadScenes(from: sceneRoot) } } } label: { Label("刷新场景", systemImage: "arrow.clockwise") }.disabled(sceneLoading || sceneRoot == nil)
                         Menu {
+                          Button("引力之旅 · 双版本", systemImage: "sparkles") {
+                              guard let root = Bundle.main.resourceURL?.appendingPathComponent("GravityScenes") else { return }
+                              sceneRoot = root; savedSceneRoot = root.path
+                              Task { await loadScenes(from: root) }
+                          }
+                          Divider()
                           Button {
                             visibleSceneLimitations = selectedSceneLimitations
                             showSceneLimitations = true
@@ -326,7 +332,14 @@ struct NativeLibraryView: View {
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
                     .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0)
-                if let sceneRoot {
+                if item.capability?.limitationCodes.contains("nativeGravityScene") == true {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("自动播放 · 无交互", systemImage: "sparkles").font(.headline)
+                        Text("金色吸积盘 · 高等数学公式 · 引力弯曲 · 纵深星空")
+                        Text(item.name == "01-Ultra" ? "极致画质：2560 宽 · 150 步光线积分 · 30 FPS" : "性能优先：1600 宽 · 90 步光线积分 · 30 FPS")
+                        Text("使用当前画面自动生成 Space 过渡底图。")
+                    }.font(.caption).foregroundStyle(.secondary)
+                } else if let sceneRoot {
                     let package = sceneRoot.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")
                     SceneInspectorSettings(store: model.scenePreferences,
                                            properties: model.sceneUserProperties, package: package)

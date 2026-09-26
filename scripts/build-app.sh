@@ -10,6 +10,9 @@ trap 'rm -rf "$staging"' EXIT
 app="$staging/WallpaperUI.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
+cp .build/release/GravitySceneRenderer "$app/Contents/Resources/GravitySceneRenderer"
+cp -R .build/release/WallpaperUI_GravitySceneRenderer.bundle "$app/Contents/Resources/"
+cp -R Scenes/GravityJourney "$app/Contents/Resources/GravityScenes"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
 bash 工具/快速墙纸/build.sh
@@ -32,6 +35,7 @@ if [[ "$identity_present" -ne 1 ]]; then
     SIGN_ID="-"
 fi
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.wallpaperswitch "$app/Contents/Resources/WallpaperSwitch/space-inventory"
+codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.gravity "$app/Contents/Resources/GravitySceneRenderer"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library "$app"
 codesign --verify --deep --strict "$app"
 .build/release/MirageSceneBridgeProbe --verify-input-runtime "$app/Contents/Resources/SceneRuntime"
