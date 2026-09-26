@@ -6,7 +6,7 @@ enum LibraryMotion {
         reduced ? .easeOut(duration: 0.10) : .spring(response: 0.28, dampingFraction: 0.86)
     }
     static func reflow(_ reduced: Bool) -> Animation? {
-        reduced ? nil : .interactiveSpring(response: 0.24, dampingFraction: 1, blendDuration: 0.08)
+        reduced ? nil : .interactiveSpring(response: 0.46, dampingFraction: 1, blendDuration: 0.08)
     }
     static func selection(_ reduced: Bool) -> Animation { .easeInOut(duration: reduced ? 0.10 : 0.20) }
     static func expansion(_ reduced: Bool) -> Animation? {
