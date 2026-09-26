@@ -6,7 +6,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 struct VideoBackdropPreferences: Codable, Equatable, Sendable {
-    var enabled = false
+    var enabled = true
     var frameSecond = 0
 }
 

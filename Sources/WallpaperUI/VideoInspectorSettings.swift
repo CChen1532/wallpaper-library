@@ -53,7 +53,7 @@ struct VideoInspectorSettings: View {
                 }.padding(10).modifier(HoverHighlight()).disabled(!preferences.enabled || frameLimit == 0)
             }.background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
                 .disabled(model.isWorking)
-            Text("默认关闭。开启后会临时修改 macOS 系统壁纸，从当前视频解码静帧承接 Space 过渡；停止后恢复原壁纸。")
+            Text("默认开启，可为此视频单独关闭。播放时会临时使用视频静帧作为 Space 过渡底图；停止后恢复原壁纸。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if backdrop.activePath == video.id, let url = backdrop.imageURL,
                let image = NSImage(contentsOf: url) {
