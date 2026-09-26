@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-struct Wallpaper: Identifiable, Sendable {
+struct Wallpaper: Identifiable, Equatable, Sendable {
     var id: String { url.path }
     let url: URL
     var projectTitle: String?
@@ -19,7 +19,7 @@ struct Wallpaper: Identifiable, Sendable {
     var warning: String?
     var decodeWarning: Bool { codec == "h264" && width > 4096 }
 }
-struct PlaybackState: Sendable {
+struct PlaybackState: Equatable, Sendable {
     var running = false
     var lastPath: String?
     var currentPath: String? { running ? lastPath : nil }

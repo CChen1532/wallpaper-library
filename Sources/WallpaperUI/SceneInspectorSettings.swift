@@ -16,12 +16,7 @@ struct SceneInspectorSettings: View {
 
     private var preferences: ScenePreferences { store.preferences(for: package) }
     private var isPlaying: Bool { model.isActiveScene(package) }
-    private var pendingChanges: Bool {
-        preferences != scenePlayer.activePreferences ||
-            properties.effectiveValues(for: package, catalog: catalog) != scenePlayer.activeUserPropertyValues
-    }
-
-    private var settingsStatus: String {
+    private func settingsStatus(pendingChanges: Bool) -> String {
         if catalogLoading { return "正在读取设置…" }
         if isPlaying {
             return pendingChanges
@@ -31,36 +26,32 @@ struct SceneInspectorSettings: View {
         return "自动保存，下次播放此壁纸时生效"
     }
 
-    private func propertyValue(_ property: ScenePropertyDefinition) -> ScenePropertyValue {
-        properties.value(for: property, package: package)
-    }
-
-    private func propertyBinding(_ property: ScenePropertyDefinition) -> Binding<ScenePropertyValue> {
+    private func propertyBinding(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> Binding<ScenePropertyValue> {
         let representedPackage = package
-        return Binding(get: { properties.value(for: property, package: representedPackage) },
+        return Binding(get: { values[property.id] ?? property.preferredDefault },
                        set: { properties.save($0, for: property, package: representedPackage) })
     }
 
-    private func booleanBinding(_ property: ScenePropertyDefinition) -> Binding<Bool> {
-        let value = propertyBinding(property)
+    private func booleanBinding(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> Binding<Bool> {
+        let value = propertyBinding(property, values: values)
         return Binding(get: { if case .boolean(let flag) = value.wrappedValue { return flag }; return false },
                        set: { value.wrappedValue = .boolean($0) })
     }
 
-    private func numberBinding(_ property: ScenePropertyDefinition) -> Binding<Double> {
-        let value = propertyBinding(property)
+    private func numberBinding(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> Binding<Double> {
+        let value = propertyBinding(property, values: values)
         return Binding(get: { if case .number(let number) = value.wrappedValue { return number }; return 0 },
                        set: { value.wrappedValue = .number($0) })
     }
 
-    private func stringBinding(_ property: ScenePropertyDefinition) -> Binding<String> {
-        let value = propertyBinding(property)
+    private func stringBinding(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> Binding<String> {
+        let value = propertyBinding(property, values: values)
         return Binding(get: { if case .string(let string) = value.wrappedValue { return string }; return "" },
                        set: { value.wrappedValue = .string($0) })
     }
 
-    private func colorBinding(_ property: ScenePropertyDefinition) -> Binding<Color> {
-        let value = stringBinding(property)
+    private func colorBinding(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> Binding<Color> {
+        let value = stringBinding(property, values: values)
         return Binding(get: {
             let channels = value.wrappedValue.split(whereSeparator: \.isWhitespace).compactMap { Double($0) }
             guard channels.count >= 3 else { return .white }
@@ -80,30 +71,30 @@ struct SceneInspectorSettings: View {
         return value.split(whereSeparator: \.isWhitespace).count == 4
     }
 
-    @ViewBuilder private func propertyRow(_ property: ScenePropertyDefinition) -> some View {
+    @ViewBuilder private func propertyRow(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> some View {
         switch property.kind {
         case .boolean:
             HStack(spacing: 8) {
                 Text(property.label)
                 Spacer(minLength: 8)
-                Toggle(property.label, isOn: booleanBinding(property)).labelsHidden()
+                Toggle(property.label, isOn: booleanBinding(property, values: values)).labelsHidden()
             }.padding(10).modifier(HoverHighlight())
         case .slider(let minimum, let maximum, let step):
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
                     Text(property.label)
                     Spacer(minLength: 8)
-                    Text(numberBinding(property).wrappedValue.formatted()).foregroundStyle(.secondary)
+                    Text(numberBinding(property, values: values).wrappedValue.formatted()).foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
-                Slider(value: numberBinding(property), in: minimum...maximum, step: step)
+                Slider(value: numberBinding(property, values: values), in: minimum...maximum, step: step)
                     .accessibilityLabel(property.label)
             }.padding(10).modifier(HoverHighlight())
         case .choice(let choices):
             HStack(spacing: 8) {
                 Text(property.label)
                 Spacer(minLength: 8)
-                Picker(property.label, selection: stringBinding(property)) {
+                Picker(property.label, selection: stringBinding(property, values: values)) {
                     ForEach(choices) { choice in Text(choice.label).tag(choice.value) }
                 }.labelsHidden().frame(width: 120)
             }.padding(10).modifier(HoverHighlight())
@@ -111,14 +102,14 @@ struct SceneInspectorSettings: View {
             HStack(spacing: 8) {
                 Text(property.label)
                 Spacer(minLength: 8)
-                ColorPicker(property.label, selection: colorBinding(property),
+                ColorPicker(property.label, selection: colorBinding(property, values: values),
                             supportsOpacity: colorHasOpacity(property))
                     .labelsHidden()
             }.padding(10).modifier(HoverHighlight())
         case .textInput:
             VStack(alignment: .leading, spacing: 5) {
                 Text(property.label)
-                TextField(property.label, text: stringBinding(property)).textFieldStyle(.roundedBorder)
+                TextField(property.label, text: stringBinding(property, values: values)).textFieldStyle(.roundedBorder)
             }.padding(10).modifier(HoverHighlight())
         }
     }
@@ -151,6 +142,12 @@ struct SceneInspectorSettings: View {
     }
 
     var body: some View {
+        // Resolve the package and saved data once per render, not once per getter.
+        // Saves still validate against current metadata and notify this view.
+        let values = properties.effectiveValues(for: package, catalog: catalog)
+        let preferences = self.preferences
+        let pendingChanges = preferences != scenePlayer.activePreferences ||
+            values != scenePlayer.activeUserPropertyValues
         VStack(alignment: .leading, spacing: 12) {
             if catalogLoading { ProgressView("正在读取场景效果…").font(.caption) }
             if !catalog.properties.isEmpty {
@@ -162,7 +159,7 @@ struct SceneInspectorSettings: View {
                 VStack(spacing: 0) {
                     ForEach(Array(catalog.properties.enumerated()), id: \.element.id) { index, property in
                         if index > 0 { Divider().padding(.horizontal, 10) }
-                        propertyRow(property)
+                        propertyRow(property, values: values)
                     }
                 }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
             }
@@ -226,7 +223,7 @@ struct SceneInspectorSettings: View {
                 }.frame(maxWidth: .infinity).disabled(model.isWorking)
                     .help("重新启动正在播放的这张壁纸以应用设置。")
             }
-            Text(settingsStatus)
+            Text(settingsStatus(pendingChanges: pendingChanges))
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)

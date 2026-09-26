@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 @main struct BackendChecks {
     @MainActor
@@ -112,7 +113,24 @@ import Foundation
         await controlled.releaseStaleRead()
         await stalePoll.value
         check(model.state.currentPath == "/tmp/new.mp4", "旧轮询晚返回不会覆盖操作后的状态")
+        var stateUpdates = 0
+        var invalidations = 0
+        let stateObserver = model.$state.dropFirst().sink { _ in stateUpdates += 1 }
+        let modelObserver = model.objectWillChange.sink { invalidations += 1 }
+        for _ in 0..<20 { await model.refreshState() }
+        check(stateUpdates == 0 && invalidations == 0, "20次未变化轮询不触发状态发布或界面刷新")
+        await controlled.setPlaybackState(.init(running: true, lastPath: "/tmp/new.mp4", rotating: true,
+                                                interval: 120, mode: "rand", notice: "changed"))
+        await model.refreshState()
+        check(stateUpdates == 1 && model.state.rotating && model.state.notice == "changed",
+              "真实轮播和提示变化立即发布，不因去重被吞掉")
+        stateObserver.cancel(); modelObserver.cancel()
         await model.refreshLibrary()
+        var libraryUpdates = 0
+        let libraryObserver = model.$items.dropFirst().sink { _ in libraryUpdates += 1 }
+        await model.refreshLibrary(); await model.refreshLibrary()
+        check(libraryUpdates == 0, "未变化图库不重复发布整组卡片")
+        libraryObserver.cancel()
         model.selected = "/tmp/new.mp4"
         await controlled.clearLibrary()
         await model.refreshLibrary()
@@ -250,6 +268,7 @@ actor ControlledBackend: WallpaperBackend {
         if failLibrary { throw BackendError.message("fixture权限失败") }
         return list
     }
+    func setPlaybackState(_ value: PlaybackState) { self.value = value }
     func clearLibrary() { list = [] }
     func setLibraryFailure() { failLibrary = true }
     func setSlowOperation() { slow = true }

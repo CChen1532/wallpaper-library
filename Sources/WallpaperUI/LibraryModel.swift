@@ -215,8 +215,9 @@ import Combine
     }
     private func readLibrary() async {
         do {
-            items = try await backend.library()
-            libraryIssue = nil
+            let discovered = try await backend.library()
+            if items != discovered { items = discovered }
+            if libraryIssue != nil { libraryIssue = nil }
             if !items.contains(where: { $0.id == selected }) { selected = nil }
         } catch is CancellationError { return }
         catch {
@@ -240,12 +241,16 @@ import Combine
                 guard revision == stateRevision else { return }
                 error = "检测到视频播放或轮播从外部开启，已停止场景以避免重叠。"
             }
-            state = value; stateIssue = nil
+            // Polling must still reconcile engines and backdrops, but an unchanged
+            // status should not invalidate every gallery card and inspector control.
+            if state != value { state = value }
+            if stateIssue != nil { stateIssue = nil }
             await syncVideoBackdrop(for: value, force: forceVideoBackdrop, revision: revision)
         } catch is CancellationError { return }
         catch {
             guard revision == stateRevision else { return }
-            stateIssue = error.localizedDescription
+            let issue = error.localizedDescription
+            if stateIssue != issue { stateIssue = issue }
         }
     }
 
