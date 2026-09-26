@@ -55,8 +55,8 @@ public struct MirageSceneRuntime: Sendable {
         let values = try scenePackage.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard scenePackage.lastPathComponent == "scene.pkg",
               values.isRegularFile == true, values.isSymbolicLink != true,
-              let bytes = values.fileSize, bytes > 0, bytes <= 256 * 1024 * 1024 else {
-            throw MirageSceneBridgeError.invalid("仅接受不超过 256 MiB 的普通 scene.pkg")
+              let bytes = values.fileSize, bytes > 0 else {
+            throw MirageSceneBridgeError.invalid("仅接受非链接且非空的普通 scene.pkg")
         }
         var arguments = ["--display-id", String(displayID), "--fps", "30", "--muted", "--no-spectrum",
                 "--control-stdin", "--deferred-show", "--run-seconds", String(durationSeconds + 90),

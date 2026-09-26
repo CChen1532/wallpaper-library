@@ -191,6 +191,30 @@ import UniformTypeIdentifiers
         let prepared = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
             title: "clock", expectedBytes: 3, displayID: 1, preferences: ScenePreferences(fps: 60))
         check(!prepared.arguments.contains("--run-seconds") && prepared.arguments.contains("--follow-focus"), "第一版持续播放不继承60秒试验限制")
+        let largeFolder = root.appendingPathComponent("large-scene")
+        try FileManager.default.createDirectory(at: largeFolder, withIntermediateDirectories: true)
+        let largePackage = largeFolder.appendingPathComponent("scene.pkg")
+        try Data([1]).write(to: largePackage)
+        let largeBytes: UInt64 = 257 * 1024 * 1024
+        let largeHandle = try FileHandle(forWritingTo: largePackage)
+        try largeHandle.truncate(atOffset: largeBytes) // Sparse: exercise launch validation without allocating the package.
+        try largeHandle.close()
+        let largePrepared = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root,
+            name: "large-scene", title: "large", expectedBytes: Int64(largeBytes), displayID: 1)
+        check(largePrepared.arguments.last == largePackage.path &&
+              !largePrepared.arguments.contains("--run-seconds"),
+              "超过256MiB的普通场景包可生成正式播放参数")
+        let linkedFolder = root.appendingPathComponent("linked-scene")
+        try FileManager.default.createDirectory(at: linkedFolder, withIntermediateDirectories: true)
+        let linkedPackage = linkedFolder.appendingPathComponent("scene.pkg")
+        try FileManager.default.createSymbolicLink(at: linkedPackage, withDestinationURL: largePackage)
+        let bridge = try MirageSceneRuntime(app: runtimeRoot)
+        do {
+            _ = try bridge.playbackArguments(scenePackage: linkedPackage, displayID: 1)
+            preconditionFailure("场景包链接绕过启动校验")
+        } catch is MirageSceneBridgeError {
+            check(true, "取消整包大小上限后仍拒绝链接场景包")
+        }
         let fpsIndex = prepared.arguments.firstIndex(of: "--fps")!
         let cropIndex = prepared.arguments.firstIndex(of: "--position-x")!
         check(prepared.arguments[fpsIndex + 1] == "60" && prepared.arguments[cropIndex + 1] == "1.0", "帧率和1000000001完整时钟裁切参数生效")
