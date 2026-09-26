@@ -18,6 +18,7 @@ import Combine
     let sceneRuntimeURL: URL
     let scenePreferences: ScenePreferencesStore
     let sceneUserProperties: SceneUserPropertiesStore
+    let scenePreparation: ScenePreparationCache
     let videoBackdropPreferences: VideoBackdropPreferencesStore
     let videoBackdrop: VideoBackdropController
     private let backdropConfiguration: @MainActor () throws -> SceneBackdropConfiguration?
@@ -45,6 +46,7 @@ import Combine
     init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
          sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil,
          sceneUserProperties: SceneUserPropertiesStore? = nil,
+         scenePreparation: ScenePreparationCache? = nil,
          videoBackdropPreferences: VideoBackdropPreferencesStore? = nil,
          videoBackdrop: VideoBackdropController? = nil,
          backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
@@ -55,6 +57,7 @@ import Combine
         self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
         self.sceneUserProperties = sceneUserProperties ?? SceneUserPropertiesStore()
+        self.scenePreparation = scenePreparation ?? ScenePreparationCache()
         self.videoBackdropPreferences = videoBackdropPreferences ?? VideoBackdropPreferencesStore()
         self.videoBackdrop = videoBackdrop ?? VideoBackdropController()
         self.scenePlayer = scenePlayer ?? ScenePlayer()
@@ -68,22 +71,41 @@ import Combine
     }
 
     func playScene(root: URL, name: String, title: String, expectedBytes: Int64) async {
-        guard !isWorking else { return }
+        guard beginOperation() else { return }
+        sceneRequestRevision += 1
+        let request = sceneRequestRevision
+        defer { busy = false }
         do {
             guard let displayID = scenePlayer.preferredDisplayID() else {
                 throw BackendError.message("当前没有可用显示器")
             }
-            // Validate all local inputs before changing the current video engine.
-            var configuration = try SceneLaunchConfiguration.prepare(
+            let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
+            let preferences = scenePreferences.preferences(for: package)
+            // Preflight filesystem work stays off the UI actor. The cache was
+            // warmed when this Scene was selected, but still revalidates here.
+            var configuration = try await scenePreparation.prepare(
                 runtimeURL: sceneRuntimeURL, root: root, name: name, title: title,
                 expectedBytes: expectedBytes, displayID: displayID,
-                preferences: scenePreferences.preferences(for: root.appendingPathComponent(name).appendingPathComponent("scene.pkg")))
-            configuration.setUserProperties(try sceneUserProperties.launch(for: configuration.package))
+                preferences: preferences)
+            guard !shuttingDown, request == sceneRequestRevision else { return }
+            configuration.setUserProperties(try await sceneUserProperties.launchInBackground(for: configuration.package))
             configuration.backdrop = try backdropConfiguration()
             let sourcePackage = configuration.package
             configuration.backdrop?.sourcePackage = sourcePackage
-            await playPreparedScene(configuration)
-        } catch { self.error = error.localizedDescription }
+            guard !shuttingDown, request == sceneRequestRevision else { return }
+            try await commitPreparedScene(configuration, request: request)
+        } catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
+        await readState()
+    }
+
+    func preloadScene(root: URL, name: String, title: String, expectedBytes: Int64) async {
+        guard let displayID = scenePlayer.preferredDisplayID() else { return }
+        let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
+        let preferences = scenePreferences.preferences(for: package)
+        _ = try? await scenePreparation.prepare(runtimeURL: sceneRuntimeURL, root: root, name: name,
+                                                title: title, expectedBytes: expectedBytes,
+                                                displayID: displayID, preferences: preferences)
     }
 
     func isActiveScene(_ package: URL) -> Bool {
@@ -107,19 +129,22 @@ import Combine
         sceneRequestRevision += 1
         let request = sceneRequestRevision
         defer { busy = false }
-        do {
-            await scenePlayer.stop()
-            try scenePlayer.requireRestoredBackdrop()
-            try await backend.perform(.off)
-            try await videoBackdrop.stop()
-            try videoBackdrop.requireRestoredBackdrop()
-            lastVideoBackdropAttempt = nil
-            guard !shuttingDown, request == sceneRequestRevision else { return }
-            try Task.checkCancellation()
-            try scenePlayer.start(configuration)
-        } catch is CancellationError { }
+        do { try await commitPreparedScene(configuration, request: request) }
+        catch is CancellationError { }
         catch { self.error = error.localizedDescription }
         await readState()
+    }
+
+    private func commitPreparedScene(_ configuration: SceneLaunchConfiguration, request: Int) async throws {
+        await scenePlayer.stop()
+        try scenePlayer.requireRestoredBackdrop()
+        try await backend.perform(.off)
+        try await videoBackdrop.stop()
+        try videoBackdrop.requireRestoredBackdrop()
+        lastVideoBackdropAttempt = nil
+        guard !shuttingDown, request == sceneRequestRevision else { return }
+        try Task.checkCancellation()
+        try scenePlayer.start(configuration)
     }
 
     func stopScene() async {

@@ -10,13 +10,14 @@ struct SceneInspectorSettings: View {
     @ObservedObject var properties: SceneUserPropertiesStore
     let package: URL
     @State private var showPlayback = false
+    @State private var catalog: ScenePropertyCatalog = .empty
+    @State private var catalogLoading = true
 
     private var preferences: ScenePreferences { store.preferences(for: package) }
-    private var catalog: ScenePropertyCatalog { properties.catalog(for: package) }
     private var isPlaying: Bool { model.isActiveScene(package) }
     private var pendingChanges: Bool {
         preferences != scenePlayer.activePreferences ||
-            properties.effectiveValues(for: package) != scenePlayer.activeUserPropertyValues
+            properties.effectiveValues(for: package, catalog: catalog) != scenePlayer.activeUserPropertyValues
     }
 
     private func propertyValue(_ property: ScenePropertyDefinition) -> ScenePropertyValue {
@@ -140,6 +141,7 @@ struct SceneInspectorSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if catalogLoading { ProgressView("正在读取场景效果…").font(.caption) }
             if !catalog.properties.isEmpty {
                 HStack {
                     Text("场景效果").font(.headline)
@@ -198,18 +200,25 @@ struct SceneInspectorSettings: View {
                 Text("播放与声音").frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 5).modifier(HoverHighlight())
             }
-            if isPlaying && pendingChanges {
+            if !catalogLoading && isPlaying && pendingChanges {
                 Button("应用到此壁纸") {
                     let representedPackage = package
                     Task { await model.applyScenePreferences(for: representedPackage) }
                 }.frame(maxWidth: .infinity).disabled(model.isWorking)
                     .help("重新启动正在播放的这张壁纸以应用设置。")
             }
-            Text(isPlaying && !pendingChanges ? "设置已保存并应用" : "自动保存，下次播放此壁纸时生效")
+            Text(catalogLoading ? "正在读取设置…" : isPlaying && !pendingChanges ? "设置已保存并应用" : "自动保存，下次播放此壁纸时生效")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)
                 .animation(LibraryMotion.selection(reduceMotion), value: isPlaying && !pendingChanges)
         }.font(.callout).toggleStyle(.switch).controlSize(.small)
+            .task(id: ScenePreferencesStore.identity(for: package)) {
+                catalogLoading = true
+                let loaded = await properties.loadCatalogInBackground(for: package)
+                guard !Task.isCancelled else { return }
+                catalog = loaded
+                catalogLoading = false
+            }
     }
 }

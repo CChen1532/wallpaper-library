@@ -345,6 +345,13 @@ struct NativeLibraryView: View {
                 }
             }.padding(20)
         }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+            .task(id: (sceneRoot?.path ?? "") + "/" + item.name) {
+                guard let sceneRoot, item.error == nil, item.packageBytes > 0,
+                      item.packageBytes <= 256 * 1024 * 1024 else { return }
+                await model.preloadScene(root: sceneRoot, name: item.name,
+                                         title: item.title ?? item.name,
+                                         expectedBytes: item.packageBytes)
+            }
     }
 
     private func inspectorMetadata(_ label: String, _ value: String) -> some View {

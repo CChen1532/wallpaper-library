@@ -20,21 +20,7 @@ struct SceneLaunchConfiguration: Sendable {
 
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
                         expectedBytes: Int64, displayID: UInt32, preferences: ScenePreferences = .init()) throws -> Self {
-        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\") else {
-            throw BackendError.message("场景目录名称无效")
-        }
-        let folder = root.appendingPathComponent(name, isDirectory: true)
-        for url in [root, folder] {
-            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            guard values.isDirectory == true, values.isSymbolicLink != true else {
-                throw BackendError.message("场景必须位于所选目录内，不能使用链接目录")
-            }
-        }
-        let package = folder.appendingPathComponent("scene.pkg")
-        let size = try package.resourceValues(forKeys: [.fileSizeKey]).fileSize
-        guard let size, Int64(size) == expectedBytes else {
-            throw BackendError.message("场景包已变化，请刷新场景目录")
-        }
+        let package = try validatedPackage(root: root, name: name, expectedBytes: expectedBytes)
         let position: Double
         switch preferences.cropMode {
         case "auto": position = name == "1000000001" ? 1 : 0.5
@@ -54,6 +40,26 @@ struct SceneLaunchConfiguration: Sendable {
         return Self(executable: runtime.executable, arguments: arguments,
                     environment: runtime.environment(), package: package,
                     title: title, displayID: displayID, preferences: preferences)
+    }
+
+    static func validatedPackage(root: URL, name: String, expectedBytes: Int64) throws -> URL {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\") else {
+            throw BackendError.message("场景目录名称无效")
+        }
+        let folder = root.appendingPathComponent(name, isDirectory: true)
+        for url in [root, folder] {
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw BackendError.message("场景必须位于所选目录内，不能使用链接目录")
+            }
+        }
+        let package = folder.appendingPathComponent("scene.pkg")
+        let values = try package.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, Int64(size) == expectedBytes else {
+            throw BackendError.message("场景包已变化，请刷新场景目录")
+        }
+        return package
     }
 
     mutating func setUserProperties(_ launch: ScenePropertyLaunch) {

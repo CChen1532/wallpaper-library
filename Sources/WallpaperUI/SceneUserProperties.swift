@@ -164,19 +164,51 @@ struct ScenePropertyCatalog: Sendable {
 struct ScenePropertyLaunch: Sendable {
     let file: URL?
     let effectiveValues: [String: ScenePropertyValue]
+
+    static func prepare(package: URL, catalog: ScenePropertyCatalog,
+                        savedData: Data?, directory: URL) throws -> Self {
+        try Task.checkCancellation()
+        let saved: [String: Any]
+        if let savedData, savedData.count <= 64 * 1024,
+           let decoded = try? JSONSerialization.jsonObject(with: savedData) as? [String: Any] {
+            saved = decoded
+        } else { saved = [:] }
+        var effective: [String: ScenePropertyValue] = [:]
+        var overrides: [String: Any] = [:]
+        for property in catalog.properties {
+            let value = saved[property.id].flatMap(property.validated) ?? property.preferredDefault
+            effective[property.id] = value
+            if value != property.sourceDefault { overrides[property.id] = value.jsonValue }
+        }
+        guard !overrides.isEmpty else { return .init(file: nil, effectiveValues: effective) }
+        try Task.checkCancellation()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let identity = package.standardizedFileURL.resolvingSymlinksInPath().path
+        let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        let file = directory.appendingPathComponent(key + ".json")
+        let data = try JSONSerialization.data(withJSONObject: overrides, options: [.sortedKeys])
+        try data.write(to: file, options: .atomic)
+        return .init(file: file, effectiveValues: effective)
+    }
 }
 
 /// Stored choices are keyed by the normalized scene.pkg path and validated again
 /// against that scene's current project.json before launch.
 @MainActor final class SceneUserPropertiesStore: ObservableObject {
-    private struct CachedCatalog {
+    private struct CachedCatalog: Sendable {
         let modified: Date?
         let size: Int?
         let catalog: ScenePropertyCatalog
     }
+    private struct CachedSavedValues {
+        let data: Data?
+        let values: [String: Any]
+    }
     private let defaults: UserDefaults
     private let directory: URL
     private var catalogs: [String: CachedCatalog] = [:]
+    private var savedCache: [String: CachedSavedValues] = [:]
 
     init(defaults: UserDefaults = .standard, directory: URL? = nil) {
         self.defaults = defaults
@@ -200,24 +232,50 @@ struct ScenePropertyLaunch: Sendable {
         return result
     }
 
+    func loadCatalogInBackground(for package: URL) async -> ScenePropertyCatalog {
+        let worker = Task.detached(priority: .utility) {
+            let project = package.deletingLastPathComponent().appendingPathComponent("project.json")
+            let attributes = try? FileManager.default.attributesOfItem(atPath: project.path)
+            let modified = attributes?[.modificationDate] as? Date
+            let size = attributes?[.size] as? Int
+            return CachedCatalog(modified: modified, size: size,
+                                 catalog: ScenePropertyCatalog.load(for: package))
+        }
+        let result = await worker.value
+        guard !Task.isCancelled else { return .empty }
+        catalogs[ScenePreferencesStore.identity(for: package)] = result
+        return result.catalog
+    }
+
     private func savedValues(for package: URL) -> [String: Any] {
-        guard let data = defaults.data(forKey: Self.storageKey(for: package)), data.count <= 64 * 1024,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        return object
+        let key = Self.storageKey(for: package)
+        let data = defaults.data(forKey: key)
+        if let cached = savedCache[key], cached.data == data { return cached.values }
+        let values: [String: Any]
+        if let data, data.count <= 64 * 1024,
+           let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            values = decoded
+        } else { values = [:] }
+        savedCache[key] = .init(data: data, values: values)
+        return values
     }
 
     func value(for property: ScenePropertyDefinition, package: URL) -> ScenePropertyValue {
-        guard let definition = catalog(for: package).properties.first(where: { $0.id == property.id }) else {
-            return property.preferredDefault
-        }
-        if let saved = savedValues(for: package)[definition.id], let valid = definition.validated(saved) { return valid }
-        return definition.preferredDefault
+        // The inspector already obtained this validated definition from the
+        // catalog. Re-statting project.json for every control on every phase
+        // update caused synchronous I/O on the SwiftUI actor.
+        if let saved = savedValues(for: package)[property.id], let valid = property.validated(saved) { return valid }
+        return property.preferredDefault
     }
 
     func effectiveValues(for package: URL) -> [String: ScenePropertyValue] {
+        effectiveValues(for: package, catalog: catalog(for: package))
+    }
+
+    func effectiveValues(for package: URL, catalog: ScenePropertyCatalog) -> [String: ScenePropertyValue] {
         let saved = savedValues(for: package)
         var result: [String: ScenePropertyValue] = [:]
-        for property in catalog(for: package).properties {
+        for property in catalog.properties {
             result[property.id] = saved[property.id].flatMap(property.validated) ?? property.preferredDefault
         }
         return result
@@ -232,26 +290,26 @@ struct ScenePropertyLaunch: Sendable {
               let data = try? JSONSerialization.data(withJSONObject: saved, options: [.sortedKeys]),
               data.count <= 64 * 1024 else { return }
         objectWillChange.send()
-        defaults.set(data, forKey: Self.storageKey(for: package))
+        let key = Self.storageKey(for: package)
+        defaults.set(data, forKey: key)
+        savedCache[key] = .init(data: data, values: saved)
     }
 
     func launch(for package: URL) throws -> ScenePropertyLaunch {
-        let catalog = catalog(for: package)
-        let effective = effectiveValues(for: package)
-        var overrides: [String: Any] = [:]
-        for property in catalog.properties {
-            if let value = effective[property.id], value != property.sourceDefault {
-                overrides[property.id] = value.jsonValue
-            }
+        try ScenePropertyLaunch.prepare(package: package, catalog: catalog(for: package),
+                                        savedData: defaults.data(forKey: Self.storageKey(for: package)),
+                                        directory: directory)
+    }
+
+    func launchInBackground(for package: URL) async throws -> ScenePropertyLaunch {
+        let savedData = defaults.data(forKey: Self.storageKey(for: package))
+        let directory = self.directory
+        let worker = Task.detached(priority: .utility) {
+            let catalog = ScenePropertyCatalog.load(for: package)
+            return try ScenePropertyLaunch.prepare(package: package, catalog: catalog,
+                                                   savedData: savedData, directory: directory)
         }
-        guard !overrides.isEmpty else { return .init(file: nil, effectiveValues: effective) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        let identity = ScenePreferencesStore.identity(for: package)
-        let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
-        let file = directory.appendingPathComponent(key + ".json")
-        let data = try JSONSerialization.data(withJSONObject: overrides, options: [.sortedKeys])
-        try data.write(to: file, options: .atomic)
-        return .init(file: file, effectiveValues: effective)
+        return try await withTaskCancellationHandler(operation: { try await worker.value },
+                                                      onCancel: { worker.cancel() })
     }
 }

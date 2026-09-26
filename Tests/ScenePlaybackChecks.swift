@@ -178,6 +178,32 @@ import UniformTypeIdentifiers
         let cropIndex = prepared.arguments.firstIndex(of: "--position-x")!
         check(prepared.arguments[fpsIndex + 1] == "60" && prepared.arguments[cropIndex + 1] == "1.0", "帧率和1000000001完整时钟裁切参数生效")
         check(!prepared.arguments.contains("--user-properties"), "没有水印属性的场景不接受额外覆盖")
+        let preparation = ScenePreparationCache()
+        let warmed = try await preparation.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
+                                                    title: "clock", expectedBytes: 3, displayID: 1,
+                                                    preferences: ScenePreferences(fps: 60))
+        let reused = try await preparation.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
+                                                    title: "clock", expectedBytes: 3, displayID: 1,
+                                                    preferences: ScenePreferences(fps: 60))
+        check(warmed.arguments == reused.arguments, "选中场景预热的启动参数可复用")
+        let changedPreparation = try await preparation.prepare(runtimeURL: runtimeRoot, root: root, name: "1000000001",
+                                                     title: "clock", expectedBytes: 3, displayID: 1,
+                                                     preferences: ScenePreferences(fps: 30))
+        check(changedPreparation.arguments != warmed.arguments, "场景设置变化不复用旧启动参数")
+        let warmFolder = root.appendingPathComponent("warm-scene")
+        try FileManager.default.createDirectory(at: warmFolder, withIntermediateDirectories: true)
+        let warmPackage = warmFolder.appendingPathComponent("scene.pkg")
+        try Data([1, 2, 3]).write(to: warmPackage)
+        _ = try await preparation.prepare(runtimeURL: runtimeRoot, root: root, name: "warm-scene",
+                                          title: "warm", expectedBytes: 3, displayID: 1,
+                                          preferences: .init())
+        try Data([1, 2, 3, 4]).write(to: warmPackage)
+        do {
+            _ = try await preparation.prepare(runtimeURL: runtimeRoot, root: root, name: "warm-scene",
+                                              title: "warm", expectedBytes: 3, displayID: 1,
+                                              preferences: .init())
+            preconditionFailure("缓存绕过已变化的场景包")
+        } catch { check(true, "预热缓存仍校验场景包变化") }
 
         let markedFolder = root.appendingPathComponent("marked-scene")
         try FileManager.default.createDirectory(at: markedFolder, withIntermediateDirectories: true)
@@ -217,6 +243,10 @@ import UniformTypeIdentifiers
               watermark.validated(NSNumber(value: 1)) == nil,
               "越界效果值和错误类型不能交给渲染器")
         let launch = try propertyStore.launch(for: markedPackage)
+        let backgroundLaunch = try await propertyStore.launchInBackground(for: markedPackage)
+        check(backgroundLaunch.effectiveValues == launch.effectiveValues &&
+              backgroundLaunch.file == launch.file,
+              "后台准备属性覆盖与原有首帧配置一致")
         var marked = try SceneLaunchConfiguration.prepare(runtimeURL: runtimeRoot, root: root, name: "marked-scene",
             title: "marked", expectedBytes: 3, displayID: 1)
         marked.setUserProperties(launch)

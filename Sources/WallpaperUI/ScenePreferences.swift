@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// A validated snapshot: changing defaults never mutates a running session.
-struct ScenePreferences: Codable, Equatable, Sendable {
+struct ScenePreferences: Codable, Hashable, Sendable {
     var fps = 30
     var cropMode = "auto"
     var mouseEnabled = true
