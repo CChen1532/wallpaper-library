@@ -83,6 +83,7 @@ struct NativeLibraryView: View {
                 if let issue = model.stateIssue { issueBanner("状态暂不可用：" + issue) }
                 if let issue = model.libraryIssue { issueBanner("素材读取失败：" + issue) }
                 if let issue = model.videoBackdropIssue { issueBanner(issue) }
+                if let issue = model.backdropCompatibilityIssue { issueBanner(issue) }
                 if page == .settings {
                     WallpaperSettingsView {
                         showDiagnostics = true; Task { await model.refreshDiagnostics() }

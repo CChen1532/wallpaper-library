@@ -24,6 +24,64 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 STORE = Path.home() / 'Library/Application Support/com.apple.wallpaper/Store/Index.plist'
 STATE = ROOT / 'dist/WallpaperQuickSwitch'
+SUPPORTED_MACOS = ('15.8', '24H23')
+# Schema observed on the supported macOS build. UUIDs, Space counts, image
+# choices and timestamps are excluded; structural keys and node types are not.
+SUPPORTED_SCHEMA = '8c5d6761ee52272e7952fbfdd0ff3d2782d90cd051d0e78f0bdc983a3db2d53d'
+
+
+class CompatibilityMismatch(ValueError):
+    """The bundled app must disable automatic backdrop on this OS/schema."""
+
+
+def macos_release():
+    try:
+        return tuple(subprocess.check_output(['/usr/bin/sw_vers', flag], text=True, timeout=5).strip()
+                     for flag in ('-productVersion', '-buildVersion'))
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CompatibilityMismatch('无法确认 macOS 版本，已停止自动过渡底图') from error
+
+
+def schema_fingerprint(document):
+    """Fingerprint only the private nodes edited by an all-Spaces lease."""
+    try:
+        spaces, displays = document['Spaces'], document['Displays']
+        shared, system = document['AllSpacesAndDisplays'], document['SystemDefault']
+        if not all(isinstance(node, dict) for node in (document, spaces, displays, shared, system)):
+            raise ValueError('root')
+
+        def fields(node):
+            if not isinstance(node, dict):
+                raise ValueError('node')
+            return tuple((key, ('str:' + value) if key == 'Type' and isinstance(value, str)
+                          else type(value).__name__) for key, value in sorted(node.items()))
+
+        signature = {
+            'root': fields(document), 'shared': fields(shared), 'system': fields(system),
+            'spaces': sorted({fields(node) for node in spaces.values()}),
+            'defaults': sorted({fields(node['Default']) for node in spaces.values()}),
+            'displays': sorted({fields(node) for node in displays.values()}),
+            'space_displays': sorted({fields(display) for node in spaces.values()
+                                      for display in node['Displays'].values()}),
+        }
+        return digest(json.dumps(signature, sort_keys=True, separators=(',', ':')).encode())
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise CompatibilityMismatch('系统墙纸配置结构未知，已停止自动过渡底图') from error
+
+
+def check_compatibility(state, document, release=None, expected_schema=SUPPORTED_SCHEMA):
+    release = release or macos_release()
+    fingerprint = schema_fingerprint(document)
+    if release != SUPPORTED_MACOS or fingerprint != expected_schema:
+        raise CompatibilityMismatch('此 macOS 版本或墙纸配置结构未经验证，已停止自动过渡底图')
+    # Diagnostic evidence only. The bundled constants, not this writable file,
+    # authorize future writes. Restoration never depends on this check.
+    atomic(state / 'compatibility.plist', encoded({
+        'schema': 1, 'macOS': release[0], 'build': release[1],
+        'wallpaperSchemaSHA256': fingerprint,
+        'checkedAt': datetime.datetime.utcnow(),
+    }))
+    return fingerprint
 
 
 def encoded(value):
@@ -339,6 +397,8 @@ class Switcher:
                                    {row['uuid'] for row in rows} != {row['uuid'] for row in inv['spaces']}):
             raise ValueError('自动全空间底图需要单屏并覆盖全部普通桌面')
         raw, document = load_store(self.store)
+        if all_spaces_visible:
+            check_compatibility(self.state, document)
         stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         archive = self.state / stamp
         archive.mkdir(mode=0o700)
@@ -418,6 +478,7 @@ def main():
             p.add_argument('--seconds', type=float, default=60)
     subs.add_parser('restore')
     subs.add_parser('status')
+    subs.add_parser('check-compatibility').add_argument('--display', type=int)
     args = parser.parse_args()
     if sys.platform != 'darwin':
         parser.error('仅支持 macOS')
@@ -435,6 +496,11 @@ def main():
                               'recovery_file': str(switcher.session), 'current': inventory(binary=args.inventory)}, ensure_ascii=False, indent=2))
         elif args.command == 'restore':
             switcher.restore()
+        elif args.command == 'check-compatibility':
+            inv = inventory(args.display, args.inventory)
+            _, document = load_store(switcher.store)
+            check_compatibility(state, document)
+            print('WALLPAPER_COMPATIBILITY_OK', flush=True)
         else:
             if args.command == 'timed' and not 0 < args.seconds <= 86400:
                 raise ValueError('自动复原时长必须在 0 到 86400 秒之间')
@@ -487,6 +553,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except CompatibilityMismatch as error:
+        print('WALLPAPER_COMPATIBILITY_FAILED：' + str(error), file=sys.stderr)
+        sys.exit(3)
     except KeyboardInterrupt:
         print('已中断定时等待。', file=sys.stderr)
         sys.exit(130)

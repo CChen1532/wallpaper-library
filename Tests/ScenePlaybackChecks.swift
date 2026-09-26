@@ -120,6 +120,23 @@ import UniformTypeIdentifiers
         check(player.error != nil && !player.isActive && !hasLivePID("crash"), "异常退出显示错误并清理状态")
 
         let coordinated = ScenePlayer(focusProvider: { 1 })
+        let backdropDefaultsName = "WallpaperUI.BackdropDefaults." + UUID().uuidString
+        let backdropDefaults = UserDefaults(suiteName: backdropDefaultsName)!
+        defer { backdropDefaults.removePersistentDomain(forName: backdropDefaultsName) }
+        check(!SceneBackdropConfiguration.isEnabled(in: backdropDefaults), "未配置的场景默认不修改系统过渡底图")
+        backdropDefaults.set(true, forKey: SceneBackdropConfiguration.preferenceKey)
+        check(SceneBackdropConfiguration.isEnabled(in: backdropDefaults), "用户明确开启的场景底图设置保留")
+        let incompatibleHelper = root.appendingPathComponent("incompatible-helper.py")
+        try "import sys; print('unverified wallpaper schema', file=sys.stderr); sys.exit(3)\n"
+            .write(to: incompatibleHelper, atomically: true, encoding: .utf8)
+        let incompatibleSettings = SceneBackdropConfiguration(helper: incompatibleHelper, inventory: root,
+            state: root.appendingPathComponent("compatibility-fixture"))
+        do {
+            try await SpaceBackdropCompatibility.check(incompatibleSettings, displayID: 1)
+            preconditionFailure("不兼容系统墙纸格式被接受")
+        } catch is SpaceBackdropCompatibilityFailure {
+            check(true, "不兼容墙纸格式作为可自动停用的独立错误返回")
+        }
         let backend = SceneTestBackend()
         let model = LibraryModel(backend: backend, scenePlayer: coordinated,
                                  sceneRuntimeURL: root.appendingPathComponent("missing-runtime"))

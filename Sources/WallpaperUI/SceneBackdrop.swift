@@ -2,6 +2,9 @@ import Foundation
 
 struct SceneBackdropConfiguration: Sendable {
     static let preferenceKey = "sceneAutomaticBackdrop"
+    static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: preferenceKey) as? Bool ?? false
+    }
     let helper: URL
     let inventory: URL
     let state: URL
@@ -28,6 +31,31 @@ struct SceneBackdropConfiguration: Sendable {
               let value = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return true }
         return value["state"] as? String != "restored"
+    }
+}
+
+struct SpaceBackdropCompatibilityFailure: LocalizedError, Sendable {
+    let reason: String
+    var errorDescription: String? { reason }
+}
+
+/// The helper checks the supported macOS build and private WallpaperAgent
+/// structure without changing the desktop. It checks again inside the lease
+/// immediately before the first system write; restore never uses this gate.
+enum SpaceBackdropCompatibility {
+    static func check(_ settings: SceneBackdropConfiguration, displayID: UInt32) async throws {
+        let result = try await CommandRunner().run("/usr/bin/python3", [
+            settings.helper.path, "--state-dir", settings.state.path,
+            "--inventory", settings.inventory.path,
+            "check-compatibility", "--display", String(displayID)
+        ], timeout: 10)
+        if result.code == 3 {
+            throw SpaceBackdropCompatibilityFailure(reason: result.message)
+        }
+        guard result.code == 0, result.text.contains("WALLPAPER_COMPATIBILITY_OK") else {
+            throw BackendError.message(result.message.isEmpty
+                ? "无法完成系统墙纸兼容性检查" : result.message)
+        }
     }
 }
 
@@ -134,6 +162,9 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
 
     func checkHealth() throws {
         guard let process, process.isRunning else {
+            if process?.terminationStatus == 3 {
+                throw SpaceBackdropCompatibilityFailure(reason: text)
+            }
             throw BackendError.message("自动底图进程已退出。\(text)")
         }
     }

@@ -13,6 +13,7 @@ import Combine
     @Published var diagnostics: BackendDiagnostics?
     @Published var loadingDiagnostics = false
     @Published var videoBackdropIssue: String?
+    @Published var backdropCompatibilityIssue: String?
     let backend: any WallpaperBackend
     let scenePlayer: ScenePlayer
     let sceneRuntimeURL: URL
@@ -50,7 +51,7 @@ import Combine
          videoBackdropPreferences: VideoBackdropPreferencesStore? = nil,
          videoBackdrop: VideoBackdropController? = nil,
          backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
-             guard UserDefaults.standard.object(forKey: SceneBackdropConfiguration.preferenceKey) as? Bool ?? true else { return nil }
+             guard SceneBackdropConfiguration.isEnabled() else { return nil }
              return try SceneBackdropConfiguration.bundled()
          }) {
         self.backend = backend
@@ -135,7 +136,7 @@ import Combine
         await readState()
     }
 
-    private func commitPreparedScene(_ configuration: SceneLaunchConfiguration, request: Int) async throws {
+    private func commitPreparedScene(_ prepared: SceneLaunchConfiguration, request: Int) async throws {
         await scenePlayer.stop()
         try scenePlayer.requireRestoredBackdrop()
         try await backend.perform(.off)
@@ -144,6 +145,18 @@ import Combine
         lastVideoBackdropAttempt = nil
         guard !shuttingDown, request == sceneRequestRevision else { return }
         try Task.checkCancellation()
+        var configuration = prepared
+        if let backdrop = configuration.backdrop {
+            do {
+                try await SpaceBackdropCompatibility.check(backdrop, displayID: configuration.displayID)
+                backdropCompatibilityIssue = nil
+            } catch let mismatch as SpaceBackdropCompatibilityFailure {
+                UserDefaults.standard.set(false, forKey: SceneBackdropConfiguration.preferenceKey)
+                backdropCompatibilityIssue = "已自动关闭场景过渡底图：" + mismatch.localizedDescription
+                configuration.backdrop = nil
+            }
+        }
+        guard !shuttingDown, request == sceneRequestRevision else { return }
         try scenePlayer.start(configuration)
     }
 
@@ -260,6 +273,11 @@ import Combine
             } else {
                 try await videoBackdrop.stop()
             }
+            videoBackdropIssue = nil
+        } catch let mismatch as SpaceBackdropCompatibilityFailure {
+            preferences.enabled = false
+            videoBackdropPreferences.save(preferences, for: video)
+            backdropCompatibilityIssue = "已自动关闭此视频的过渡底图：" + mismatch.localizedDescription
             videoBackdropIssue = nil
         } catch {
             videoBackdropIssue = "视频 Space 过渡底图未匹配：" + error.localizedDescription

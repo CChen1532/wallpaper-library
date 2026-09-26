@@ -6,7 +6,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 struct VideoBackdropPreferences: Codable, Equatable, Sendable {
-    var enabled = true
+    var enabled = false
     var frameSecond = 0
 }
 
@@ -127,6 +127,7 @@ private struct VideoBackdropTarget: Equatable {
         var settings = try configuration()
         settings.sourcePackage = video
         do {
+            try await SpaceBackdropCompatibility.check(settings, displayID: displayID)
             let frame = try await VideoBackdropFrame.capture(video: video, second: preferences.frameSecond,
                                                               width: width, height: height, state: settings.state,
                                                               ffmpeg: ffmpeg, runner: runner)
@@ -145,9 +146,11 @@ private struct VideoBackdropTarget: Equatable {
             issue = nil
         } catch {
             let original = error.localizedDescription
+            let compatibility = error as? SpaceBackdropCompatibilityFailure
             do { try await finishLease() }
             catch { issue = original + "；恢复底图失败：" + error.localizedDescription; throw BackendError.message(issue!) }
             issue = original
+            if let compatibility { throw compatibility }
             throw BackendError.message(original)
         }
     }

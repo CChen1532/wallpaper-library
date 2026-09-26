@@ -192,6 +192,12 @@ struct SceneLaunchConfiguration: Sendable {
                     try await Task.sleep(for: .milliseconds(250))
                 }
             } catch is CancellationError { }
+            catch let mismatch as SpaceBackdropCompatibilityFailure {
+                await MainActor.run {
+                    UserDefaults.standard.set(false, forKey: SceneBackdropConfiguration.preferenceKey)
+                }
+                failure = "已自动关闭场景过渡底图：" + mismatch.localizedDescription
+            }
             catch { failure = error.localizedDescription }
             do { try backdrop?.finish() }
             catch { failure = [failure, "恢复底图：" + error.localizedDescription].compactMap { $0 }.joined(separator: "\n") }

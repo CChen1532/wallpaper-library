@@ -62,9 +62,15 @@ import Foundation
         let videoPreferences = VideoBackdropPreferencesStore(defaults: videoDefaults)
         let firstVideo = media.appendingPathComponent("first.mp4")
         let secondVideo = media.appendingPathComponent("second.mp4")
+        check(!videoPreferences.preferences(for: secondVideo).enabled,
+              "未配置的视频默认不修改系统过渡底图")
         videoPreferences.save(.init(enabled: false, frameSecond: 4), for: firstVideo)
         check(videoPreferences.preferences(for: firstVideo) == .init(enabled: false, frameSecond: 4) &&
               videoPreferences.preferences(for: secondVideo) == .init(), "视频底图设置按素材独立保存")
+        videoPreferences.save(.init(enabled: true, frameSecond: 2), for: firstVideo)
+        check(videoPreferences.preferences(for: firstVideo).enabled &&
+              !videoPreferences.preferences(for: secondVideo).enabled,
+              "用户明确开启的视频独立保留选择")
         let fakeRunner = StateRunner()
         let backend = PhontoBackend(home: fixture, runner: fakeRunner, directoryOverride: media)
         let configDirectory = fixture.appendingPathComponent(".config/phonto")

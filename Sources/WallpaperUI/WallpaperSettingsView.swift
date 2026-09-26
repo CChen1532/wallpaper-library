@@ -1,10 +1,12 @@
 import SwiftUI
+import ApplicationServices
 
 struct WallpaperSettingsView: View {
     @EnvironmentObject private var model: LibraryModel
     @EnvironmentObject private var scenePlayer: ScenePlayer
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
-    @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = true
+    @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
+    @State private var accessibilityTrusted = false
     let showDiagnostics: () -> Void
 
     var body: some View {
@@ -21,8 +23,11 @@ struct WallpaperSettingsView: View {
             Section {
                 Toggle("场景自动匹配过渡底图", isOn: $automaticBackdrop)
                     .disabled(model.isWorking || scenePlayer.isActive)
-                Text("播放场景时，将截图设为所有 Space 的过渡底图；停止、换片或退出时恢复原设置。")
+                Text("默认关闭。开启后会临时修改 macOS 系统壁纸，以场景截图承接 Space 过渡；停止、换片或退出时恢复原设置。")
                     .font(.callout).foregroundStyle(.secondary)
+                if let issue = model.backdropCompatibilityIssue {
+                    Text(issue).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                }
                 if let url = scenePlayer.automaticBackdropImage, let image = NSImage(contentsOf: url) {
                     LabeledContent("当前壁纸底图", value: scenePlayer.title)
                     Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 150)
@@ -57,6 +62,8 @@ struct WallpaperSettingsView: View {
                 Text("视频的过渡底图可在每个视频的详情栏单独设置。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
             }
             Section("关于") {
+                LabeledContent("辅助功能授权", value: accessibilityTrusted ? "已授权" : "未授权")
+                Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
                 Button("显示器与运行状态", action: showDiagnostics)
                 LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") + " 预览版")
             }
@@ -64,5 +71,6 @@ struct WallpaperSettingsView: View {
         .formStyle(.grouped).scrollContentBackground(.hidden)
         .frame(maxWidth: 640)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { accessibilityTrusted = AXIsProcessTrusted() }
     }
 }
