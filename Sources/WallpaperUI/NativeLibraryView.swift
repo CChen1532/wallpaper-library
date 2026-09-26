@@ -336,7 +336,7 @@ struct NativeLibraryView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("自动播放 · 无交互", systemImage: "sparkles").font(.headline)
                         Text("金色吸积盘 · 高等数学公式 · 引力弯曲 · 纵深星空")
-                        Text(item.name == "01-Ultra" ? "极致画质：2560 宽 · 150 步光线积分 · 30 FPS" : "性能优先：1600 宽 · 90 步光线积分 · 30 FPS")
+                        Text(item.name == "01-Ultra" ? "极致画质 4K：3840 长边 · 高清公式 · 目标 120 FPS" : "性能优先：1600 宽 · 90 步光线积分 · 30 FPS")
                         Text("使用当前画面自动生成 Space 过渡底图。")
                     }.font(.caption).foregroundStyle(.secondary)
                 } else if let sceneRoot {

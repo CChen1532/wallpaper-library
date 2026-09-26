@@ -24,8 +24,15 @@ float3 sky(float3 d) {
 // Text lives in the accretion plane. The same bent rays sample gas and glyphs,
 // so lensing and horizon occlusion also apply to the equations.
 float silkHeight(float3 p,float t) {
-    float r=length(p.xz), a=atan2(p.z,p.x);
-    float fold=sin(r*.59-a*2.+t*.045)*.85 + sin(r*.28+a*3.-t*.035)*.42;
+    float r=length(p.xz);
+    if(r<=3.8)return 0.;
+    // Angle addition eliminates atan2 from every integration step.
+    float2 unit=p.xz/r;
+    float sin2=2.*unit.x*unit.y,cos2=unit.x*unit.x-unit.y*unit.y;
+    float sin3=unit.y*(3.-4.*unit.y*unit.y),cos3=unit.x*(4.*unit.x*unit.x-3.);
+    float phase2=r*.59+t*.045,phase3=r*.28-t*.035;
+    float fold=(sin(phase2)*cos2-cos(phase2)*sin2)*.85
+              +(sin(phase3)*cos3+cos(phase3)*sin3)*.42;
     return fold*smoothstep(3.8,11.,r);
 }
 float4 disc(float3 p,float t,texture2d<float> atlas) {
@@ -93,7 +100,8 @@ kernel void universe(texture2d<float,access::write> dst [[texture(0)]],texture2d
         if(r<1.02){swallowed=true;break;}
         if(r>34.)break;
         float ds=clamp(r*.09,.055,1.4)*mix(1.,150./float(u.steps),smoothstep(3.,7.,r));
-        float3 accel=-1.5*L2*p/pow(r,5.);
+        float r2=r*r;
+        float3 accel=(-1.5*L2/(r2*r2*r))*p;
         float3 nv=v+accel*ds;
         prev=p; p+=(v+nv)*(.5*ds); v=nv;
         float newHeight=p.y-silkHeight(p,u.time);

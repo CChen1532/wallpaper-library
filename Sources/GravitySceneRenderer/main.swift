@@ -59,12 +59,12 @@ final class GravityRenderer: NSObject, MTKViewDelegate {
         descriptor.fragmentFunction = library.makeFunction(name: "present")
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         present = try device.makeRenderPipelineState(descriptor: descriptor)
-        atlas = try Self.makeAtlas(device)
+        atlas = try Self.makeAtlas(device, scale: preset == .ultra ? 2 : 1)
         super.init()
     }
 
-    static func makeAtlas(_ device: MTLDevice) throws -> MTLTexture {
-        let width = 2048, height = 1024
+    static func makeAtlas(_ device: MTLDevice, scale: Int) throws -> MTLTexture {
+        let width = 2048 * scale, height = 1024 * scale
         let expressions = [
             "∮∂Ω ω = ∫Ω dω", "∇²φ = 4πGρ", "Rμν − ½Rgμν = 8πGTμν", "∫₀∞ e⁻ˣ² dx = √π/2",
             "iℏ ∂ψ/∂t = Ĥψ", "∇ · E = ρ/ε₀", "eⁱπ + 1 = 0", "ζ(s) = ∑ₙ₌₁∞ n⁻ˢ",
@@ -82,6 +82,7 @@ final class GravityRenderer: NSObject, MTKViewDelegate {
                 throw RenderError.unavailable("Formula atlas")
             }
             cg.setFillColor(gray: 0, alpha: 1); cg.fill(CGRect(x: 0,y: 0,width: width,height: height))
+            cg.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
             for (i, text) in expressions.enumerated() {
                 let font = CTFontCreateWithName("TimesNewRomanPS-ItalicMT" as CFString, 36, nil)
                 let string = NSAttributedString(string: text, attributes: [
@@ -163,9 +164,8 @@ final class GravityRenderer: NSObject, MTKViewDelegate {
         guard CGImageDestinationFinalize(destination) else { throw RenderError.unavailable("Snapshot write") }
     }
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        let ratio = size.height/max(size.width,1)
-        let width = min(preset.width,Int(size.width))
-        do { try resize(width: max(16,width),height: max(16,Int(Double(width)*ratio))) }
+        let dimensions = preset.renderSize(width: size.width, height: size.height)
+        do { try resize(width: dimensions.width, height: dimensions.height) }
         catch { event("error",["message":String(describing:error)]) }
     }
     func draw(in view: MTKView) {
@@ -221,7 +221,8 @@ final class App: NSObject, NSApplicationDelegate {
             window.alphaValue=deferred ? 0 : 1;window.orderFrontRegardless()
             _ = try renderer.render(time: 0)
             renderer.first = false
-            event("scene-ready")
+            event("scene-ready", ["renderWidth": renderer.output.width, "renderHeight": renderer.output.height,
+                                  "targetFPS": preset.fps, "displayMaximumFPS": screen.maximumFramesPerSecond])
             event("first-frame-presented")
             if CommandLine.arguments.contains("--control-stdin") { startControl() }
             if let seconds=argument("--duration"),let duration=Double(seconds),duration>0 {
@@ -231,7 +232,7 @@ final class App: NSObject, NSApplicationDelegate {
     }
     func exportFrames(_ path:String) throws {
         let width=Int(argument("--width") ?? "\(preset.width)") ?? preset.width
-        let height=Int(argument("--height") ?? "\(width*10/16)") ?? width*10/16
+        let height=Int(argument("--height") ?? "\(width*9/16)") ?? width*9/16
         let frames=min(600,max(1,Int(argument("--frames") ?? "1") ?? 1))
         try renderer.resize(width:width,height:height)
         var timings:[Double]=[]

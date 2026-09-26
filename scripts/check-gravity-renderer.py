@@ -37,7 +37,11 @@ with tempfile.TemporaryDirectory(prefix="gravity-protocol-") as directory:
             process.stdin.write(json.dumps(command).encode() + b"\n")
             process.stdin.flush()
         try:
-            wait_event("scene-ready")
+            ready = wait_event("scene-ready")
+            print(json.dumps(ready, sort_keys=True), flush=True)
+            if preset == "ultra":
+                assert max(ready["renderWidth"], ready["renderHeight"]) == 3840
+                assert ready["targetFPS"] == 120
             wait_event("first-frame-presented")
             snapshots=[]
             for index in range(2):

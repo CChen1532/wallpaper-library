@@ -12,6 +12,16 @@ import UniformTypeIdentifiers
             count += 1
             print("PASS: " + name)
         }
+        check(GravityScene.Preset.ultra.fps == 120 && GravityScene.Preset.efficient.fps == 30,
+              "极致版目标120FPS，性能版保持30FPS")
+        let ultraSize = GravityScene.Preset.ultra.renderSize(width: 1920, height: 1080)
+        check(ultraSize.width == 3840 && ultraSize.height == 2160, "低于4K的显示器仍以真实4K离屏渲染")
+        let tallSize = GravityScene.Preset.ultra.renderSize(width: 1440, height: 2560)
+        check(tallSize.width == 2160 && tallSize.height == 3840, "4K竖屏保持比例并限制纹理长边")
+        let nativeAspect = GravityScene.Preset.ultra.renderSize(width: 2400, height: 1600)
+        check(nativeAspect.width == 3840 && nativeAspect.height == 2560, "4K保留非16比9屏幕的完整画面")
+        let efficientSize = GravityScene.Preset.efficient.renderSize(width: 2400, height: 1600)
+        check(efficientSize.width == 1600, "性能版保留1600宽上限")
         let nativeRoot = FileManager.default.temporaryDirectory.appendingPathComponent("gravity-checks-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: nativeRoot.appendingPathComponent("native"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: nativeRoot) }
