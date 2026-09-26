@@ -20,6 +20,16 @@ struct SceneInspectorSettings: View {
             properties.effectiveValues(for: package, catalog: catalog) != scenePlayer.activeUserPropertyValues
     }
 
+    private var settingsStatus: String {
+        if catalogLoading { return "正在读取设置…" }
+        if isPlaying {
+            return pendingChanges
+                ? "已保存，尚未应用到正在播放的壁纸。点击“应用到此壁纸”后生效。"
+                : "设置已保存并应用"
+        }
+        return "自动保存，下次播放此壁纸时生效"
+    }
+
     private func propertyValue(_ property: ScenePropertyDefinition) -> ScenePropertyValue {
         properties.value(for: property, package: package)
     }
@@ -165,6 +175,7 @@ struct SceneInspectorSettings: View {
                     .help("控制此场景的视差、粒子跟随和脚本输入，效果取决于场景。")
                 Divider().padding(.horizontal, 10)
                 toggle("响应鼠标点击", \.mouseButtonsEnabled)
+                    .help("允许支持点击事件的场景响应鼠标按键；需先开启鼠标交互。")
                     .disabled(!preferences.mouseEnabled)
                 Divider().padding(.horizontal, 10)
                 picker("采样频率", \.inputHz) {
@@ -172,7 +183,14 @@ struct SceneInspectorSettings: View {
                     Text("60 Hz").tag(60)
                     Text("120 Hz").tag(120)
                 }.disabled(!preferences.mouseEnabled)
+                    .help("鼠标位置的采样频率，与画面帧率不同；需先开启鼠标交互。")
             }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+
+            Text(preferences.mouseEnabled
+                 ? "效果取决于场景支持；采样频率不等于画面帧率。"
+                 : "开启鼠标交互后，可设置点击响应和采样频率。")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             DisclosureGroup(isExpanded: Binding(get: { showPlayback }, set: { value in
                 withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlayback = value }
@@ -207,7 +225,7 @@ struct SceneInspectorSettings: View {
                 }.frame(maxWidth: .infinity).disabled(model.isWorking)
                     .help("重新启动正在播放的这张壁纸以应用设置。")
             }
-            Text(catalogLoading ? "正在读取设置…" : isPlaying && !pendingChanges ? "设置已保存并应用" : "自动保存，下次播放此壁纸时生效")
+            Text(settingsStatus)
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)
