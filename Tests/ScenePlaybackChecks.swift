@@ -358,6 +358,35 @@ import UniformTypeIdentifiers
         check(visibleJSON["watermark"] == nil && visibleJSON["fog"] as? Bool == true,
               "用户开启水印后恢复作者默认画面，其他效果不受影响")
 
+        let legacySliderFolder = root.appendingPathComponent("legacy-sliders")
+        try FileManager.default.createDirectory(at: legacySliderFolder, withIntermediateDirectories: true)
+        let legacySliderPackage = legacySliderFolder.appendingPathComponent("scene.pkg")
+        try Data(#"""
+        {"general":{"properties":{
+          "music":{"type":"slider","text":"音乐","min":1,"max":4,"fraction":false,"value":1},
+          "x":{"type":"slider","text":"时间横坐标","min":100,"max":2438,"fraction":false,"value":1269},
+          "implicit":{"type":"slider","text":"整数","min":0,"max":10,"value":3},
+          "zeroStep":{"type":"slider","text":"坏步长","min":0,"max":10,"step":0,"value":3},
+          "boolStep":{"type":"slider","text":"坏类型","min":0,"max":10,"step":true,"value":3},
+          "fraction":{"type":"slider","text":"未知小数精度","min":0,"max":1,"fraction":true,"value":0.5},
+          "badFraction":{"type":"slider","text":"坏类型","min":0,"max":10,"fraction":0,"value":3},
+          "fractionalRange":{"type":"slider","text":"非整数范围","min":0.5,"max":10,"value":3},
+          "hugeRange":{"type":"slider","text":"超长范围","min":0,"max":100001,"value":3}
+        }}}
+        """#.utf8).write(to: legacySliderFolder.appendingPathComponent("project.json"))
+        let legacySliders = ScenePropertyCatalog.load(for: legacySliderPackage)
+        check(Set(legacySliders.properties.map(\.id)) == Set(["music", "x", "implicit"]),
+              "缺少step的整数滑块仍显示，非法步长和不明确的小数精度仍拒绝")
+        let legacyX = legacySliders.properties.first { $0.id == "x" }!
+        check(legacyX.sourceDefault == .number(1269) &&
+              legacyX.validated(NSNumber(value: 1270.4)) == .number(1270),
+              "旧格式坐标滑块保持作者默认值并按整数步进")
+        propertyStore.save(.number(1300), for: legacyX, package: legacySliderPackage)
+        let legacyLaunch = try propertyStore.launch(for: legacySliderPackage)
+        let legacyJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: legacyLaunch.file!)) as! [String: Any]
+        check((legacyJSON["x"] as? NSNumber)?.intValue == 1300,
+              "旧格式滑块修改值可实际写入渲染器覆盖文件")
+
         // Preference persistence, normalization and immutable launch snapshots.
         let suiteName = "ScenePreferencesChecks-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suiteName)!

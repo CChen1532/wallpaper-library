@@ -99,7 +99,8 @@ struct ScenePropertyCatalog: Sendable {
                 kind = .boolean
             case "slider":
                 guard let lower = finiteNumber(descriptor["min"]), let upper = finiteNumber(descriptor["max"]),
-                      let step = finiteNumber(descriptor["step"]), lower < upper, step > 0,
+                      let step = sliderStep(descriptor, minimum: lower, maximum: upper, source: source),
+                      lower < upper, step > 0,
                       (upper - lower) / step <= 100_000 else { continue }
                 kind = .slider(minimum: lower, maximum: upper, step: step)
             case "combo":
@@ -138,6 +139,20 @@ struct ScenePropertyCatalog: Sendable {
             return left.label.localizedStandardCompare(right.label) == .orderedAscending
         }
         return .init(properties: items)
+    }
+
+    private static func sliderStep(_ descriptor: [String: Any], minimum: Double,
+                                   maximum: Double, source: Any) -> Double? {
+        // WE integer sliders may omit step entirely. An explicitly malformed
+        // step must still be rejected rather than treated as a missing value.
+        if let explicit = descriptor["step"] { return finiteNumber(explicit) }
+        if let fraction = descriptor["fraction"] {
+            guard let flag = fraction as? NSNumber,
+                  CFGetTypeID(flag) == CFBooleanGetTypeID(), !flag.boolValue else { return nil }
+        }
+        guard let value = finiteNumber(source),
+              [minimum, maximum, value].allSatisfy({ $0.rounded() == $0 }) else { return nil }
+        return 1
     }
 
     private static func finiteNumber(_ raw: Any?) -> Double? {
