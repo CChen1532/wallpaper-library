@@ -7,6 +7,7 @@ enum MaterialDiscovery {
         let url: URL
         let kind: Kind
         let stamp: String
+        var title: String? = nil
     }
     static func roots(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                       defaults: UserDefaults = .standard) -> [URL] {
@@ -22,6 +23,12 @@ enum MaterialDiscovery {
         let a = try FileManager.default.attributesOfItem(atPath: url.path)
         guard a[.type] as? FileAttributeType == .typeRegular else { throw BackendError.message("素材不是普通文件") }
         return "\(a[.size] ?? 0)|\((a[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(a[.systemFileNumber] ?? 0)"
+    }
+    private static func displayTitle(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        let clean = raw.components(separatedBy: .controlCharacters).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : String(clean.prefix(160))
     }
     static func scan(_ root: URL) throws -> [Candidate] {
         let fm = FileManager.default
@@ -50,7 +57,7 @@ enum MaterialDiscovery {
                     if url.path.hasPrefix(folder.standardizedFileURL.path + "/"),
                        url.resolvingSymlinksInPath().standardizedFileURL == url.standardizedFileURL, url.pathExtension.lowercased() == "mp4",
                        let signature = try? stamp(url) {
-                        results.append(.init(url: url.standardizedFileURL, kind: .video, stamp: signature))
+                        results.append(.init(url: url.standardizedFileURL, kind: .video, stamp: signature, title: displayTitle(project["title"])))
                     }
                     return
                 }

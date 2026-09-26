@@ -101,7 +101,7 @@ extension WESceneInspection {
               let data = try? Data(contentsOf: project, options: .mappedIfSafe),
               (1...1_048_576).contains(data.count),
               let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              metadata["type"] as? String == "scene",
+              (metadata["type"] as? String)?.lowercased() == "scene",
               let raw = metadata["title"] as? String else { return nil }
         let clean = raw.components(separatedBy: .controlCharacters).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)

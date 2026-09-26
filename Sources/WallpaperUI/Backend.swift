@@ -4,7 +4,8 @@ import CryptoKit
 struct Wallpaper: Identifiable, Sendable {
     var id: String { url.path }
     let url: URL
-    var title: String { url.deletingPathExtension().lastPathComponent }
+    var projectTitle: String?
+    var title: String { projectTitle ?? url.deletingPathExtension().lastPathComponent }
     var backend = "phonto"
     var kind = "video"
     var width = 0
@@ -74,16 +75,21 @@ struct PhontoBackend: WallpaperBackend {
             if await VideoLibraryCache.shared.get(candidate.url, stamp: candidate.stamp) == nil { needsStabilityCheck = true; break }
         }
         if needsStabilityCheck { try await Task.sleep(for: .seconds(1)) }
-        let urls = candidates.filter { (try? MaterialDiscovery.stamp($0.url)) == $0.stamp }.map(\.url)
+        let stableCandidates = candidates.filter { (try? MaterialDiscovery.stamp($0.url)) == $0.stamp }
 
         let cache = home.appendingPathComponent("Library/Caches/WallpaperUI/Thumbnails")
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         var results: [Wallpaper] = []
-        for url in urls {
+        for candidate in stableCandidates {
+            let url = candidate.url
             try Task.checkCancellation()
             guard let signature = try? MaterialDiscovery.stamp(url) else { continue }
-            if let cached = await VideoLibraryCache.shared.get(url, stamp: signature) { results.append(cached); continue }
-            var item = Wallpaper(url: url)
+            if var cached = await VideoLibraryCache.shared.get(url, stamp: signature) {
+                // Metadata is rescanned independently of the expensive media cache.
+                cached.projectTitle = candidate.title
+                results.append(cached); continue
+            }
+            var item = Wallpaper(url: url, projectTitle: candidate.title)
             do {
                 let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey])
                 guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }

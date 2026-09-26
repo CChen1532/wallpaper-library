@@ -515,7 +515,9 @@ struct NativeLibraryView: View {
     private var playbackSubtitle: String {
         if scenePlayer.isActive { return scenePlayer.title }
         if model.stateIssue != nil { return "暂时无法读取桌面播放状态" }
-        if model.state.running, let path = model.state.currentPath { return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent }
+        if model.state.running, let path = model.state.currentPath {
+            return model.items.first(where: { $0.id == path })?.title ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        }
         if model.state.rotating { return "自动轮播已开启 · 等待下一次切换" }
         return "未播放壁纸"
     }

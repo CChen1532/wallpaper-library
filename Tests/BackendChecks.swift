@@ -197,6 +197,22 @@ import Foundation
             let brokenLibrary = try await mediaBackend.library()
             check(brokenLibrary.count == 2 && brokenLibrary.first(where: { $0.title == "broken" })?.playable == false, "坏视频被标记不可播放且不影响其他素材")
             check(try FileManager.default.contentsOfDirectory(atPath: media.path).allSatisfy { !$0.hasPrefix(".import-") }, "导入临时文件清理")
+            let projectFolder = media.appendingPathComponent("numeric-project")
+            try FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: true)
+            let projectVideo = projectFolder.appendingPathComponent("1101220.mp4")
+            try FileManager.default.copyItem(at: sample, to: projectVideo)
+            let projectJSON = projectFolder.appendingPathComponent("project.json")
+            try Data(#"{"type":"Video","file":"1101220.mp4","title":"The Journey of Elaina"}"#.utf8).write(to: projectJSON)
+            let projectItem = try await mediaBackend.library().first { $0.url == projectVideo }
+            check(projectItem?.title == "The Journey of Elaina", "视频列表使用项目标题")
+            let cachedCover = projectItem?.thumbnail
+            try Data(#"{"type":"video","file":"1101220.mp4","title":"Updated title"}"#.utf8).write(to: projectJSON)
+            let updatedItem = try await mediaBackend.library().first { $0.url == projectVideo }
+            check(updatedItem?.title == "Updated title" && updatedItem?.id == projectItem?.id && updatedItem?.thumbnail == cachedCover,
+                  "标题修改立即随扫描更新，复用媒体缓存并保持设置身份")
+            try Data(#"{"type":"video","file":"1101220.mp4"}"#.utf8).write(to: projectJSON)
+            check(try await mediaBackend.library().first { $0.url == projectVideo }?.title == "1101220",
+                  "移除项目标题后缓存项回退文件名")
             try await backend.trash(imported)
             check(!FileManager.default.fileExists(atPath: imported.path), "独立测试素材成功移入废纸篓")
         }

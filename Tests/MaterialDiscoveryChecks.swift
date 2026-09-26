@@ -30,6 +30,12 @@ import Foundation
         _ = try file("we-video/preview.mp4")
         found = try MaterialDiscovery.scan(root)
         check(found.filter { $0.url.path.contains("we-video") }.map { $0.url.path } == [declared.path], "WE视频项目仅添加声明视频")
+        _ = try file("we-video/project.json", #"{"type":"Video","file":"actual.mp4","title":"  A\nTitle  "}"#)
+        let titled = try MaterialDiscovery.scan(root).first { $0.url == declared }
+        check(titled?.title == "A Title", "声明视频读取标题、兼容大小写并清理控制字符")
+        check(titled?.stamp == (try MaterialDiscovery.stamp(declared)), "标题不改变媒体指纹与路径身份")
+        _ = try file("we-video/project.json", #"{"type":"video","file":"actual.mp4","title":"   "}"#)
+        check(try MaterialDiscovery.scan(root).first { $0.url == declared }?.title == nil, "空标题回退文件名")
         _ = try file("incomplete/project.json", "{\"type\":\"scene\"}")
         _ = try file("incomplete/preview.mp4")
         _ = try file("web/project.json", "{\"type\":\"web\"}")

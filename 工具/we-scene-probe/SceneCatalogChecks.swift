@@ -13,7 +13,7 @@ func runCatalogChecks(_ c: inout Checker) throws {
     let package = try makePreviewPackage(objects: [["id": 1, "image": "models/red.json", "origin": "2 2 0", "size": "4 4"]],
                                          textures: ["red": pixels])
     try package.write(to: valid.appendingPathComponent("scene.pkg"))
-    try Data(#"{"type":"scene","title":" 演示\n场景 "}"#.utf8).write(to: valid.appendingPathComponent("project.json"))
+    try Data(#"{"type":"Scene","title":" 演示\n场景 "}"#.utf8).write(to: valid.appendingPathComponent("project.json"))
     try Data([1, 2, 3]).write(to: corrupt.appendingPathComponent("scene.pkg"))
     let large = root.appendingPathComponent("003-large", isDirectory: true)
     let largeCorrupt = root.appendingPathComponent("004-large-corrupt", isDirectory: true)
