@@ -14,6 +14,7 @@ cp .build/release/GravitySceneRenderer "$app/Contents/Resources/GravitySceneRend
 cp -R .build/release/WallpaperUI_GravitySceneRenderer.bundle "$app/Contents/Resources/"
 cp -R Scenes/GravityJourney "$app/Contents/Resources/GravityScenes"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+bash scripts/build-icon.sh "$app/Contents/Resources/AppIcon.icns"
 python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
 bash 工具/快速墙纸/build.sh
 mkdir -p "$app/Contents/Resources/WallpaperSwitch"
