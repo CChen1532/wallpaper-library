@@ -3,20 +3,37 @@ import AppKit
 
 struct WorkshopView: View {
     @EnvironmentObject private var workshop: WorkshopModel
+    @EnvironmentObject private var model: LibraryModel
     @Environment(\.locale) private var locale
     @State private var password = ""
     @State private var guardCode = ""
     @State private var invalidGuard = false
+    @State private var tab = 0
+    @State private var showSubscriptions = false
+    @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
     @FocusState private var guardFocused: Bool
     let showLibrary: () -> Void
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("从创意工坊添加").font(.title2.weight(.semibold))
-                    Text("粘贴 Wallpaper Engine 创意工坊链接或项目 ID。下载完成后会自动加入全部壁纸。")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("创意工坊").font(.title2.weight(.semibold)).id("workshopTop")
+                Picker("浏览方式", selection: $tab) {
+                    Text("全文搜索").tag(0)
+                    Text("链接或 ID").tag(1)
+                    Text("订阅同步").tag(2)
+                }.pickerStyle(.segmented).disabled(workshop.busy)
+                if tab == 0 {
+                    HStack {
+                        TextField("搜索标题与描述", text: $workshop.searchText).textFieldStyle(.roundedBorder)
+                            .onSubmit { workshop.search() }.disabled(workshop.busy)
+                            .accessibilityIdentifier("workshop.searchText")
+                        Button("搜索") { workshop.search() }.disabled(workshop.busy)
+                            .accessibilityIdentifier("workshop.search")
+                    }
+                    if workshop.activity == .search { ProgressView("正在搜索…").controlSize(.small) }
+                } else if tab == 1 {
                     HStack(spacing: 10) {
                         TextField("创意工坊链接或 ID", text: $workshop.link)
                             .textFieldStyle(.roundedBorder).onSubmit { workshop.lookup() }
@@ -25,24 +42,64 @@ struct WorkshopView: View {
                             .disabled(workshop.busy || workshop.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             .accessibilityIdentifier("workshop.lookup")
                     }
-                }
+                } else { subscriptionSection }
                 if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
-                if let item = workshop.item { details(item) }
+                if tab != 2, let item = workshop.item { details(item).id("selectedWorkshop") }
+                if tab == 0, let page = workshop.searchPage {
+                    HStack {
+                        Text(String(format: AppStrings.text("共 %d 项", locale: locale), page.total)).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("上一页") { workshop.search(page: page.number - 1) }.disabled(workshop.busy || page.number <= 1)
+                        Text("\(page.number) / \(max(1, page.pages))").font(.caption).monospacedDigit()
+                        Button("下一页") { workshop.search(page: page.number + 1) }.disabled(workshop.busy || page.number >= page.pages)
+                    }
+                    if page.items.isEmpty { ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass", description: Text("试试其他关键词。")) }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 16)], spacing: 16) {
+                        ForEach(page.items) { item in
+                            Button {
+                                workshop.select(item)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    AsyncImage(url: item.previewURL) { image in image.resizable().scaledToFill() }
+                                        placeholder: { Rectangle().fill(.quaternary) }
+                                        .frame(height: 112).clipped()
+                                    Text(item.title).font(.callout.weight(.medium)).lineLimit(2).frame(height: 36, alignment: .topLeading)
+                                        .padding(.horizontal, 10)
+                                    Text(item.tags.prefix(3).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        .padding(.horizontal, 10).padding(.bottom, 10)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary) }
+                            }.buttonStyle(.plain).modifier(HoverHighlight()).disabled(workshop.busy)
+                        }
+                    }
+                }
                 if let error = workshop.error {
                     Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("workshop.error")
                 }
                 componentSection
-                if workshop.busy {
-                    HStack {
-                        if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
-                        Spacer()
-                        Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
-                    }
-                }
-            }.padding(28).frame(maxWidth: 740)
+            }.padding(28).frame(maxWidth: 900)
                 .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .onChange(of: workshop.item?.id) { _, id in if id != nil { proxy.scrollTo("selectedWorkshop", anchor: .top) } }
+        .onChange(of: workshop.searchPage?.number) { _, _ in proxy.scrollTo("workshopTop", anchor: .top) }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if workshop.busy {
+                HStack {
+                    if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
+                    else { ProgressView().controlSize(.small) }
+                    if workshop.syncing { Text(String(format: AppStrings.text("正在同步 %d / %d", locale: locale), workshop.syncPosition, workshop.syncTotal)).font(.caption) }
+                    Spacer()
+                    Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
+                }.padding(12).background(.bar)
+            }
+        }
+        .sheet(isPresented: $showSubscriptions) {
+            WorkshopSubscriptionSheet(browser: subscriptionBrowser) { workshop.receiveSubscriptions($0) }
         }
         .onAppear { workshop.refreshComponent() }
         .onDisappear { password = ""; guardCode = "" }
@@ -70,13 +127,27 @@ struct WorkshopView: View {
             }
             Divider()
             if let imported = workshop.importedURL {
-                Label("已加入资料库", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Label("已下载", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 HStack {
-                    Button("查看全部壁纸", action: showLibrary).buttonStyle(.borderedProminent)
+                    Button("加入并查看资料库") { Task { await workshop.registerImported(); showLibrary() } }.buttonStyle(.borderedProminent)
                     Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([imported]) }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
+                    accountForm
+                    Button("下载并加入资料库") {
+                        workshop.download(password: password); password = ""
+                    }.buttonStyle(.borderedProminent)
+                        .disabled(workshop.busy || model.isWorking || workshop.component == nil || workshop.account.isEmpty)
+                        .accessibilityIdentifier("workshop.download")
+                }
+            }
+        }.padding(20).background(.background, in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary) }
+    }
+
+    private var accountForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
                     Text("Steam 账号").font(.headline)
                     Text("使用拥有 Wallpaper Engine 的账号。密码仅用于本次登录，不在应用中保存。")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -99,15 +170,49 @@ struct WorkshopView: View {
                         }
                     }
                     downloadStatus
-                    Button("下载并加入资料库") {
-                        workshop.download(password: password); password = ""
-                    }.buttonStyle(.borderedProminent)
-                        .disabled(workshop.busy || workshop.component == nil || workshop.account.isEmpty)
-                        .accessibilityIdentifier("workshop.download")
+        }
+    }
+
+    private var subscriptionSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("读取当前 Steam 订阅，补齐本地缺少的场景与 MP4 视频。已有文件会保留；取消订阅不会删除本地壁纸。")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("读取 Steam 订阅") {
+                    showSubscriptions = true
+                }.disabled(workshop.busy)
+                    .accessibilityIdentifier("workshop.readSubscriptions")
+                if let date = workshop.subscriptionReadAt { Text(date, style: .time).font(.caption).foregroundStyle(.secondary) }
+                if workshop.activity == .subscriptions { ProgressView("正在读取项目…").controlSize(.small) }
+            }
+            if workshop.subscriptionReadAt != nil {
+                Text(String(format: AppStrings.text("订阅 %d 项，可读取 %d 项", locale: locale), workshop.subscriptionCount, workshop.subscriptions.count)).font(.caption).foregroundStyle(.secondary)
+                Text("已移除或不公开的项目可能无法读取。手动删除的壁纸会跳过；重新下载前可恢复同步。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if workshop.ignoredCount > 0 {
+                    Button("恢复已删除项目的同步") { workshop.restoreSyncItems() }.disabled(workshop.busy)
+                }
+                accountForm
+                if workshop.syncing {
+                    Text(String(format: AppStrings.text("正在同步 %d / %d", locale: locale), workshop.syncPosition, workshop.syncTotal)).font(.caption).monospacedDigit()
+                    Text(workshop.downloadTitle).font(.callout).lineLimit(2)
+                }
+                Button("同步缺少的壁纸") { workshop.syncSubscriptions(password: password); password = "" }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(workshop.busy || model.isWorking || workshop.component == nil || workshop.account.isEmpty || workshop.subscriptions.isEmpty)
+                    .accessibilityIdentifier("workshop.syncSubscriptions")
+                LazyVStack(spacing: 0) {
+                    ForEach(workshop.subscriptions) { item in
+                        HStack {
+                            Text(item.title).lineLimit(2)
+                            Spacer()
+                            Text(AppStrings.text(workshop.subscriptionStatus(item), locale: locale)).font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 10)
+                        Divider()
+                    }
                 }
             }
-        }.padding(20).background(.background, in: RoundedRectangle(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary) }
+        }
     }
 
     @ViewBuilder private var downloadStatus: some View {

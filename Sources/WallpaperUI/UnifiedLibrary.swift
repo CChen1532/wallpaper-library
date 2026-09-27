@@ -38,10 +38,12 @@ struct SceneCatalogPayload: Decodable {
     private let model: LibraryModel
     private let rootProvider: () -> [URL]
     private let interval: Duration
-    init(model: LibraryModel, interval: Duration = .seconds(60), roots: (() -> [URL])? = nil) {
+    private let defaults: UserDefaults
+    init(model: LibraryModel, interval: Duration = .seconds(60), roots: (() -> [URL])? = nil, defaults: UserDefaults = .standard) {
         self.model = model; self.interval = interval
+        self.defaults = defaults
         self.rootProvider = roots ?? {
-            var result = MaterialDiscovery.roots()
+            var result = MaterialDiscovery.roots(defaults: defaults)
             if let bundled = Bundle.main.resourceURL?.appendingPathComponent("GravityScenes"),
                FileManager.default.fileExists(atPath: bundled.path), !result.contains(bundled) { result.append(bundled) }
             return result
@@ -54,12 +56,22 @@ struct SceneCatalogPayload: Decodable {
     }
 
     func addFolder(_ url: URL) {
-        var paths = UserDefaults.standard.stringArray(forKey: "materialLibraryPaths") ?? []
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-        if !paths.contains(path) { paths.append(path) }
-        UserDefaults.standard.set(paths, forKey: "materialLibraryPaths")
+        MaterialDiscovery.setIncluded(true, folder: url, defaults: defaults)
         updateRoots()
         Task { await refresh() }
+    }
+    func removeFolder(_ url: URL) async {
+        guard roots.contains(where: { $0.path == url.path }), !MaterialRemoval.isBundled(url),
+              await model.prepareMaterialRemoval(url) else { return }
+        MaterialDiscovery.setIncluded(false, folder: url, defaults: defaults)
+        updateRoots()
+        await refresh()
+    }
+    func didTrash(_ target: URL) async {
+        cached = cached.filter { !MaterialRemoval.contains(target, URL(fileURLWithPath: $0.key)) }
+        scenes.removeAll { MaterialRemoval.contains(target, URL(fileURLWithPath: $0.packagePath)) }
+        if roots.contains(where: { $0.path == target.path }) { MaterialDiscovery.setIncluded(false, folder: target, defaults: defaults); updateRoots() }
+        await refresh()
     }
     func start() {
         guard loop == nil else { return }

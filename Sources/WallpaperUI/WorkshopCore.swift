@@ -4,6 +4,7 @@ enum WorkshopFailure: Error, LocalizedError {
     case invalidLink, unavailable, wrongApp, network, responseTooLarge, unsupportedProject
     case invalidProject, unsafeFiles, componentMissing, componentInvalid, componentChanged
     case invalidAccount, loginFailed, downloadFailed, timedOut, launchFailed, busy
+    case pageChanged, subscriptionLogin, subscriptionLimit
     var errorDescription: String? {
         switch self {
         case .invalidLink: return "请输入有效的创意工坊链接或数字 ID。"
@@ -23,6 +24,9 @@ enum WorkshopFailure: Error, LocalizedError {
         case .timedOut: return "Steam 长时间没有响应，已停止任务，可以重试。"
         case .launchFailed: return "SteamCMD 无法启动。Apple 芯片 Mac 可能需要 Rosetta，请检查组件是否可运行。"
         case .busy: return "请等待当前任务完成或取消后重试。"
+        case .pageChanged: return "无法识别 Steam 返回的页面，请刷新后重试。原有列表与文件已保留。"
+        case .subscriptionLogin: return "请先在此窗口登录 Steam，再打开自己的订阅页面。"
+        case .subscriptionLimit: return "订阅列表过大或分页异常，已停止读取，未替换原有列表。"
         }
     }
 }
@@ -33,6 +37,7 @@ struct WorkshopItem: Identifiable, Equatable, Sendable {
     let previewURL: URL?
     let bytes: Int64
     let tags: [String]
+    var summary: String = ""
     var communityURL: URL { URL(string: "https://steamcommunity.com/sharedfiles/filedetails/?id=" + id)! }
 }
 
@@ -51,6 +56,26 @@ enum WorkshopMetadata {
         return try decode(data, expectedID: id)
     }
 
+    static func fetch(ids: [String]) async throws -> [WorkshopItem] {
+        var result: [WorkshopItem] = []
+        for start in stride(from: 0, to: ids.count, by: 50) {
+            let batch = Array(ids[start..<min(start + 50, ids.count)])
+            guard batch.allSatisfy({ if case .ok = WorkshopURLParser.parse($0) { return true }; return false }) else { throw WorkshopFailure.invalidLink }
+            var request = request(id: batch[0])
+            request.httpBody = Data((["itemcount=\(batch.count)"] + batch.enumerated().map { "publishedfileids%5B\($0.offset)%5D=\($0.element)" }).joined(separator: "&").utf8)
+            let data = try await WorkshopNetwork.read(request, maximum: 8 * 1024 * 1024)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let response = root["response"] as? [String: Any], let details = response["publishedfiledetails"] as? [[String: Any]] else { throw WorkshopFailure.pageChanged }
+            for id in batch {
+                guard let value = details.first(where: { string($0["publishedfileid"]) == id }) else { throw WorkshopFailure.pageChanged }
+                if string(value["result"]) != "1" { continue }
+                let single = try JSONSerialization.data(withJSONObject: ["response": ["publishedfiledetails": [value]]])
+                if let item = try? decode(single, expectedID: id) { result.append(item) }
+            }
+        }
+        return result
+    }
+
     static func decode(_ data: Data, expectedID: String) throws -> WorkshopItem {
         guard data.count <= 2 * 1024 * 1024 else { throw WorkshopFailure.responseTooLarge }
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -64,7 +89,8 @@ enum WorkshopMetadata {
         let tags = (value["tags"] as? [[String: Any]] ?? []).compactMap { $0["tag"] as? String }.map(clean)
         return WorkshopItem(id: expectedID, title: title.isEmpty ? expectedID : title,
                             previewURL: preview(value["preview_url"] as? String),
-                            bytes: max(0, Int64(string(value["file_size"]) ?? "0") ?? 0), tags: tags)
+                            bytes: max(0, Int64(string(value["file_size"]) ?? "0") ?? 0), tags: tags,
+                            summary: clean(value["short_description"] as? String ?? value["description"] as? String ?? ""))
     }
 
     private static func string(_ value: Any?) -> String? {

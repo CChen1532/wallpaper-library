@@ -1,5 +1,43 @@
 import Foundation
 
+enum MaterialRemoval {
+    static func contains(_ parent: URL, _ child: URL) -> Bool {
+        let a = parent.standardizedFileURL.resolvingSymlinksInPath().path
+        let b = child.standardizedFileURL.resolvingSymlinksInPath().path
+        return b == a || b.hasPrefix(a + "/")
+    }
+    static func isBundled(_ url: URL) -> Bool { contains(Bundle.main.bundleURL, url) }
+
+    /// Capture this target before showing the confirmation, then validate it again before trashing.
+    static func target(for payload: URL, roots: [URL]) throws -> URL {
+        let url = payload.standardizedFileURL
+        guard url == url.resolvingSymlinksInPath(), !isBundled(url),
+              roots.contains(where: { contains($0, url) }),
+              (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
+            throw BackendError.message("无法删除此项目：文件已改变、位于资料库之外或属于内置素材。")
+        }
+        var target = url
+        if url.lastPathComponent == "scene.pkg" { target = url.deletingLastPathComponent() }
+        else if url.pathExtension.lowercased() == "mp4" {
+            var parent = url.deletingLastPathComponent()
+            while roots.contains(where: { contains($0, parent) }) {
+                let json = parent.appendingPathComponent("project.json")
+                if let size = try? json.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_048_576,
+                   let data = try? Data(contentsOf: json), let project = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   (project["type"] as? String)?.lowercased() == "video", let file = project["file"] as? String,
+                   parent.appendingPathComponent(file).standardizedFileURL == url { target = parent; break }
+                parent.deleteLastPathComponent()
+            }
+        } else { throw BackendError.message("请选择场景或 MP4 视频。") }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let protected = [URL(fileURLWithPath: "/"), home, home.appendingPathComponent("Desktop"), home.appendingPathComponent("Documents"), home.appendingPathComponent("Library")]
+        guard !protected.contains(where: { $0.path == target.path }), !roots.contains(where: { $0.path != target.path && contains(target, $0) }) else {
+            throw BackendError.message("此文件夹包含其他素材来源，请先在设置中移除来源。")
+        }
+        return target
+    }
+}
+
 /// Shared discovery rules for the UI and the existing video backend.
 enum MaterialDiscovery {
     struct Candidate: Equatable, Sendable {
@@ -15,9 +53,19 @@ enum MaterialDiscovery {
                      home.appendingPathComponent("Movies/Wallpapers2").path]
         if let old = defaults.string(forKey: "sceneLibraryPath"), !old.isEmpty { paths.append(old) }
         paths += defaults.stringArray(forKey: "materialLibraryPaths") ?? []
+        let excluded = Set((defaults.stringArray(forKey: "removedMaterialLibraryPaths") ?? []).map { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path })
         var seen = Set<String>()
         return paths.map { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath() }
-            .filter { seen.insert($0.path).inserted }
+            .filter { !excluded.contains($0.path) && seen.insert($0.path).inserted }
+    }
+    static func setIncluded(_ included: Bool, folder: URL, defaults: UserDefaults = .standard) {
+        let path = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        var paths = Set(defaults.stringArray(forKey: "materialLibraryPaths") ?? [])
+        var excluded = Set(defaults.stringArray(forKey: "removedMaterialLibraryPaths") ?? [])
+        if included { paths.insert(path); excluded.remove(path) }
+        else { paths.remove(path); excluded.insert(path) }
+        defaults.set(paths.sorted(), forKey: "materialLibraryPaths")
+        defaults.set(excluded.sorted(), forKey: "removedMaterialLibraryPaths")
     }
     static func stamp(_ url: URL) throws -> String {
         let a = try FileManager.default.attributesOfItem(atPath: url.path)

@@ -6,6 +6,35 @@ actor InventoryCounter {
     func read() { reads += 1 }
     func effect() { sideEffects += 1 }
 }
+final class RemovalLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    func append(_ entry: String) { lock.withLock { entries.append(entry) } }
+    var values: [String] { lock.withLock { entries } }
+}
+actor RemovalBackend: WallpaperBackend {
+    nonisolated let capabilities: BackendCapabilities
+    let video: URL
+    let log: RemovalLog
+    let failStop: Bool
+    var active = true
+    init(video: URL, log: RemovalLog, failStop: Bool = false) {
+        self.video = video; self.log = log; self.failStop = failStop
+        capabilities = .init(name: "fixture", libraryDirectory: video.deletingLastPathComponent(), canTrash: true)
+    }
+    func library() async throws -> [Wallpaper] { FileManager.default.fileExists(atPath: video.path) ? [Wallpaper(url: video)] : [] }
+    func state() async throws -> PlaybackState { .init(running: active, lastPath: video.path, rotating: active) }
+    func perform(_ action: Action) async throws {
+        if case .off = action {
+            log.append("off")
+            if failStop { throw BackendError.message("fixture stop failed") }
+            active = false
+        }
+    }
+    func importFiles(_ urls: [URL]) async -> [String] { [] }
+    func trash(_ url: URL) async throws { fatalError("model must coordinate restoration before trashing") }
+    func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
+}
 struct InventoryBackend: WallpaperBackend {
     let counter: InventoryCounter
     var capabilities: BackendCapabilities { .init(name: "fixture") }
@@ -73,6 +102,49 @@ struct InventoryBackend: WallpaperBackend {
         try scene("two")
         await catalog.refresh()
         check(catalog.scenes.count == 2, "修复不完整包后自动识别逻辑可恢复")
+
+        let suite = "UnifiedRemoval-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        MaterialDiscovery.setIncluded(true, folder: root, defaults: defaults)
+        let removable = UnifiedLibrary(model: model, roots: {
+            MaterialDiscovery.roots(home: root, defaults: defaults).filter { $0.path == root.path }
+        }, defaults: defaults)
+        let scanning = Task { await removable.refresh() }
+        try await Task.sleep(for: .milliseconds(100))
+        await removable.removeFolder(root)
+        await scanning.value
+        check(removable.roots.isEmpty && removable.scenes.isEmpty, "扫描中移除来源不会重新发布旧项目")
+        check(fm.fileExists(atPath: package.path), "移除来源保留实际场景文件")
+        await removable.refresh()
+        check(removable.scenes.isEmpty, "后续扫描不重新添加已移除来源")
+        MaterialDiscovery.setIncluded(true, folder: root, defaults: defaults)
+        await removable.refresh()
+        check(removable.scenes.count == 2, "重新添加来源恢复已有场景")
+
+        let video = root.appendingPathComponent("delete-fixture.mp4")
+        try Data("fixture-not-a-real-video".utf8).write(to: video)
+        let trash = root.appendingPathComponent("fixture-trash.mp4")
+        let confirmedStamp = try MaterialDiscovery.stamp(video)
+        let log = RemovalLog()
+        let deletion = LibraryModel(backend: RemovalBackend(video: video, log: log), trashItem: { target in
+            log.append("trash")
+            try fm.moveItem(at: target, to: trash)
+        }, backdropConfiguration: { nil })
+        deletion.selected = video.path
+        check(await deletion.trashWallpaper(payload: video, confirmedTarget: video, confirmedStamp: confirmedStamp, roots: [root]), "删除协调流程完成")
+        check(log.values == ["off", "trash"], "先关闭正在播放的视频及轮播，再执行删除")
+        check(deletion.selected == nil && deletion.items.isEmpty, "删除成功后清理选中项与图库")
+        check(fm.fileExists(atPath: package.path), "删除独立视频不影响同目录场景")
+        try fm.moveItem(at: trash, to: video)
+        let failures = RemovalLog()
+        let refused = LibraryModel(backend: RemovalBackend(video: video, log: failures, failStop: true), trashItem: { _ in failures.append("trash") }, backdropConfiguration: { nil })
+        check(!(await refused.trashWallpaper(payload: video, confirmedTarget: video, confirmedStamp: confirmedStamp, roots: [root])), "停止失败时拒绝删除")
+        check(failures.values == ["off"] && fm.fileExists(atPath: video.path), "停止失败保留原文件")
+        check(!(await deletion.trashWallpaper(payload: video, confirmedTarget: root, confirmedStamp: confirmedStamp, roots: [root])), "确认目标与当前目标不符时拒绝删除")
+        check(fm.fileExists(atPath: video.path), "错误确认目标不影响文件")
+        try Data("replaced-since-confirmation".utf8).write(to: video)
+        check(!(await deletion.trashWallpaper(payload: video, confirmedTarget: video, confirmedStamp: confirmedStamp, roots: [root])), "确认期间被替换的文件不会删除")
         print("\(checks) unified library checks passed")
     }
 }

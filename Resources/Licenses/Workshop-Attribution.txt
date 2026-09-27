@@ -4,4 +4,7 @@ Revision: 9b40a6d74de8cc1d0c5e5ddb82d132f3804282f1
 Original path: LiveWallpaper/Infrastructure/Workshop/WorkshopURLParser.swift
 Changes: reject ambiguous duplicate IDs, non-ASCII IDs and oversized input.
 The download workflow is independently implemented, informed by its PTY and staged-import architecture.
+Public Workshop search uses the same MIT project's public browse URL and SSR JSON strategy.
+Reference paths: WorkshopPublicSearchSource.swift and WorkshopPublicBrowsePayload.swift in the Workshop directory above.
+The reduced parser and native subscription-page reader are independently implemented.
 SteamCMD is obtained separately from Valve, and is not included in this application.

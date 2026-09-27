@@ -18,7 +18,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     static let workshop = WorkshopModel(findExisting: { id in
         let candidates = catalog.scenes.map(\.folder) + model.items.map { $0.url.deletingLastPathComponent() }
         return candidates.first { $0.lastPathComponent == id && FileManager.default.fileExists(atPath: $0.appendingPathComponent("project.json").path) }
-    }, onImported: { folder in
+    }, libraryBusy: { model.isWorking }, onImported: { folder in
         catalog.addFolder(folder)
         await catalog.refresh()
     })
@@ -90,7 +90,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                 CommandGroup(after: .sidebar) {
                     Button(AppStrings.text("创意工坊", language: language)) {
                         page = .workshop; openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true)
-                    }.keyboardShortcut("w", modifiers: [.command, .option])
+                    }.keyboardShortcut("2", modifiers: .command)
                     Menu(AppStrings.text("外观", language: language)) {
                         Picker(AppStrings.text("外观", language: language), selection: $appearance) {
                             ForEach(AppAppearance.allCases) { Text(AppStrings.text($0.label, language: language)).tag($0) }

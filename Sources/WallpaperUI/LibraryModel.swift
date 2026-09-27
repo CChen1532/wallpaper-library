@@ -22,6 +22,7 @@ import Combine
     let scenePreparation: ScenePreparationCache
     let videoBackdropPreferences: VideoBackdropPreferencesStore
     let videoBackdrop: VideoBackdropController
+    private let trashItem: (URL) throws -> Void
     private let backdropConfiguration: @MainActor () throws -> SceneBackdropConfiguration?
     private var shuttingDown = false
     private var sceneRequestRevision = 0
@@ -50,11 +51,13 @@ import Combine
          scenePreparation: ScenePreparationCache? = nil,
          videoBackdropPreferences: VideoBackdropPreferencesStore? = nil,
          videoBackdrop: VideoBackdropController? = nil,
+         trashItem: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
          backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
              guard SceneBackdropConfiguration.isEnabled() else { return nil }
              return try SceneBackdropConfiguration.bundled()
          }) {
         self.backend = backend
+        self.trashItem = trashItem
         self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
         self.sceneUserProperties = sceneUserProperties ?? SceneUserPropertiesStore()
@@ -388,6 +391,42 @@ import Combine
             await readLibrary()
         } catch { self.error = error.localizedDescription }
         await readState()
+    }
+    /// Stop only playback affected by a removal, and require successful backdrop restoration.
+    private func stopForMaterialRemoval(_ target: URL) async throws {
+        if let package = scenePlayer.package, MaterialRemoval.contains(target, package) {
+            await scenePlayer.stop()
+            try scenePlayer.requireRestoredBackdrop()
+        }
+        let actual = try await backend.state()
+        let affectsRotation = actual.rotating && (capabilities.libraryDirectory.map {
+            MaterialRemoval.contains($0, target) || MaterialRemoval.contains(target, $0)
+        } ?? true)
+        if affectsRotation || actual.currentPath.map({ MaterialRemoval.contains(target, URL(fileURLWithPath: $0)) }) == true {
+            try await backend.perform(.off)
+            try await videoBackdrop.stop()
+            lastVideoBackdropAttempt = nil
+        }
+    }
+    func prepareMaterialRemoval(_ target: URL) async -> Bool {
+        guard beginOperation() else { return false }
+        defer { busy = false }
+        do { try await stopForMaterialRemoval(target); await readState(); return true }
+        catch { self.error = error.localizedDescription; return false }
+    }
+    func trashWallpaper(payload: URL, confirmedTarget: URL, confirmedStamp: String, roots: [URL]) async -> Bool {
+        guard beginOperation() else { return false }
+        defer { busy = false }
+        do {
+            guard try MaterialRemoval.target(for: payload, roots: roots) == confirmedTarget,
+                  try MaterialDiscovery.stamp(payload) == confirmedStamp else { throw BackendError.message("文件已改变，请重新选择后再删除。") }
+            try await stopForMaterialRemoval(confirmedTarget)
+            guard try MaterialRemoval.target(for: payload, roots: roots) == confirmedTarget,
+                  try MaterialDiscovery.stamp(payload) == confirmedStamp else { throw BackendError.message("文件已改变，请重新选择后再删除。") }
+            try trashItem(confirmedTarget)
+            await readLibrary(); await readState()
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     func refreshDiagnostics() async {
         guard !loadingDiagnostics, !isWorking else { return }

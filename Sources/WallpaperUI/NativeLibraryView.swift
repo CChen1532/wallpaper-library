@@ -12,10 +12,14 @@ struct NativeLibraryView: View {
     @EnvironmentObject var scenePlayer: ScenePlayer
     @AppStorage("libraryPage") private var page = LibraryPage.library
     @EnvironmentObject private var catalog: UnifiedLibrary
+    @EnvironmentObject private var workshop: WorkshopModel
     @State private var search = ""
     @State private var minutes = 60
     @State private var mode = "rand"
     @State private var confirmTrash = false
+    @State private var trashPayload: URL?
+    @State private var trashTarget: URL?
+    @State private var trashStamp: String?
     @State private var showDiagnostics = false
     private var sceneRoot: URL? { selectedScene?.root }
     private var sceneEntries: [SceneCatalogPayload.Entry] { catalog.scenes }
@@ -133,10 +137,19 @@ struct NativeLibraryView: View {
         }
         .onChange(of: page) { _, newValue in search = ""; if newValue == .rotation { syncRotationFields() } }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(AppStrings.text(model.error ?? "", locale: locale)) }
-        .confirmationDialog("将所选视频移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
-            Button("移入废纸篓", role: .destructive) { Task { await model.trashSelected() } }
+        .confirmationDialog("将此壁纸移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
+            Button("移入废纸篓", role: .destructive) {
+                guard let payload = trashPayload, let target = trashTarget, let stamp = trashStamp else { return }
+                Task {
+                    guard !workshop.busy else { return }
+                    if await model.trashWallpaper(payload: payload, confirmedTarget: target, confirmedStamp: stamp, roots: catalog.roots) {
+                        workshop.recordRemoval(target)
+                        await catalog.didTrash(target)
+                    }
+                }
+            }
             Button("取消", role: .cancel) {}
-        } message: { Text(model.selectedWallpaper?.url.lastPathComponent ?? "") + Text("\n") + Text("可以从废纸篓恢复。若正在播放此视频或开启了轮播，将先停止桌面播放并关闭轮播。") }
+        } message: { Text(trashTarget?.path ?? "") + Text("\n") + Text("项目文件夹及其素材会一并移入废纸篓，独立视频只移除该文件。受影响的播放与轮播会先停止；可从废纸篓恢复。订阅同步会跳过此项目。") }
         .sheet(isPresented: $showDiagnostics) { diagnosticsSheet }
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
@@ -203,6 +216,11 @@ struct NativeLibraryView: View {
                                             }
                                         }.id(entry.id).focused($focusedWallpaper, equals: entry.id)
                                             .onMoveCommand { moveWallpaperSelection($0, columns: columnCount) }
+                                            .contextMenu {
+                                                Button("在访达中显示", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: entry.id)]) }
+                                                Button("移入废纸篓", systemImage: "trash", role: .destructive) { requestTrash(URL(fileURLWithPath: entry.id)) }
+                                                    .disabled(model.isWorking || workshop.busy || MaterialRemoval.isBundled(URL(fileURLWithPath: entry.id)))
+                                            }
                                     }
                                 }
                                 .frame(width: gridWidth, alignment: .leading)
@@ -332,6 +350,9 @@ struct NativeLibraryView: View {
                     }.buttonStyle(.link).font(.callout)
                         .padding(.vertical, 5).modifier(HoverHighlight())
                 }
+                Button("移入废纸篓", systemImage: "trash", role: .destructive) { requestTrash(URL(fileURLWithPath: item.packagePath)) }
+                    .buttonStyle(.borderless).font(.callout)
+                    .disabled(model.isWorking || workshop.busy || MaterialRemoval.isBundled(item.folder))
             }.padding(20)
         }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             .task(id: (sceneRoot?.path ?? "") + "/" + item.name) {
@@ -467,10 +488,18 @@ struct NativeLibraryView: View {
                 Button("在访达中显示", systemImage: "folder") {
                     NSWorkspace.shared.activateFileViewerSelecting([item.url])
                 }.buttonStyle(.link).font(.callout)
-                Button("移入废纸篓", systemImage: "trash", role: .destructive) { confirmTrash = true }
-                    .buttonStyle(.borderless).font(.callout).disabled(model.isWorking || !model.capabilities.canTrash)
+                Button("移入废纸篓", systemImage: "trash", role: .destructive) { requestTrash(item.url) }
+                    .buttonStyle(.borderless).font(.callout).disabled(model.isWorking || workshop.busy || !model.capabilities.canTrash)
             }.padding(20)
         }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+    private func requestTrash(_ payload: URL) {
+        guard !model.isWorking, !workshop.busy else { return }
+        do {
+            trashTarget = try MaterialRemoval.target(for: payload, roots: catalog.roots)
+            trashStamp = try MaterialDiscovery.stamp(payload)
+            trashPayload = payload; confirmTrash = true
+        } catch { model.error = error.localizedDescription }
     }
     private var rotationSettings: some View {
         Form {

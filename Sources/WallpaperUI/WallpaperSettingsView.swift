@@ -7,12 +7,15 @@ struct WallpaperSettingsView: View {
     @EnvironmentObject private var catalog: UnifiedLibrary
     @EnvironmentObject private var model: LibraryModel
     @EnvironmentObject private var scenePlayer: ScenePlayer
+    @EnvironmentObject private var workshop: WorkshopModel
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     @AppStorage("appLanguage") private var language = AppLanguage.chinese
     @AppStorage("libraryPage") private var page = LibraryPage.library
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
     @State private var accessibilityTrusted = false
     @State private var copiedVersionInfo = false
+    @State private var removedFolder: URL?
+    @State private var confirmRemoveFolder = false
     let chooseFolder: () -> Void
     let showDiagnostics: () -> Void
 
@@ -35,7 +38,19 @@ struct WallpaperSettingsView: View {
                 Text("每60秒自动识别新场景与 MP4 视频，应用运行时持续检查。")
                     .font(.callout).foregroundStyle(.secondary)
                 ForEach(catalog.roots, id: \.path) { root in
-                    Text(root.path).font(.caption).textSelection(.enabled)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(root.lastPathComponent).font(.body)
+                            Text(root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        Spacer()
+                        if MaterialRemoval.isBundled(root) { Text("内置").font(.caption).foregroundStyle(.secondary) }
+                        else {
+                            Button("移除", systemImage: "minus.circle", role: .destructive) { removedFolder = root; confirmRemoveFolder = true }
+                                .disabled(model.isWorking || workshop.busy)
+                                .help("从资料库移除此文件夹，保留原文件。")
+                        }
+                    }
                 }
                 if let date = catalog.lastScan { LabeledContent("上次检查", value: date.formatted(date: .omitted, time: .standard)) }
                 HStack {
@@ -51,7 +66,7 @@ struct WallpaperSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("创意工坊") {
-                Text("通过链接下载场景或 MP4 视频，完成后自动加入资料库。")
+                Text("搜索创意工坊、通过链接添加壁纸，或同步 Steam 订阅。下载完成后自动加入资料库。")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("打开创意工坊") { page = .workshop }
             }
@@ -124,6 +139,15 @@ struct WallpaperSettingsView: View {
         .frame(maxWidth: 640)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { accessibilityTrusted = AXIsProcessTrusted() }
+        .confirmationDialog("从资料库移除此文件夹？", isPresented: $confirmRemoveFolder, titleVisibility: .visible) {
+            Button("移除", role: .destructive) {
+                guard let folder = removedFolder else { return }
+                Task { if !workshop.busy { await catalog.removeFolder(folder) } }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(removedFolder?.path ?? "") + Text("\n") + Text("原文件会保留，自动检查不再扫描此来源。受影响的播放与轮播会先停止，可随时重新添加。")
+        }
     }
 
     private var versionText: String {
