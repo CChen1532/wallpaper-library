@@ -28,10 +28,26 @@ import ImageIO
         check(first.image.width == 960 && first.image.height == 480, "高分辨率封面缩小解码且保持比例")
         let again = await loader.image(for: .video(large))!
         check(first === again, "重复读取封面复用同一解码结果")
+        let card = await loader.image(for: .video(large), size: .card)!
+        check(card.image.width == 512 && card.image.height == 256, "卡片按512像素解码")
+        let sameCard = await loader.image(for: .video(large), size: .card)
+        check(card !== first && sameCard === card,
+              "卡片与详情分别缓存且同尺寸复用")
+        let cardBytes = card.image.bytesPerRow * card.image.height
+        let detailBytes = first.image.bytesPerRow * first.image.height
+        check(cardBytes < detailBytes / 3, "卡片解码内存低于原尺寸的三分之一")
+        print("Decoded raster bytes: card=\(cardBytes), inspector=\(detailBytes)")
+        let cancelled = Task { () -> CoverRaster? in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await loader.image(for: .video(large), size: .card)
+        }
+        check(await cancelled.value == nil, "已经取消的封面请求直接结束")
         try png(large, width: 40, height: 20)
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: large.path)
         let updated = await loader.image(for: .video(large))!
         check(updated !== first && updated.image.width == 40 && updated.image.height == 20, "同路径封面更新后不复用旧图")
+        let updatedCard = await loader.image(for: .video(large), size: .card)
+        check(updatedCard !== card && updatedCard?.image.width == 40, "封面更新同时使小尺寸缓存失效")
         let fallback = root.appendingPathComponent("preview.png")
         let custom = root.appendingPathComponent("custom.png")
         try png(fallback, width: 32, height: 16)

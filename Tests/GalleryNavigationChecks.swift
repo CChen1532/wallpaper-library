@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @main struct GalleryNavigationChecks {
     static func main() {
@@ -20,6 +21,17 @@ import Foundation
         check(G.targetIndex(from: 0, count: 1, columns: 0, direction: .down) == 0, "single card and zero columns safe")
         check(G.normalizedQuery("  海边\n") == "海边", "pasted query ignores surrounding whitespace")
         check(G.normalizedQuery(" \n\t") == "", "whitespace query restores all results")
+        let coverSize = CGSize(width: 240, height: 135)
+        check(G.hoverOffset(at: CGPoint(x: 120, y: 67.5), in: coverSize) == .zero, "hover is neutral at cover center")
+        check(G.hoverOffset(at: CGPoint(x: -50, y: 200), in: coverSize) == CGSize(width: -2.5, height: 2.5), "hover stays bounded beyond the cover")
+        check(G.hoverOffset(at: .zero, in: .zero) == .zero, "zero-size cover has no hover displacement")
+        var previous = CGSize.zero
+        var updates = 0
+        for sample in 0..<2048 {
+            let target = G.hoverOffset(at: CGPoint(x: Double(sample) / 2047 * 240, y: 67.5), in: coverSize)
+            if target != previous { updates += 1; previous = target }
+        }
+        check(updates <= 21 && previous.width == 2.5, "dense pointer events coalesce without losing the final position")
         print("\(checks) gallery navigation checks passed")
     }
 }

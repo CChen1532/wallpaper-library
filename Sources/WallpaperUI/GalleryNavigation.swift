@@ -1,8 +1,19 @@
 import Foundation
+import CoreGraphics
 
 /// Shared grid rules, independent of view focus and playback state.
 enum GalleryNavigation {
     enum Direction { case left, right, up, down }
+
+    /// Subpixel motion does not need a new SwiftUI transaction. The hover
+    /// spring still interpolates smoothly between these quarter-point targets.
+    static func hoverOffset(at point: CGPoint, in size: CGSize) -> CGSize {
+        guard size.width > 0, size.height > 0 else { return .zero }
+        func offset(_ value: CGFloat, _ length: CGFloat) -> CGFloat {
+            (min(1, max(-1, value / length * 2 - 1)) * 2.5 * 4).rounded() / 4
+        }
+        return CGSize(width: offset(point.x, size.width), height: offset(point.y, size.height))
+    }
 
     static func normalizedQuery(_ query: String) -> String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)

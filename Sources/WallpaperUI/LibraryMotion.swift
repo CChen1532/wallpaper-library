@@ -43,8 +43,8 @@ struct HoverArtwork<Content: View>: View {
                     switch phase {
                     case .active(let point):
                         guard active, !reduced, geometry.size.width > 0, geometry.size.height > 0 else { return }
-                        offset = CGSize(width: min(1, max(-1, point.x / geometry.size.width * 2 - 1)) * 2.5,
-                                        height: min(1, max(-1, point.y / geometry.size.height * 2 - 1)) * 2.5)
+                        let next = GalleryNavigation.hoverOffset(at: point, in: geometry.size)
+                        if next != offset { offset = next }
                     case .ended: offset = .zero
                     }
                 }
@@ -120,12 +120,14 @@ struct SidebarNavigationLabel: View {
 struct LibraryCover: View {
     let source: CoverSource
     let symbol: String
+    var size: CoverSize = .card
     @State private var raster: CoverRaster?
-    @State private var loadedSource: CoverSource?
+    @State private var loadedRequest: CoverRequest?
+    private var request: CoverRequest { CoverRequest(source: source, size: size) }
 
     var body: some View {
         GeometryReader { geometry in
-            if loadedSource == source, let raster {
+            if loadedRequest == request, let raster {
                 Image(decorative: raster.image, scale: 1).resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
             } else {
@@ -133,12 +135,12 @@ struct LibraryCover: View {
                     .overlay(Image(systemName: symbol).font(.largeTitle).foregroundStyle(.secondary))
             }
         }.accessibilityHidden(true)
-            .task(id: source) {
-                let requested = source
-                let loaded = await CoverImageLoader.shared.image(for: requested)
+            .task(id: request) {
+                let requested = request
+                let loaded = await CoverImageLoader.shared.image(for: requested.source, size: requested.size)
                 guard !Task.isCancelled else { return }
                 raster = loaded
-                loadedSource = requested
+                loadedRequest = requested
             }
     }
 }

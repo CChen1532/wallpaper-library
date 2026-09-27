@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 import UniformTypeIdentifiers
 import WESceneCore
@@ -29,6 +30,8 @@ struct NativeLibraryView: View {
     @State private var scenePreviewError: String?
     @State private var scenePreviewLoading = false
     @FocusState private var focusedWallpaper: String?
+    @State private var keyboardScrollTarget: String?
+    @State private var galleryIndex = GalleryIndex<GalleryEntry>()
     @State private var showPlaybackNotes = false
     private var query: String { GalleryNavigation.normalizedQuery(search) }
     private var filtered: [Wallpaper] { model.items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) } }
@@ -117,6 +120,11 @@ struct NativeLibraryView: View {
             catalog.start()
             syncRotationFields()
         }
+        .onReceive(catalog.$scenes.combineLatest(model.$items)) { scenes, videos in
+            galleryIndex = GalleryIndex(
+                scenes.map { GalleryEntry(id: $0.id, title: $0.title ?? $0.name, scene: $0, video: nil) }
+                + videos.map { GalleryEntry(id: $0.id, title: $0.title, scene: nil, video: $0) })
+        }
         .onChange(of: catalog.scenes.map(\.id)) { _, ids in
             if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
@@ -136,28 +144,28 @@ struct NativeLibraryView: View {
     private let galleryGap: CGFloat = 14
     private let galleryInset: CGFloat = 20
 
-    private struct GalleryEntry: Identifiable {
+    private struct GalleryEntry: Identifiable, GallerySearchable {
         let id: String
         let title: String
         let scene: SceneCatalogPayload.Entry?
         let video: Wallpaper?
+        var searchTerms: [String] { [title, scene?.name ?? title] }
     }
     private var galleryEntries: [GalleryEntry] {
-        (filteredScenes.map { GalleryEntry(id: $0.id, title: $0.title ?? $0.name, scene: $0, video: nil) }
-         + filtered.map { GalleryEntry(id: $0.id, title: $0.title, scene: nil, video: $0) })
-            .sorted { $0.title == $1.title ? $0.id < $1.id : $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        galleryIndex.matching(query)
     }
     private var unifiedLibrary: some View {
-        HStack(spacing: 0) {
+        let entries = galleryEntries
+        return HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("\(galleryEntries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary)
+                    Text("\(entries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary)
                     Spacer()
                     if catalog.scanning { ProgressView().controlSize(.small) }
                     Text("每分钟自动检查").font(.caption).foregroundStyle(.secondary)
                 }.padding(.horizontal, 24).padding(.vertical, 14)
                 if let sceneError { issueBanner(AppStrings.text(sceneError, locale: locale)) }
-                if galleryEntries.isEmpty && !catalog.scanning {
+                if entries.isEmpty && !catalog.scanning {
                     ContentUnavailableView {
                         Label(LocalizedStringKey(query.isEmpty ? "还没有壁纸" : "没有匹配的壁纸"), systemImage: "photo.on.rectangle")
                     } description: {
@@ -180,12 +188,13 @@ struct NativeLibraryView: View {
                         ScrollViewReader { proxy in
                             ScrollView {
                                 LazyVGrid(columns: columns, alignment: .leading, spacing: galleryGap) {
-                                    ForEach(galleryEntries) { entry in
+                                    ForEach(entries) { entry in
                                         Group {
                                             if let scene = entry.scene { sceneCard(scene) }
                                             else if let video = entry.video {
                                                 VideoCard(item: video, selected: selectedSceneName == nil && model.selected == video.id,
                                                     playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id) {
+                                                    keyboardScrollTarget = nil
                                                     selectedSceneName = nil; model.selected = video.id; focusedWallpaper = video.id
                                                 }
                                             }
@@ -195,16 +204,13 @@ struct NativeLibraryView: View {
                                 }
                                 .frame(width: gridWidth, alignment: .leading)
                                 .frame(maxWidth: .infinity, alignment: .center)
-                                // One transaction keeps column changes and card resizing in sync.
-                                .animation(LibraryMotion.reflow(reduceMotion), value: [CGFloat(columnCount), cardWidth])
+                                // Width tracks the drag directly; only a column change
+                                // starts a reflow, instead of restarting every pixel.
+                                .animation(LibraryMotion.reflow(reduceMotion), value: columnCount)
                                 .animation(nil, value: reduceMotion)
                                     .padding(.horizontal, galleryInset).padding(.bottom, 20).padding(.top, 3)
-                            }.onChange(of: focusedWallpaper) { _, id in
+                            }.onChange(of: keyboardScrollTarget) { _, id in
                                 if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
-                            }.onChange(of: columnCount) { _, _ in
-                                if let id = focusedWallpaper {
-                                    withAnimation(LibraryMotion.reflow(reduceMotion)) { proxy.scrollTo(id) }
-                                }
                             }
                         }
                     }
@@ -229,6 +235,7 @@ struct NativeLibraryView: View {
         guard let target = GalleryNavigation.targetIndex(from: index, count: entries.count, columns: columns, direction: move) else { return }
         let entry = entries[target]
         selectedSceneName = entry.scene?.id; model.selected = entry.video?.id; focusedWallpaper = entry.id
+        keyboardScrollTarget = entry.id
     }
 
     private func sceneCard(_ item: SceneCatalogPayload.Entry) -> some View {
@@ -240,6 +247,7 @@ struct NativeLibraryView: View {
                            playing: playing, warning: item.error != nil || item.capability?.resourceInspectionAvailable == false,
                            accessibilityKind: "场景壁纸",
                            playbackStatus: playing ? scenePlayer.statusText : nil) {
+            keyboardScrollTarget = nil
             selectedSceneName = item.id; model.selected = nil; focusedWallpaper = item.id
         } cover: {
             SceneCover(folder: item.folder)
@@ -262,7 +270,7 @@ struct NativeLibraryView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 inspectorHeading("场景详情") { selectedSceneName = nil; focusedWallpaper = nil }
-                SceneCover(folder: item.folder)
+                SceneCover(folder: item.folder, size: .inspector)
                     .modifier(ArtworkCrossfade(identity: (sceneRoot?.path ?? "") + "/" + item.name))
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -421,7 +429,7 @@ struct NativeLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 inspectorHeading("视频详情") { model.selected = nil; focusedWallpaper = nil }
-                VideoCover(item: item).modifier(ArtworkCrossfade(identity: item.id)).aspectRatio(4 / 3, contentMode: .fit)
+                VideoCover(item: item, size: .inspector).modifier(ArtworkCrossfade(identity: item.id)).aspectRatio(4 / 3, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("视频封面").padding(10) }
                 VStack(alignment: .leading, spacing: 8) {
@@ -555,11 +563,13 @@ struct NativeLibraryView: View {
 }
 private struct SceneCover: View {
     let folder: URL?
-    var body: some View { LibraryCover(source: .scene(folder), symbol: "square.3.layers.3d") }
+    var size: CoverSize = .card
+    var body: some View { LibraryCover(source: .scene(folder), symbol: "square.3.layers.3d", size: size) }
 }
 private struct VideoCover: View {
     let item: Wallpaper
-    var body: some View { LibraryCover(source: .video(item.thumbnail), symbol: "film") }
+    var size: CoverSize = .card
+    var body: some View { LibraryCover(source: .video(item.thumbnail), symbol: "film", size: size) }
 }
 private struct VideoCard: View {
     @Environment(\.locale) private var locale

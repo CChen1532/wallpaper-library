@@ -7,6 +7,17 @@ enum CoverSource: Hashable, Sendable {
     case video(URL?)
 }
 
+enum CoverSize: Int, Sendable {
+    // 240 pt cards at 2x, including the 1.045 hover zoom.
+    case card = 512
+    case inspector = 960
+}
+
+struct CoverRequest: Hashable, Sendable {
+    let source: CoverSource
+    let size: CoverSize
+}
+
 /// CGImage is immutable; only the actor owns the mutable cache.
 final class CoverRaster: @unchecked Sendable {
     let image: CGImage
@@ -23,22 +34,25 @@ actor CoverImageLoader {
         cache.totalCostLimit = 64 * 1024 * 1024
     }
 
-    func image(for source: CoverSource) -> CoverRaster? {
+    func image(for source: CoverSource, size requestedSize: CoverSize = .inspector) -> CoverRaster? {
+        guard !Task.isCancelled else { return nil }
         for url in candidates(for: source) {
+            guard !Task.isCancelled else { return nil }
             // URL resource values can stay cached after the file changes. Read
             // fresh attributes before deciding whether a decoded raster is current.
             guard let values = try? FileManager.default.attributesOfItem(atPath: url.path),
                   values[.type] as? FileAttributeType == .typeRegular,
                   let size = values[.size] as? Int, size > 0, size <= 16 * 1024 * 1024 else { continue }
             let modified = (values[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            let key = "\(url.standardizedFileURL.path)|\(size)|\(modified)" as NSString
+            let key = "\(url.standardizedFileURL.path)|\(size)|\(modified)|\(requestedSize.rawValue)" as NSString
             if let cached = cache.object(forKey: key) { return cached }
+            guard !Task.isCancelled else { return nil }
             guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
                   let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
                     kCGImageSourceCreateThumbnailWithTransform: true,
                     kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 960
+                    kCGImageSourceThumbnailMaxPixelSize: requestedSize.rawValue
                   ] as CFDictionary) else { continue }
             let result = CoverRaster(image)
             cache.setObject(result, forKey: key, cost: image.bytesPerRow * image.height)
