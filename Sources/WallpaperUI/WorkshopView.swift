@@ -47,16 +47,10 @@ struct WorkshopView: View {
                 if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
                 if tab != 2, let item = workshop.item { details(item).id("selectedWorkshop") }
                 if tab == 0, let page = workshop.searchPage {
-                    HStack {
-                        Text(page.candidateCount
-                             ? String(format: AppStrings.text("本页符合条件 %d 项", locale: locale), page.items.count)
-                             : String(format: AppStrings.text("共 %d 项", locale: locale), page.total))
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("上一页") { workshop.search(page: page.number - 1) }.disabled(workshop.busy || page.number <= 1)
-                        Text("\(page.number) / \(max(1, page.pages))").font(.caption).monospacedDigit()
-                        Button("下一页") { workshop.search(page: page.number + 1) }.disabled(workshop.busy || page.number >= page.pages)
-                    }
+                    Text(page.candidateCount
+                         ? String(format: AppStrings.text("本页符合条件 %d 项", locale: locale), page.items.count)
+                         : String(format: AppStrings.text("共 %d 项", locale: locale), page.total))
+                        .font(.caption).foregroundStyle(.secondary)
                     if page.items.isEmpty {
                         ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass",
                             description: Text(page.candidateCount && page.number < page.pages
@@ -92,6 +86,11 @@ struct WorkshopView: View {
             }.padding(28).frame(maxWidth: 900)
                 .frame(maxWidth: .infinity, alignment: .top)
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if tab == 0, let page = workshop.searchPage, page.pages > 1 {
+                floatingPagination(page)
+            }
+        }
         .onChange(of: workshop.item?.id) { _, id in if id != nil { proxy.scrollTo("selectedWorkshop", anchor: .top) } }
         .onChange(of: workshop.searchPage?.number) { _, _ in proxy.scrollTo("workshopTop", anchor: .top) }
         }
@@ -119,6 +118,26 @@ struct WorkshopView: View {
 
     private func classification(_ item: WorkshopItem) -> String {
         WorkshopFilters.classification(tags: item.tags).map { AppStrings.text($0, locale: locale) }.joined(separator: " · ")
+    }
+    private func floatingPagination(_ page: WorkshopBrowse.Page) -> some View {
+        HStack(spacing: 12) {
+            Button("上一页") { workshop.search(page: page.number - 1) }
+                .disabled(workshop.busy || page.number <= 1)
+            Text("\(page.number) / \(page.pages)")
+                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                .accessibilityLabel("\(page.number) / \(page.pages)")
+            Button("下一页") { workshop.search(page: page.number + 1) }
+                .disabled(workshop.busy || page.number >= page.pages)
+        }
+        .buttonStyle(.bordered)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay { Capsule().strokeBorder(.quaternary) }
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("workshop.pagination")
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 12)
     }
     private func filterBinding<Value>(_ key: WritableKeyPath<WorkshopFilters, Value>, immediate: Bool = true) -> Binding<Value> {
         Binding(get: { workshop.filters[keyPath: key] }, set: { value in
