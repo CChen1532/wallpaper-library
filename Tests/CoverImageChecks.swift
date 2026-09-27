@@ -33,6 +33,16 @@ import ImageIO
         let sameCard = await loader.image(for: .video(large), size: .card)
         check(card !== first && sameCard === card,
               "卡片与详情分别缓存且同尺寸复用")
+        let parallel = root.appendingPathComponent("parallel.png")
+        try FileManager.default.copyItem(at: large, to: parallel)
+        let shared = await withTaskGroup(of: CoverRaster?.self, returning: [CoverRaster?].self) { group in
+            for _ in 0..<12 { group.addTask { await loader.image(for: .video(parallel), size: .card) } }
+            var results: [CoverRaster?] = []
+            for await result in group { results.append(result) }
+            return results
+        }
+        check(shared.count == 12 && shared.allSatisfy { $0 != nil && $0 === shared[0] },
+              "并发请求同一封面复用解码结果")
         let cardBytes = card.image.bytesPerRow * card.image.height
         let detailBytes = first.image.bytesPerRow * first.image.height
         check(cardBytes < detailBytes / 3, "卡片解码内存低于原尺寸的三分之一")

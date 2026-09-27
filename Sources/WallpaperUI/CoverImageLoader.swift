@@ -28,13 +28,19 @@ final class CoverRaster: @unchecked Sendable {
 actor CoverImageLoader {
     static let shared = CoverImageLoader()
     private let cache = NSCache<NSString, CoverRaster>()
+    private let decodeQueue = OperationQueue()
+    private var pending: [String: Task<CoverRaster?, Never>] = [:]
 
     init() {
         cache.countLimit = 64
         cache.totalCostLimit = 64 * 1024 * 1024
+        // A few parallel decodes fill a newly visible row quickly without
+        // letting a long scroll compete with the UI for every CPU core.
+        decodeQueue.maxConcurrentOperationCount = 4
+        decodeQueue.qualityOfService = .userInitiated
     }
 
-    func image(for source: CoverSource, size requestedSize: CoverSize = .inspector) -> CoverRaster? {
+    func image(for source: CoverSource, size requestedSize: CoverSize = .inspector) async -> CoverRaster? {
         guard !Task.isCancelled else { return nil }
         for url in candidates(for: source) {
             guard !Task.isCancelled else { return nil }
@@ -44,21 +50,46 @@ actor CoverImageLoader {
                   values[.type] as? FileAttributeType == .typeRegular,
                   let size = values[.size] as? Int, size > 0, size <= 16 * 1024 * 1024 else { continue }
             let modified = (values[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            let key = "\(url.standardizedFileURL.path)|\(size)|\(modified)|\(requestedSize.rawValue)" as NSString
-            if let cached = cache.object(forKey: key) { return cached }
+            let key = "\(url.standardizedFileURL.path)|\(size)|\(modified)|\(requestedSize.rawValue)"
+            if let cached = cache.object(forKey: key as NSString) { return cached }
             guard !Task.isCancelled else { return nil }
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceThumbnailMaxPixelSize: requestedSize.rawValue
-                  ] as CFDictionary) else { continue }
-            let result = CoverRaster(image)
-            cache.setObject(result, forKey: key, cost: image.bytesPerRow * image.height)
-            return result
+            if let pending = pending[key] {
+                let result = await pending.value
+                if Task.isCancelled { return nil }
+                if let result { return result }
+                continue
+            }
+            let task = Task { await decode(url, size: requestedSize) }
+            pending[key] = task
+            let result = await task.value
+            pending[key] = nil
+            if let result {
+                cache.setObject(result, forKey: key as NSString,
+                                cost: result.image.bytesPerRow * result.image.height)
+            }
+            if Task.isCancelled { return nil }
+            if let result { return result }
         }
         return nil
+    }
+
+    private func decode(_ url: URL, size: CoverSize) async -> CoverRaster? {
+        await withCheckedContinuation { continuation in
+            decodeQueue.addOperation {
+                guard let source = CGImageSourceCreateWithURL(url as CFURL,
+                         [kCGImageSourceShouldCache: false] as CFDictionary),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceShouldCacheImmediately: true,
+                        kCGImageSourceThumbnailMaxPixelSize: size.rawValue
+                      ] as CFDictionary) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: CoverRaster(image))
+            }
+        }
     }
 
     private func candidates(for source: CoverSource) -> [URL] {
