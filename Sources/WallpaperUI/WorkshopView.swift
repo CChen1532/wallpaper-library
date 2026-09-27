@@ -75,7 +75,7 @@ struct WorkshopView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
                                     LibraryCover(source: .remote(item.previewURL), symbol: "photo")
-                                        .frame(height: 112).clipped()
+                                        .aspectRatio(16 / 9, contentMode: .fit).clipped()
                                     Text(item.title).font(.callout.weight(.medium)).lineLimit(2).frame(height: 36, alignment: .topLeading)
                                         .padding(.horizontal, 10)
                                     Text(classification(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -94,7 +94,7 @@ struct WorkshopView: View {
                         .accessibilityIdentifier("workshop.error")
                 }
                 componentSection
-            }.padding(24).frame(maxWidth: 900)
+            }.padding(24).frame(maxWidth: tab == 0 ? .infinity : 900, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .top)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
