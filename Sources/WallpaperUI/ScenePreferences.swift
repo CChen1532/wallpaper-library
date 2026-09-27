@@ -1,5 +1,32 @@
 import Foundation
 import Combine
+import AppKit
+
+struct SceneDisplay: Identifiable, Hashable, Sendable {
+    let id: UInt32
+    let uuid: String
+    let name: String
+
+    @MainActor static func connected() -> [Self] {
+        NSScreen.screens.compactMap { screen in
+            guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return nil }
+            return Self(id: id, uuid: CFUUIDCreateString(nil, uuid) as String, name: screen.localizedName)
+        }
+    }
+
+    /// Persist UUIDs, not transient display IDs. A disconnected fixed screen
+    /// falls back without erasing the choice, and is selected on reconnection.
+    static func resolve(_ preferences: ScenePreferences, displays: [Self], focus: UInt32?, current: UInt32? = nil) -> UInt32? {
+        let ids = Set(displays.map(\.id))
+        let focused = focus.flatMap { ids.contains($0) ? $0 : nil }
+        let existing = current.flatMap { ids.contains($0) ? $0 : nil }
+        if preferences.followsDisplay { return focused ?? existing ?? displays.first?.id }
+        if let uuid = preferences.displayUUID,
+           let fixed = displays.first(where: { $0.uuid == uuid }) { return fixed.id }
+        return existing ?? focused ?? displays.first?.id
+    }
+}
 
 /// A validated snapshot: changing defaults never mutates a running session.
 struct ScenePreferences: Codable, Hashable, Sendable {
@@ -9,6 +36,8 @@ struct ScenePreferences: Codable, Hashable, Sendable {
     var mouseButtonsEnabled = true
     var inputHz = 60
     var followsDisplay = true
+    var displayUUID: String?
+    var displayName: String?
     var soundEnabled = false
     var audioResponseEnabled = false
 
@@ -90,6 +119,10 @@ struct ScenePreferences: Codable, Hashable, Sendable {
         if ![30, 60].contains(value.fps) { value.fps = 30 }
         if ![30, 60, 120].contains(value.inputHz) { value.inputHz = 60 }
         if !["auto", "center", "left", "right"].contains(value.cropMode) { value.cropMode = "auto" }
+        if let stored = value.displayUUID {
+            value.displayUUID = UUID(uuidString: stored)?.uuidString
+            if value.displayUUID == nil { value.displayName = nil }
+        }
         return value
     }
 }

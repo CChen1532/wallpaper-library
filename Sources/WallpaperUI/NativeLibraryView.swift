@@ -73,6 +73,7 @@ struct NativeLibraryView: View {
                 if let issue = model.libraryIssue { issueBanner(AppStrings.text("素材读取失败：", locale: locale) + issue) }
                 if let issue = model.videoBackdropIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
                 if let issue = model.backdropCompatibilityIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
+                if scenePlayer.isActive, let notice = scenePlayer.notice { issueBanner(AppStrings.text(notice, locale: locale)) }
                 if scenePlayer.phase == .failed, let issue = scenePlayer.error, page != .settings {
                     issueBanner(AppStrings.text(issue, locale: locale))
                 }

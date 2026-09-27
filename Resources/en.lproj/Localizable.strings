@@ -333,3 +333,11 @@
 "鼠标位置的采样频率，与画面帧率不同；需先开启鼠标交互。" = "Mouse-position sampling rate, separate from frame rate. Enable mouse interaction first.";
 "：素材未完整或暂不可识别，下次检查时重试" = ": incomplete or not yet recognizable; retrying on the next scan";
 "；恢复底图失败：" = "; failed to restore backdrop: ";
+"播放显示器" = "Playback Display";
+"固定在启动显示器" = "Stay on Starting Display";
+"所选显示器" = "Selected Display";
+"未连接" = "Disconnected";
+"跟随当前操作所在的显示器，一次仅在一个屏幕播放。" = "Follow the display you are using. Playback stays on one screen at a time.";
+"所选显示器断开时使用可用屏幕，重新连接后自动返回。" = "Use an available screen if the selected display disconnects, and return when it reconnects.";
+"多屏模式下暂不启用 Space 过渡底图，场景仍可选择或跟随显示器播放。" = "Space transition backdrops are unavailable with multiple displays. Scene playback can still use a selected display or follow the active display.";
+"固定在启动场景的显示器；断开后使用其他可用屏幕。" = "Stay on the starting display; use another available screen if it disconnects.";

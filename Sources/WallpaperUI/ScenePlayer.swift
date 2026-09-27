@@ -96,6 +96,7 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var package: URL?
     @Published private(set) var displayID: UInt32?
     @Published private(set) var error: String?
+    @Published private(set) var notice: String?
     @Published private(set) var activePreferences: ScenePreferences?
     @Published private(set) var activeUserPropertyValues: [String: ScenePropertyValue] = [:]
     @Published private(set) var restorationPending = false
@@ -107,15 +108,21 @@ struct SceneLaunchConfiguration: Sendable {
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private let focusProvider: @MainActor @Sendable () -> UInt32?
+    private let displayProvider: @MainActor @Sendable () -> [SceneDisplay]
 
     init(focusProvider: @escaping @MainActor @Sendable () -> UInt32? = { FocusDisplaySelector.currentDisplay() },
+         displayProvider: @escaping @MainActor @Sendable () -> [SceneDisplay] = { SceneDisplay.connected() },
          backdropFactory: @escaping @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling = { SceneBackdropLease(configuration: $0) }) {
         self.focusProvider = focusProvider
+        self.displayProvider = displayProvider
         self.backdropFactory = backdropFactory
     }
 
     var isActive: Bool { worker != nil }
-    func preferredDisplayID() -> UInt32? { focusProvider() }
+    var connectedDisplays: [SceneDisplay] { displayProvider() }
+    func preferredDisplayID(preferences: ScenePreferences = .init()) -> UInt32? {
+        SceneDisplay.resolve(preferences, displays: displayProvider(), focus: focusProvider())
+    }
     var isTransitioning: Bool { phase == .starting || phase == .stopping || recoveringBackdrop }
     var statusText: String {
         switch phase {
@@ -163,16 +170,22 @@ struct SceneLaunchConfiguration: Sendable {
         displayID = configuration.displayID
         preparingBackdrop = configuration.backdrop != nil
         error = nil
+        notice = nil
         let focus = focusProvider
+        let displays = displayProvider
         let backdropFactory = backdropFactory
         worker = Task.detached(priority: .userInitiated) { [weak self] in
             let child = MirageSceneChild(executable: configuration.executable,
                                          arguments: configuration.arguments,
                                          environment: configuration.environment)
-            let backdrop = configuration.backdrop.map { backdropFactory($0) }
+            var backdrop = configuration.backdrop.map { backdropFactory($0) }
             var failure: String?
             do {
                 try Task.checkCancellation()
+                if await displays().count > 1, backdrop != nil {
+                    backdrop = nil
+                    await self?.backdropSuspended(token: token)
+                }
                 try child.start()
                 try await Self.waitUntil(timeout: 60) { try child.eventReceived("scene-ready") }
                 try await Self.waitUntil(timeout: 15) { try child.eventReceived("first-frame-presented") }
@@ -198,11 +211,22 @@ struct SceneLaunchConfiguration: Sendable {
                 while !Task.isCancelled {
                     // A successful activation is historical; still check liveness.
                     _ = try child.eventReceived("activated")
+                    let available = await displays()
+                    if available.count > 1, let activeBackdrop = backdrop {
+                        // Restore the owned single-display lease before moving
+                        // onto a topology where the global switch is unsafe.
+                        try activeBackdrop.finish()
+                        backdrop = nil
+                        await self?.backdropSuspended(token: token)
+                    }
                     try backdrop?.checkHealth()
-                    let target = configuration.preferences.followsDisplay ? await focus() : nil
+                    let needsFocus = configuration.preferences.followsDisplay ||
+                        !available.contains(where: { $0.id == handoff.currentDisplayID })
+                    let focusedDisplay = needsFocus ? await focus() : nil
+                    let target = SceneDisplay.resolve(configuration.preferences,
+                        displays: available, focus: focusedDisplay, current: handoff.currentDisplayID)
                     try Task.checkCancellation()
-                    if configuration.preferences.followsDisplay,
-                       let move = handoff.observe(target, at: ProcessInfo.processInfo.systemUptime) {
+                    if let move = handoff.observe(target, at: ProcessInfo.processInfo.systemUptime) {
                         try backdrop?.finish()
                         try Task.checkCancellation()
                         try child.move(to: move)
@@ -255,6 +279,15 @@ struct SceneLaunchConfiguration: Sendable {
         activeUserPropertyValues = [:]
         displayID = nil
         preparingBackdrop = false
+        notice = nil
+    }
+
+    private func backdropSuspended(token: UUID) {
+        guard token == generation else { return }
+        automaticBackdropActive = false
+        automaticBackdropImage = nil
+        preparingBackdrop = false
+        notice = "多屏模式下暂不启用 Space 过渡底图，场景仍可选择或跟随显示器播放。"
     }
 
     private func backdropActivated(token: UUID, image: URL?) {

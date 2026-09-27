@@ -123,7 +123,9 @@ import UniformTypeIdentifiers
             return Darwin.kill(pid, 0) == 0
         }
 
-        let player = ScenePlayer(focusProvider: { 1 })
+        let screen1 = SceneDisplay(id: 1, uuid: "00000000-0000-0000-0000-000000000001", name: "Screen A")
+        let screen3 = SceneDisplay(id: 3, uuid: "00000000-0000-0000-0000-000000000003", name: "Screen B")
+        let player = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
         try player.start(configuration("cancel", mode: "stalled"))
         do { try player.start(configuration("duplicate")); preconditionFailure("duplicate accepted") }
         catch { check(true, "重复开始不创建第二个渲染器") }
@@ -135,7 +137,7 @@ import UniformTypeIdentifiers
         check(log("duplicate").isEmpty, "重复播放没有产生子进程")
 
         let focus = FocusFixture()
-        let following = ScenePlayer(focusProvider: { focus.displayID })
+        let following = ScenePlayer(focusProvider: { focus.displayID }, displayProvider: { [screen1, screen3] })
         try following.start(configuration("follow"))
         try await wait { following.phase == .playing }
         focus.displayID = 3
@@ -152,7 +154,7 @@ import UniformTypeIdentifiers
         try await wait { player.phase == .failed }
         check(player.error != nil && !player.isActive && !hasLivePID("crash"), "异常退出显示错误并清理状态")
 
-        let coordinated = ScenePlayer(focusProvider: { 1 })
+        let coordinated = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
         let backdropDefaultsName = "WallpaperUI.BackdropDefaults." + UUID().uuidString
         let backdropDefaults = UserDefaults(suiteName: backdropDefaultsName)!
         defer { backdropDefaults.removePersistentDomain(forName: backdropDefaultsName) }
@@ -422,7 +424,7 @@ import UniformTypeIdentifiers
         } catch { check(true, "无效采样频率在停止旧场景前被拒绝") }
 
         let fixedFocus = FocusFixture()
-        let fixed = ScenePlayer(focusProvider: { fixedFocus.displayID })
+        let fixed = ScenePlayer(focusProvider: { fixedFocus.displayID }, displayProvider: { [screen1, screen3] })
         var fixedConfig = configuration("fixed")
         fixedConfig.preferences.followsDisplay = false
         try fixed.start(fixedConfig)
@@ -432,6 +434,44 @@ import UniformTypeIdentifiers
         check(fixed.displayID == 1 && !log("fixed").contains("moveDisplay"), "关闭跟随后焦点变化不会移动场景")
         await fixed.stop()
         check(fixed.activePreferences == nil, "停止后清理已应用设置快照")
+
+        var selectedScreen = ScenePreferences()
+        selectedScreen.followsDisplay = false
+        selectedScreen.displayUUID = screen1.uuid
+        selectedScreen.displayName = screen1.name
+        let remapped = SceneDisplay(id: 99, uuid: screen1.uuid, name: screen1.name)
+        check(SceneDisplay.resolve(selectedScreen, displays: [screen3, remapped], focus: 3) == 99,
+              "固定屏幕按UUID查找，不依赖重连后变化的数字ID")
+        check(SceneDisplay.resolve(.init(), displays: [screen1, screen3], focus: 3) == 3,
+              "自动跟随可选择非主屏")
+        check(SceneDisplay.resolve(selectedScreen, displays: [], focus: 1) == nil,
+              "无连接显示器时不会返回失效屏幕")
+        let topology = DisplayFixture([screen1])
+        let reconnecting = ScenePlayer(focusProvider: { 3 }, displayProvider: { topology.screens })
+        check(reconnecting.preferredDisplayID(preferences: selectedScreen) == 1,
+              "启动时优先使用壁纸保存的固定屏幕")
+        var reconnectConfig = configuration("reconnect")
+        reconnectConfig.preferences = selectedScreen
+        try reconnecting.start(reconnectConfig)
+        try await wait { reconnecting.phase == .playing }
+        topology.screens = [screen3]
+        try await wait { reconnecting.displayID == 3 }
+        check(reconnecting.activePreferences?.displayUUID == screen1.uuid,
+              "固定屏幕断开后回退到可用屏幕且不改写保存选择")
+        topology.screens = [screen3, screen1]
+        try await wait { reconnecting.displayID == 1 }
+        await reconnecting.stop()
+        check(!hasLivePID("reconnect"), "固定屏幕重连后自动返回，停止清理唯一渲染进程")
+
+        let multiPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1, screen3] })
+        let multiModel = LibraryModel(backend: SceneTestBackend(), scenePlayer: multiPlayer)
+        var multiConfig = configuration("multi")
+        multiConfig.backdrop = incompatibleSettings
+        await multiModel.playPreparedScene(multiConfig)
+        try await wait { multiPlayer.phase == .playing }
+        check(!multiPlayer.automaticBackdropActive && multiModel.backdropCompatibilityIssue != nil,
+              "多屏下跳过全局底图组件，场景正常启动并明确提示")
+        await multiPlayer.stop()
 
         // Exercise UI's reapply path through input validation and the real coordinator.
         let settingsLog = renderer.deletingLastPathComponent().appendingPathComponent("settings.log")
@@ -467,6 +507,8 @@ import UniformTypeIdentifiers
               "旧全局设置保留为迁移初始值")
         var settingsA = requested
         settingsA.cropMode = "right"
+        settingsA.displayUUID = screen1.uuid
+        settingsA.displayName = screen1.name
         let settingsB = ScenePreferences(fps: 60, inputHz: 30)
         store.save(settingsA, for: packageA)
         check(store.preferences(for: packageA) == settingsA && store.preferences(for: packageB) == initial,
@@ -477,6 +519,13 @@ import UniformTypeIdentifiers
         let reloaded = ScenePreferencesStore(defaults: UserDefaults(suiteName: perItemSuite)!)
         check(reloaded.preferences(for: packageA) == settingsA && reloaded.preferences(for: packageB) == settingsB,
               "重新创建存储后仍读取各自设置")
+        var oldFields = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settingsA)) as! [String: Any]
+        oldFields.removeValue(forKey: "displayUUID")
+        oldFields.removeValue(forKey: "displayName")
+        let legacyPreferences = try JSONDecoder().decode(ScenePreferences.self, from: JSONSerialization.data(withJSONObject: oldFields))
+        check(legacyPreferences.displayUUID == nil && legacyPreferences.cropMode == "right" &&
+              legacyPreferences.mouseEnabled == settingsA.mouseEnabled,
+              "旧版逐壁纸配置缺少显示器字段时仍保留原设置")
         perItemDefaults.set(false, forKey: ScenePreferences.Key.mouse)
         perItemDefaults.set("right", forKey: ScenePreferences.Key.crop)
         let migratedAgain = ScenePreferencesStore(defaults: perItemDefaults)
@@ -499,7 +548,7 @@ import UniformTypeIdentifiers
             directory: root.appendingPathComponent("playback-properties"))
         let playbackWatermark = playbackProperties.catalog(for: packageA).properties.first!
         let settingsBackend = SceneTestBackend()
-        let settingsPlayer = ScenePlayer(focusProvider: { 1 })
+        let settingsPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
         let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer,
             sceneRuntimeURL: runtimeRoot, scenePreferences: store, sceneUserProperties: playbackProperties,
             backdropConfiguration: { nil })
@@ -546,7 +595,8 @@ import UniformTypeIdentifiers
         var backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
         let backdrop = BackdropFixture()
         let backdropFocus = FocusFixture()
-        let automatic = ScenePlayer(focusProvider: { backdropFocus.displayID }, backdropFactory: { _ in backdrop })
+        let automatic = ScenePlayer(focusProvider: { backdropFocus.displayID },
+            displayProvider: { backdropFocus.displayID == 1 ? [screen1] : [screen3] }, backdropFactory: { _ in backdrop })
         var automaticConfig = configuration("automatic")
         automaticConfig.backdrop = backdropConfig
         try automatic.start(automaticConfig)
@@ -559,8 +609,23 @@ import UniformTypeIdentifiers
         check(backdrop.events.last == "restore" && !automatic.automaticBackdropActive && !automatic.restorationPending,
               "停止场景自动复原且清理匹配状态")
 
+        let addedTopology = DisplayFixture([screen1])
+        let releasedBackdrop = BackdropFixture()
+        let addedPlayer = ScenePlayer(focusProvider: { 3 }, displayProvider: { addedTopology.screens },
+            backdropFactory: { _ in releasedBackdrop })
+        var addedConfig = configuration("added-display")
+        addedConfig.backdrop = backdropConfig
+        try addedPlayer.start(addedConfig)
+        try await wait { addedPlayer.phase == .playing }
+        addedTopology.screens = [screen1, screen3]
+        try await wait { addedPlayer.displayID == 3 }
+        check(releasedBackdrop.events == ["apply:1", "restore"] && !addedPlayer.automaticBackdropActive && addedPlayer.notice != nil,
+              "新增显示器先恢复单屏底图，再移动场景而不重设全局壁纸")
+        await addedPlayer.stop()
+        check(addedPlayer.notice == nil && !hasLivePID("added-display"), "停止多屏场景清理提示与进程")
+
         let rollback = BackdropFixture()
-        let failingRenderer = ScenePlayer(focusProvider: { 1 }, backdropFactory: { _ in rollback })
+        let failingRenderer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] }, backdropFactory: { _ in rollback })
         var crashConfig = configuration("backdrop-crash", mode: "crash")
         crashConfig.backdrop = backdropConfig
         try failingRenderer.start(crashConfig)
@@ -568,7 +633,7 @@ import UniformTypeIdentifiers
         check(rollback.events == ["apply:1", "restore"] && !failingRenderer.restorationPending, "渲染器崩溃仍复原底图")
 
         let conflict = BackdropFixture(failRestore: true)
-        let blockedPlayer = ScenePlayer(focusProvider: { 1 }, backdropFactory: { _ in conflict })
+        let blockedPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] }, backdropFactory: { _ in conflict })
         var blockedConfig = configuration("backdrop-conflict"); blockedConfig.backdrop = backdropConfig
         try blockedPlayer.start(blockedConfig)
         try await wait { blockedPlayer.phase == .playing }
@@ -755,6 +820,10 @@ import UniformTypeIdentifiers
 }
 
 @MainActor private final class FocusFixture { var displayID: UInt32 = 1 }
+@MainActor private final class DisplayFixture {
+    var screens: [SceneDisplay]
+    init(_ screens: [SceneDisplay]) { self.screens = screens }
+}
 
 private actor SceneTestBackend: WallpaperBackend {
     nonisolated let capabilities = BackendCapabilities(name: "test", libraryDirectory: nil)

@@ -14,9 +14,52 @@ struct SceneInspectorSettings: View {
     @State private var showPlayback = false
     @State private var catalog: ScenePropertyCatalog = .empty
     @State private var catalogLoading = true
+    @State private var availableDisplays = SceneDisplay.connected()
 
     private var preferences: ScenePreferences { store.preferences(for: package) }
     private var isPlaying: Bool { model.isActiveScene(package) }
+    private var displaySelection: Binding<String> {
+        let representedPackage = package
+        return Binding(get: {
+            let saved = store.preferences(for: representedPackage)
+            return saved.followsDisplay ? "follow" : saved.displayUUID ?? "current"
+        }, set: { selection in
+            var saved = store.preferences(for: representedPackage)
+            saved.followsDisplay = selection == "follow"
+            let screen = availableDisplays.first { $0.uuid == selection }
+            saved.displayUUID = screen?.uuid
+            saved.displayName = screen?.name
+            store.save(saved, for: representedPackage)
+        })
+    }
+
+    private var displayPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("播放显示器")
+                Spacer(minLength: 8)
+                Picker("播放显示器", selection: displaySelection) {
+                    Text("跟随当前显示器").tag("follow")
+                    Text("固定在启动显示器").tag("current")
+                    ForEach(Array(availableDisplays.enumerated()), id: \.element.uuid) { index, display in
+                        Text(availableDisplays.filter { $0.name == display.name }.count > 1
+                             ? "\(display.name) (\(index + 1))" : display.name).tag(display.uuid)
+                    }
+                    if let uuid = preferences.displayUUID, !availableDisplays.contains(where: { $0.uuid == uuid }) {
+                        Text((preferences.displayName ?? AppStrings.text("所选显示器", locale: locale)) +
+                             " · " + AppStrings.text("未连接", locale: locale)).tag(uuid)
+                    }
+                }.labelsHidden().frame(maxWidth: 172)
+            }
+            Text(LocalizedStringKey(preferences.followsDisplay
+                ? "跟随当前操作所在的显示器，一次仅在一个屏幕播放。"
+                : preferences.displayUUID != nil
+                    ? "所选显示器断开时使用可用屏幕，重新连接后自动返回。"
+                    : "固定在启动场景的显示器；断开后使用其他可用屏幕。"))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }.padding(10).modifier(HoverHighlight())
+    }
     private func settingsStatus(pendingChanges: Bool) -> String {
         if catalogLoading { return "正在读取设置…" }
         if isPlaying {
@@ -206,8 +249,7 @@ struct SceneInspectorSettings: View {
                         Text("靠左").tag("left")
                         Text("靠右").tag("right")
                     }
-                    toggle("跟随当前显示器", \.followsDisplay)
-                        .help("关闭时固定在启动场景的显示器。")
+                    displayPicker
                     Divider()
                     toggle("播放场景声音", \.soundEnabled)
                     toggle("音频响应", \.audioResponseEnabled)
@@ -238,6 +280,9 @@ struct SceneInspectorSettings: View {
                 guard !Task.isCancelled else { return }
                 catalog = loaded
                 catalogLoading = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                availableDisplays = SceneDisplay.connected()
             }
     }
 }

@@ -77,11 +77,11 @@ import Combine
         let request = sceneRequestRevision
         defer { busy = false }
         do {
-            guard let displayID = scenePlayer.preferredDisplayID() else {
-                throw BackendError.message("当前没有可用显示器")
-            }
             let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
             let preferences = scenePreferences.preferences(for: package)
+            guard let displayID = scenePlayer.preferredDisplayID(preferences: preferences) else {
+                throw BackendError.message("当前没有可用显示器")
+            }
             // Preflight filesystem work stays off the UI actor. The cache was
             // warmed when this Scene was selected, but still revalidates here.
             var configuration = try await scenePreparation.prepare(
@@ -101,9 +101,9 @@ import Combine
     }
 
     func preloadScene(root: URL, name: String, title: String, expectedBytes: Int64) async {
-        guard let displayID = scenePlayer.preferredDisplayID() else { return }
         let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
         let preferences = scenePreferences.preferences(for: package)
+        guard let displayID = scenePlayer.preferredDisplayID(preferences: preferences) else { return }
         _ = try? await scenePreparation.prepare(runtimeURL: sceneRuntimeURL, root: root, name: name,
                                                 title: title, expectedBytes: expectedBytes,
                                                 displayID: displayID, preferences: preferences)
@@ -146,6 +146,14 @@ import Combine
         guard !shuttingDown, request == sceneRequestRevision else { return }
         try Task.checkCancellation()
         var configuration = prepared
+        if configuration.backdrop != nil, scenePlayer.connectedDisplays.count > 1 {
+            // The system's all-Spaces switch also affects other monitors.
+            // Keep playback available without changing that shared setting.
+            configuration.backdrop = nil
+            backdropCompatibilityIssue = "多屏模式下暂不启用 Space 过渡底图，场景仍可选择或跟随显示器播放。"
+        } else {
+            backdropCompatibilityIssue = nil
+        }
         if let backdrop = configuration.backdrop {
             do {
                 try await SpaceBackdropCompatibility.check(backdrop, displayID: configuration.displayID)
