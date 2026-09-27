@@ -74,11 +74,8 @@ struct WorkshopView: View {
                                 workshop.select(item)
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    HoverArtwork(active: false) {
-                                        AsyncImage(url: item.previewURL) { image in image.resizable().scaledToFill() }
-                                            placeholder: { Rectangle().fill(.quaternary) }
-                                    }
-                                    .frame(height: 112).clipped()
+                                    LibraryCover(source: .remote(item.previewURL), symbol: "photo")
+                                        .frame(height: 112).clipped()
                                     Text(item.title).font(.callout.weight(.medium)).lineLimit(2).frame(height: 36, alignment: .topLeading)
                                         .padding(.horizontal, 10)
                                     Text(classification(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -223,9 +220,7 @@ struct WorkshopView: View {
     private func details(_ item: WorkshopItem) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                AsyncImage(url: item.previewURL) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: { Rectangle().fill(.quaternary).overlay { Image(systemName: "photo").foregroundStyle(.secondary) } }
+                LibraryCover(source: .remote(item.previewURL), symbol: "photo", size: .inspector)
                     .frame(width: 192, height: 108).clipped().clipShape(RoundedRectangle(cornerRadius: 10))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 8) {

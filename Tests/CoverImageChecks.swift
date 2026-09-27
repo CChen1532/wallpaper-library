@@ -78,6 +78,52 @@ import ImageIO
         let empty = await loader.image(for: .scene(nil))
         let missing = await loader.image(for: .video(root.appendingPathComponent("missing.png")))
         check(empty == nil && missing == nil, "空路径与缺失封面返回占位状态")
+        // ImageIO must use the encoded type, not the filename or URL extension.
+        func animation(_ url: URL, type: String, frames: Int, width: Int = 64) {
+            let destination = CGImageDestinationCreateWithURL(url as CFURL, type as CFString, frames, nil)!
+            for index in 0..<frames {
+                let context = CGContext(data: nil, width: width, height: width, bitsPerComponent: 8,
+                    bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.setFillColor(CGColor(red: index % 2 == 0 ? 1 : 0, green: index % 2 == 1 ? 1 : 0, blue: 0, alpha: 1))
+                context.fill(CGRect(x: 0, y: 0, width: width, height: width))
+                let gif = [kCGImagePropertyGIFDelayTime: index == 0 ? 0.1 : 0.2] as CFDictionary
+                let png = [kCGImagePropertyAPNGDelayTime: index == 0 ? 0.1 : 0.2] as CFDictionary
+                CGImageDestinationAddImage(destination, context.makeImage()!,
+                    [kCGImagePropertyGIFDictionary: gif, kCGImagePropertyPNGDictionary: png] as CFDictionary)
+            }
+            precondition(CGImageDestinationFinalize(destination))
+        }
+        let gif = root.appendingPathComponent("animated.jpg")
+        animation(gif, type: "com.compuserve.gif", frames: 3)
+        let animated = await loader.image(for: .video(gif), size: .card, animated: true)!
+        check(animated.frames.count == 3, "GIF 即使名为 JPG 也读取全部真实帧")
+        check(abs(animated.duration - 0.5) < 0.001, "保留封面逐帧时长")
+        check(animated.frameIndex(at: 0.05) == 0 && animated.frameIndex(at: 0.15) == 1
+              && animated.frameIndex(at: 0.35) == 2 && animated.frameIndex(at: 0.55) == 0,
+              "按真实时长换帧并循环")
+        let pixels0 = animated.frames[0].dataProvider!.data! as Data
+        let pixels1 = animated.frames[1].dataProvider!.data! as Data
+        check(pixels0 != pixels1, "真实帧像素不同而非同一封面位移")
+        let same = await loader.image(for: .video(gif), size: .card, animated: true)
+        check(same === animated, "动态封面复用解码缓存")
+        check(await loader.image(for: .video(gif))?.frames.count == 1, "详情可使用首帧且不复用动画请求")
+        let apng = root.appendingPathComponent("animated.png")
+        animation(apng, type: "public.png", frames: 3)
+        check(await loader.image(for: .video(apng), animated: true)?.frames.count == 3, "APNG 读取多帧")
+        let longGIF = root.appendingPathComponent("long.gif")
+        animation(longGIF, type: "com.compuserve.gif", frames: 200, width: 256)
+        let long = await loader.image(for: .video(longGIF), animated: true)!
+        check(long.frames.count == 96 && abs(long.duration - 39.9) < 0.01, "长动画采样限制帧数但保留完整时间")
+        check(long.cost <= CoverImageLoader.animationBudget, "解码内存在单封面预算内")
+        try Data(#"{"preview":"animated.jpg"}"#.utf8).write(to: project)
+        check(await loader.image(for: .videoProject(folder: root, fallback: large), animated: true)?.frames.count == 3,
+              "视频卡片优先播放项目自己的动态封面")
+        check(await loader.image(for: .videoProject(folder: root.appendingPathComponent("missing"), fallback: large))?.frames.count == 1,
+              "独立视频没有动态封面时仍显示已有缩略图")
+        check(CoverImageLoader.allowedRemote(URL(string: "https://images.steamusercontent.com/a")!)
+              && !CoverImageLoader.allowedRemote(URL(string: "http://images.steamusercontent.com/a")!)
+              && !CoverImageLoader.allowedRemote(URL(string: "https://steamusercontent.com.example.com/a")!),
+              "远程封面只允许受信 HTTPS 主机")
         print("\(count) cover loading checks passed")
     }
 }

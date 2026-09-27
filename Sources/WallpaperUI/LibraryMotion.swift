@@ -30,22 +30,15 @@ struct HoverArtwork<Content: View>: View {
     let active: Bool
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduced
-    @State private var drifting = false
-
     var body: some View {
         GeometryReader { geometry in
             content()
-                .scaleEffect(reduced ? 1 : active ? 1.075 : drifting ? 1.065 : 1.025)
-                .offset(x: reduced || active ? 0 : drifting ? -5 : 5,
-                        y: reduced || active ? 0 : drifting ? 2 : -2)
+                .scaleEffect(active && !reduced ? 1.045 : 1)
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .clipped()
         }
-        .animation(reduced ? nil : .easeInOut(duration: 8).repeatForever(autoreverses: true), value: drifting)
         .animation(reduced ? nil : LibraryMotion.feedback(false), value: active)
         .animation(nil, value: reduced)
-        .onAppear { drifting = true }
-        .onDisappear { drifting = false }
     }
 }
 
@@ -113,6 +106,7 @@ struct LibraryCover: View {
     let source: CoverSource
     let symbol: String
     var size: CoverSize = .card
+    @Environment(\.accessibilityReduceMotion) private var reduced
     @State private var raster: CoverRaster?
     @State private var loadedRequest: CoverRequest?
     private var request: CoverRequest { CoverRequest(source: source, size: size) }
@@ -120,7 +114,7 @@ struct LibraryCover: View {
     var body: some View {
         GeometryReader { geometry in
             if loadedRequest == request, let raster {
-                Image(decorative: raster.image, scale: 1).resizable().scaledToFill()
+                CoverRasterView(raster: raster, animate: size == .card && !reduced)
                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
             } else {
                 Rectangle().fill(Color(nsColor: .quaternaryLabelColor))
@@ -129,7 +123,7 @@ struct LibraryCover: View {
         }.accessibilityHidden(true)
             .task(id: request) {
                 let requested = request
-                let loaded = await CoverImageLoader.shared.image(for: requested.source, size: requested.size)
+                let loaded = await CoverImageLoader.shared.image(for: requested.source, size: requested.size, animated: requested.size == .card)
                 guard !Task.isCancelled else { return }
                 raster = loaded
                 loadedRequest = requested
