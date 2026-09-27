@@ -44,8 +44,10 @@ struct SceneCatalogPayload: Decodable {
         self.defaults = defaults
         self.rootProvider = roots ?? {
             var result = MaterialDiscovery.roots(defaults: defaults)
-            if let bundled = Bundle.main.resourceURL?.appendingPathComponent("GravityScenes"),
-               FileManager.default.fileExists(atPath: bundled.path), !result.contains(bundled) { result.append(bundled) }
+            for name in ["GravityScenes", "MoonScenes"] {
+                if let bundled = Bundle.main.resourceURL?.appendingPathComponent(name),
+                   FileManager.default.fileExists(atPath: bundled.path), !result.contains(bundled) { result.append(bundled) }
+            }
             return result
         }
         updateRoots()

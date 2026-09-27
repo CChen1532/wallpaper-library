@@ -4,3 +4,4 @@ dist/
 .swiftpm/
 /工具/we-scene-probe/we-scene-probe
 样本/
+/Scenes/LunarObservatory/**/assets/*.glb

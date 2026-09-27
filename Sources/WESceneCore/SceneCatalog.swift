@@ -146,6 +146,15 @@ extension WESceneInspection {
                 continue
             }
             do {
+                if try MoonScene.load(pkg) != nil {
+                    let capability = WESceneCapabilityReport(schemaVersion: 1, packageVersion: MoonScene.format,
+                        resourceInspectionAvailable: true, restrictedStaticPreviewAvailable: false,
+                        desktopScenePlayable: true, faithfulSceneRendering: true, previewFailure: nil,
+                        limitationCodes: ["nativeMoonScene"], description: "NASA LRO 月球 · 时钟与交互光影")
+                    entries.append(.init(name: name, title: title, packagePath: pkg.path, packageBytes: bytes,
+                                         capability: capability, error: nil))
+                    continue
+                }
                 if let gravity = try GravityScene.load(pkg) {
                     let capability = WESceneCapabilityReport(schemaVersion: 1, packageVersion: GravityScene.format,
                         resourceInspectionAvailable: true, restrictedStaticPreviewAvailable: false,

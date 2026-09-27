@@ -28,6 +28,8 @@ public struct GravityScene: Codable, Sendable {
               let size = values.fileSize, (1...4096).contains(size) else { return nil }
         let data = try Data(contentsOf: url)
         guard data.count <= 4096, data.first == 123 else { return nil }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["format"] as? String == Self.format else { return nil }
         let manifest = try JSONDecoder().decode(Self.self, from: data)
         guard manifest.format == Self.format else { return nil }
         return manifest

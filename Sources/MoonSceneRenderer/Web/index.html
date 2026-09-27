@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-Hans"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob:; img-src 'self' data: blob:; object-src 'none'">
+<title>SELENE · 月下观测台</title><link rel="stylesheet" href="style.css">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script></head>
+<body>
+<div id="universe" role="img" aria-label="可拖动旋转、滚轮缩放的 NASA 月球地形模型" tabindex="0"></div>
+<div class="grain"></div><div class="vignette"></div>
+<header><div class="brand"><span class="brand-mark">◒</span></div><div class="header-right"><span class="live-dot"></span><span id="zone">LOCAL TIME</span></div></header>
+<main class="clock-panel"><div class="clock-row"><time id="clock">--:--</time><span id="seconds">00</span></div><div id="date">加载本地时间</div></main>
+
+
+<footer><div class="credit">LRO / LUNAR SURFACE<span>NASA'S GODDARD SPACE FLIGHT CENTER</span></div><div class="hint" id="hint">拖动旋转 · 滚轮缩放 · 双击复位</div></footer>
+<div id="loading"><div class="loading-orbit"></div><span id="loading-text">正在展开月面</span><small>NASA LRO · TOPOGRAPHIC MODEL</small></div>
+<div id="error" role="alert" hidden><strong>月球场景暂时无法显示</strong><p id="error-text"></p><button onclick="location.reload()">重新加载</button></div>
+<script type="module" src="moon.js"></script></body></html>

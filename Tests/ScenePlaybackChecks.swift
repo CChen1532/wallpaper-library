@@ -40,6 +40,24 @@ import UniformTypeIdentifiers
         try Data(#"{"format":"wallpaperui.gravity.v1","preset":"arbitrary-code"}"#.utf8).write(to: manifest)
         do { _ = try GravityScene.load(manifest); preconditionFailure("invalid preset accepted") }
         catch { check(true, "原生包拒绝未知预设") }
+        let moonData = Data(#"{"format":"wallpaperui.moon.v1","preset":"selene"}"#.utf8)
+        try moonData.write(to: manifest)
+        let wrongRenderer = try GravityScene.load(manifest)
+        let moonManifest = try MoonScene.load(manifest)
+        check(wrongRenderer == nil && moonManifest?.preset == "selene",
+              "月球清单不会误入引力或 Mirage 渲染器")
+        let moonRenderer = nativeRoot.appendingPathComponent("MoonSceneRenderer")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: moonRenderer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: moonRenderer.path)
+        let moonLaunch = try SceneLaunchConfiguration.prepare(runtimeURL: nativeRoot.appendingPathComponent("SceneRuntime"),
+            root: nativeRoot, name: "native", title: "Moon", expectedBytes: Int64(moonData.count), displayID: 1,
+            preferences: .init(mouseEnabled: false, mouseButtonsEnabled: false))
+        check(moonLaunch.executable == moonRenderer && moonLaunch.supportsLiveProperties &&
+              moonLaunch.arguments.contains("--no-mouse") && moonLaunch.arguments.contains("--no-mouse-buttons"),
+              "月球渲染器保留单实例协议、暂停与输入关闭设置")
+        try Data(#"{"format":"wallpaperui.moon.v1","preset":"https://untrusted.invalid/script"}"#.utf8).write(to: manifest)
+        do { _ = try MoonScene.load(manifest); preconditionFailure("invalid moon preset accepted") }
+        catch { check(true, "月球包拒绝未知预设与可执行路径") }
         try FileManager.default.removeItem(at: manifest)
         try FileManager.default.createSymbolicLink(at: manifest, withDestinationURL: nativeRenderer)
         check((try GravityScene.load(manifest)) == nil, "原生包拒绝符号链接")

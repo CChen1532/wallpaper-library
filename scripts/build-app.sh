@@ -13,6 +13,10 @@ cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
 cp .build/release/GravitySceneRenderer "$app/Contents/Resources/GravitySceneRenderer"
 cp -R .build/release/WallpaperUI_GravitySceneRenderer.bundle "$app/Contents/Resources/"
 cp -R Scenes/GravityJourney "$app/Contents/Resources/GravityScenes"
+python3 scripts/verify-moon-asset.py
+cp .build/release/MoonSceneRenderer "$app/Contents/Resources/MoonSceneRenderer"
+cp -R .build/release/WallpaperUI_MoonSceneRenderer.bundle "$app/Contents/Resources/"
+cp -R Scenes/LunarObservatory "$app/Contents/Resources/MoonScenes"
 mkdir -p "$app/Contents/Resources/NowPlaying"
 xcrun clang++ -dynamiclib -fobjc-arc -framework AppKit -framework Foundation \
     -mmacosx-version-min=14.0 Sources/MediaBridge/NowPlayingBridge.mm \
@@ -44,6 +48,7 @@ if [[ "$identity_present" -ne 1 ]]; then
     SIGN_ID="-"
 fi
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.wallpaperswitch "$app/Contents/Resources/WallpaperSwitch/space-inventory"
+codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.moon "$app/Contents/Resources/MoonSceneRenderer"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.gravity "$app/Contents/Resources/GravitySceneRenderer"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.media "$app/Contents/Resources/NowPlaying/libWallpaperNowPlaying.dylib"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library "$app"

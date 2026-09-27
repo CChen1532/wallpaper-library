@@ -1,0 +1,12 @@
+{
+  "sourcePage": "https://svs.gsfc.nasa.gov/14959/",
+  "sourceFile": "https://svs.gsfc.nasa.gov/vis/a010000/a014900/a014959/Moon_NASA_LRO_8k_Topo_Small.glb",
+  "localFile": "01-Selene/assets/moon.glb",
+  "bytes": 81505784,
+  "sha256": "c4b65fb4df622a37fd75366c2ed9bf9e163e41c0fde178b3b27e31b0173e6953",
+  "credit": "NASA's Goddard Space Flight Center",
+  "vertices": 2021340,
+  "triangles": 1015808,
+  "threeVersion": "r180",
+  "modifiedModel": false
+}

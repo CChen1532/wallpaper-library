@@ -51,7 +51,7 @@ struct NativeLibraryView: View {
     }
     private var selectedSceneLimitations: [String] {
         guard let selectedSceneName else { return [] }
-        return filteredScenes.first(where: { $0.id == selectedSceneName })?.capability?.limitationCodes.filter { $0 != "nativeGravityScene" } ?? []
+        return filteredScenes.first(where: { $0.id == selectedSceneName })?.capability?.limitationCodes.filter { $0 != "nativeGravityScene" && $0 != "nativeMoonScene" } ?? []
     }
     private var selectedPreviewScene: SceneCatalogPayload.Entry? {
         guard let selectedSceneName,
@@ -325,6 +325,16 @@ struct NativeLibraryView: View {
                         Text("金色吸积盘 · 高等数学公式 · 引力弯曲 · 纵深星空")
                         Text(item.name == "01-Ultra" ? "极致画质 4K：3840 长边 · 高清公式 · 目标 120 FPS" : "性能优先：1600 宽 · 90 步光线积分 · 30 FPS")
                         Text("使用当前画面自动生成 Space 过渡底图。")
+                    }.font(.caption).foregroundStyle(.secondary)
+                } else if item.capability?.limitationCodes.contains("nativeMoonScene") == true {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("NASA 月球 · 交互光影", systemImage: "moon.stars").font(.headline)
+                        Text("本地时钟 · 月球自转 · 立体光影")
+                        Text("桌面：聚焦 Finder 后，按住 Option 拖动旋转、滚轮缩放；鼠标移动不跟随。")
+                        Text("预览：直接拖动、滚轮缩放，双击复位；松手后继续自转。")
+                        Button { MoonPreview.open(assets: item.folder.appendingPathComponent("assets")) } label: {
+                            Label("打开月球交互预览", systemImage: "arrow.up.left.and.arrow.down.right")
+                        }.buttonStyle(.bordered)
                     }.font(.caption).foregroundStyle(.secondary)
                 } else if let sceneRoot {
                     let package = sceneRoot.appendingPathComponent(item.name).appendingPathComponent("scene.pkg")

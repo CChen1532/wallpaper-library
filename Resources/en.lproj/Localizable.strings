@@ -592,3 +592,10 @@
 "每分钟自动检查新素材。" = "Automatically check for new items every minute.";
 "状态" = "Status";
 "首次自动切换需要辅助功能权限。视频底图可在各视频详情中设置。" = "The first automatic transition needs Accessibility permission. Configure video backdrops in each video's details.";
+
+"NASA 月球 · 交互光影" = "NASA Moon · Interactive Lighting";
+"本地时钟 · 月球自转 · 立体光影" = "Local clock · Rotating Moon · Sculpted lighting";
+"桌面：聚焦 Finder 后，按住 Option 拖动旋转、滚轮缩放；鼠标移动不跟随。" = "Desktop: with Finder active, hold Option and drag to rotate or scroll to zoom. Pointer movement does not move the view.";
+"预览：直接拖动、滚轮缩放，双击复位；松手后继续自转。" = "Preview: drag to rotate, scroll to zoom, double-click to reset. The Moon keeps rotating after release.";
+"打开月球交互预览" = "Open Interactive Moon Preview";
+"当前应用缺少月球场景渲染器，请重新构建应用" = "The Moon renderer is missing. Rebuild the application.";

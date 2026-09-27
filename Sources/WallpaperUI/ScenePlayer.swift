@@ -26,6 +26,18 @@ struct SceneLaunchConfiguration: Sendable {
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
                         expectedBytes: Int64, displayID: UInt32, preferences: ScenePreferences = .init()) throws -> Self {
         let package = try validatedPackage(root: root, name: name, expectedBytes: expectedBytes)
+        if try MoonScene.load(package) != nil {
+            let executable = runtimeURL.deletingLastPathComponent().appendingPathComponent("MoonSceneRenderer")
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+                throw BackendError.message("当前应用缺少月球场景渲染器，请重新构建应用")
+            }
+            var arguments = ["--assets", package.deletingLastPathComponent().appendingPathComponent("assets").path,
+                             "--display-id", String(displayID), "--control-stdin", "--deferred-show"]
+            if !preferences.mouseEnabled { arguments.append("--no-mouse") }
+            if !preferences.mouseButtonsEnabled { arguments.append("--no-mouse-buttons") }
+            return Self(executable: executable, arguments: arguments, environment: nil, package: package,
+                        title: title, displayID: displayID, preferences: preferences, supportsLiveProperties: true)
+        }
         if let native = try GravityScene.load(package) {
             let executable = runtimeURL.deletingLastPathComponent().appendingPathComponent("GravitySceneRenderer")
             guard FileManager.default.isExecutableFile(atPath: executable.path) else {
@@ -79,7 +91,7 @@ struct SceneLaunchConfiguration: Sendable {
 
     mutating func setUserProperties(_ launch: ScenePropertyLaunch) {
         userPropertyValues = launch.effectiveValues
-        if executable.lastPathComponent != "GravitySceneRenderer", let file = launch.file {
+        if !["GravitySceneRenderer", "MoonSceneRenderer"].contains(executable.lastPathComponent), let file = launch.file {
             // Mirage reads this before scene parsing and before the first captured frame.
             arguments.insert(contentsOf: ["--user-properties", file.path], at: arguments.count - 2)
         }
