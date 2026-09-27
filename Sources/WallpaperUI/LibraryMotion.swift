@@ -30,16 +30,22 @@ struct HoverArtwork<Content: View>: View {
     let active: Bool
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduced
+    @State private var drifting = false
 
     var body: some View {
         GeometryReader { geometry in
             content()
-                .scaleEffect(active && !reduced ? 1.045 : 1)
+                .scaleEffect(reduced ? 1 : active ? 1.075 : drifting ? 1.065 : 1.025)
+                .offset(x: reduced || active ? 0 : drifting ? -5 : 5,
+                        y: reduced || active ? 0 : drifting ? 2 : -2)
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .clipped()
         }
+        .animation(reduced ? nil : .easeInOut(duration: 8).repeatForever(autoreverses: true), value: drifting)
         .animation(reduced ? nil : LibraryMotion.feedback(false), value: active)
         .animation(nil, value: reduced)
+        .onAppear { drifting = true }
+        .onDisappear { drifting = false }
     }
 }
 

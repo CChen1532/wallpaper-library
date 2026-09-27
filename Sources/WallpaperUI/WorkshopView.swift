@@ -74,9 +74,11 @@ struct WorkshopView: View {
                                 workshop.select(item)
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    AsyncImage(url: item.previewURL) { image in image.resizable().scaledToFill() }
-                                        placeholder: { Rectangle().fill(.quaternary) }
-                                        .frame(height: 112).clipped()
+                                    HoverArtwork(active: false) {
+                                        AsyncImage(url: item.previewURL) { image in image.resizable().scaledToFill() }
+                                            placeholder: { Rectangle().fill(.quaternary) }
+                                    }
+                                    .frame(height: 112).clipped()
                                     Text(item.title).font(.callout.weight(.medium)).lineLimit(2).frame(height: 36, alignment: .topLeading)
                                         .padding(.horizontal, 10)
                                     Text(classification(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)

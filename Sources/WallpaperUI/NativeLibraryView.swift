@@ -34,7 +34,6 @@ struct NativeLibraryView: View {
     @State private var scenePreviewError: String?
     @State private var scenePreviewLoading = false
     @State private var coverPreview: SceneCatalogPayload.Entry?
-    @State private var videoPreview: Wallpaper?
     @FocusState private var focusedWallpaper: String?
     @State private var keyboardScrollTarget: String?
     @State private var galleryIndex = GalleryIndex<GalleryEntry>()
@@ -138,14 +137,14 @@ struct NativeLibraryView: View {
             if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
         .onChange(of: page) { _, newValue in
-            search = ""; coverPreview = nil; videoPreview = nil
+            search = ""; coverPreview = nil
             if newValue == .rotation { syncRotationFields() }
         }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(AppStrings.text(model.error ?? "", locale: locale)) }
         .confirmationDialog("将此壁纸移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("移入废纸篓", role: .destructive) {
                 guard let payload = trashPayload, let target = trashTarget, let stamp = trashStamp else { return }
-                coverPreview = nil; videoPreview = nil
+                coverPreview = nil
                 Task {
                     guard !workshop.busy else { return }
                     if await model.trashWallpaper(payload: payload, confirmedTarget: target, confirmedStamp: stamp, roots: catalog.roots) {
@@ -160,7 +159,6 @@ struct NativeLibraryView: View {
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
         .sheet(item: $coverPreview) { SceneCoverPreviewSheet(title: $0.title ?? $0.name, folder: $0.folder) }
-        .sheet(item: $videoPreview) { VideoPreviewSheet(item: $0) }
     }
     // Fill each row within a bounded card size; wider windows still add columns.
     private let galleryCardWidth: CGFloat = 192
@@ -237,7 +235,8 @@ struct NativeLibraryView: View {
                                 .animation(LibraryMotion.reflow(reduceMotion), value: columnCount)
                                 .animation(nil, value: reduceMotion)
                                     .padding(.horizontal, galleryInset).padding(.bottom, 20).padding(.top, 3)
-                            }.onChange(of: keyboardScrollTarget) { _, id in
+                            }.scrollIndicators(.visible)
+                            .onChange(of: keyboardScrollTarget) { _, id in
                                 if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
                             }
                         }
@@ -368,7 +367,8 @@ struct NativeLibraryView: View {
                     .buttonStyle(.borderless).font(.callout)
                     .disabled(model.isWorking || workshop.busy || MaterialRemoval.isBundled(item.folder))
             }.padding(20)
-        }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        }.scrollIndicators(.visible)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             .task(id: (sceneRoot?.path ?? "") + "/" + item.name) {
                 guard let sceneRoot, item.error == nil, item.packageBytes > 0 else { return }
                 await model.preloadScene(root: sceneRoot, name: item.name,
@@ -479,9 +479,6 @@ struct NativeLibraryView: View {
                     Label("设为动态壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
                 }.buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
-                Button { videoPreview = item } label: {
-                    Label("动态预览", systemImage: "play.rectangle").frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(!item.playable)
                 if model.stateIssue == nil && model.state.running && model.state.currentPath == item.id {
                     Label("正在桌面播放", systemImage: "waveform").font(.caption).foregroundStyle(.tint)
                 }
@@ -506,7 +503,8 @@ struct NativeLibraryView: View {
                 Button("移入废纸篓", systemImage: "trash", role: .destructive) { requestTrash(item.url) }
                     .buttonStyle(.borderless).font(.callout).disabled(model.isWorking || workshop.busy || !model.capabilities.canTrash)
             }.padding(20)
-        }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        }.scrollIndicators(.visible)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
     private func requestTrash(_ payload: URL) {
         guard !model.isWorking, !workshop.busy else { return }
