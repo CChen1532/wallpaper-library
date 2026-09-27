@@ -7,11 +7,12 @@ import Foundation
         func rejects(_ message: String, _ block: () throws -> Void) {
             do { try block(); fatalError(message) } catch { check(true, message) }
         }
-        func html(_ request: WorkshopBrowse.Request, page: Int = 1, tags: [String]? = nil, sort: String? = nil, dates: WorkshopFilters.DateRange? = nil) throws -> String {
+        func html(_ request: WorkshopBrowse.Request, page: Int = 1, tags: [String]? = nil, excluded: [String]? = nil,
+                  sort: String? = nil, dates: WorkshopFilters.DateRange? = nil, results: [[String: Any]] = []) throws -> String {
             var key: [String: Any] = ["appid": 431960, "page": page, "search_text": request.query, "browse_sort": sort ?? request.sort,
-                                      "required_tags": tags ?? request.tags, "trend_days": 7]
+                                      "required_tags": tags ?? request.tags, "excluded_tags": excluded ?? request.excludedTags, "trend_days": 7]
             if let range = dates ?? request.dates { key["date_range_created"] = ["timestamp_start": range.start, "timestamp_end": range.end] }
-            let data: [String: Any] = ["eresult": 1, "current_page": page, "total_count": 0, "total_pages": 0, "results": []]
+            let data: [String: Any] = ["eresult": 1, "current_page": page, "total_count": results.count, "total_pages": results.isEmpty ? 0 : 2, "results": results]
             let q = String(decoding: try JSONSerialization.data(withJSONObject: ["queries": [["queryKey": ["workshop_browse", key], "state": ["data": data]]]]), as: UTF8.self)
             let context = String(decoding: try JSONSerialization.data(withJSONObject: ["queryData": q]), as: UTF8.self)
             let literal = String(decoding: try JSONSerialization.data(withJSONObject: context, options: .fragmentsAllowed), as: UTF8.self)
@@ -19,7 +20,7 @@ import Foundation
         }
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/New_York")!
         let date = calendar.date(from: DateComponents(year: 2026, month: 3, day: 8))!
-        var filters = WorkshopFilters(age: .everyone, kind: .scene, genres: [.nature], sort: .subscribers, period: .custom, startDate: date, endDate: date)
+        var filters = WorkshopFilters(ages: [.everyone], kinds: [.scene], genres: [.nature], sort: .subscribers, period: .custom, startDate: date, endDate: date)
         let request = WorkshopBrowse.Request(query: "雪 & p=5", filters: filters, now: date, calendar: calendar)
         let url = WorkshopBrowse.url(request: request, page: 2)
         let args = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
@@ -32,7 +33,7 @@ import Foundation
         rejects("ignored age filter cannot pass as filtered result") { _ = try WorkshopBrowse.decode(html(request, tags: ["Scene", "Nature"]), request: request, page: 1) }
         rejects("stale sort rejected") { _ = try WorkshopBrowse.decode(html(request, sort: "mostrecent"), request: request, page: 1) }
         rejects("stale dates rejected") { _ = try WorkshopBrowse.decode(html(request, dates: .init(start: 1, end: 2)), request: request, page: 1) }
-        rejects("unexpected date restriction rejected") { _ = try WorkshopBrowse.decode(html(request), request: .init(query: request.query, filters: .init(age: .everyone, kind: .scene, genres: [.nature], sort: .subscribers)), page: 1) }
+        rejects("unexpected date restriction rejected") { _ = try WorkshopBrowse.decode(html(request), request: .init(query: request.query, filters: .init(ages: [.everyone], kinds: [.scene], genres: [.nature], sort: .subscribers)), page: 1) }
         for sort in WorkshopFilters.Sort.allCases {
             filters.sort = sort
             let current = WorkshopBrowse.Request(query: "mountain", filters: filters)
@@ -69,7 +70,7 @@ import Foundation
         model.searchText = "unsubmitted edit"; model.search(page: 2); try await idle(); model.search(page: 1); try await idle()
         check(calls.map { $0.0.query } == ["mountain", "mountain", "mountain"], "both next and previous pages preserve submitted text")
         check(calls.map { $0.1 } == [1, 2, 1], "paging supports return to first page")
-        var selected = WorkshopFilters(age: .everyone, kind: .scene, genres: [.nature], sort: .latest, period: .week)
+        var selected = WorkshopFilters(ages: [.everyone], kinds: [.scene], genres: [.nature], sort: .latest, period: .week)
         model.setFilters(selected)
         check(model.searchPage == nil && model.busy, "new filters immediately remove stale results")
         try await idle()
@@ -99,7 +100,7 @@ import Foundation
         let legacy = Data(#"{"age":"Everyone","kind":"Scene","genre":"Nature","sort":"mostrecent","period":"all"}"#.utf8)
         defaults.set(legacy, forKey: "workshopBrowseFilters")
         let migrated = WorkshopModel(defaults: defaults).filters
-        check(migrated.genres == [.nature] && migrated.age == .everyone && migrated.sort == .latest, "legacy single genre migrates without losing other filters")
+        check(migrated.genres == [.nature] && migrated.ages == [.everyone] && migrated.sort == .latest, "legacy single genre migrates without losing other filters")
         let saved = try JSONEncoder().encode(migrated)
         let savedObject = try JSONSerialization.jsonObject(with: saved) as! [String: Any]
         check(savedObject["genre"] == nil && savedObject["genres"] as? [String] == ["Nature"], "migration writes only the new collection format")
@@ -108,6 +109,33 @@ import Foundation
         check(try JSONDecoder().decode(WorkshopFilters.self, from: Data(#"{"genres":[],"genre":"Nature"}"#.utf8)).genres.isEmpty, "new cleared selection overrides a legacy value")
         let normalized = try JSONDecoder().decode(WorkshopFilters.self, from: Data(#"{"genres":["Nature","Landscape","Nature","","Unknown"]}"#.utf8))
         check(normalized.genres == [.nature, .landscape], "duplicate, empty and unknown genre values normalized")
+        check(migrated.ages == [.everyone] && migrated.kinds == [.scene], "legacy single age and type migrate to checked sets")
+        let normalizedGroups = try JSONDecoder().decode(WorkshopFilters.self,
+            from: Data(#"{"ages":["Everyone","Mature","Everyone",""],"age":"Questionable","kinds":["Scene","Video","Application","Scene"],"kind":"Web"}"#.utf8))
+        check(normalizedGroups.ages == [.everyone, .mature] && normalizedGroups.kinds == [.scene, .video], "new checked groups override and normalize legacy values")
+        let removedApplication = try JSONDecoder().decode(WorkshopFilters.self,
+            from: Data(#"{"age":"Everyone","kind":"Application","genre":"Nature"}"#.utf8))
+        check(removedApplication.ages == [.everyone] && removedApplication.kinds.isEmpty && removedApplication.genres == [.nature], "removed Application choice does not erase other saved filters")
+        var union = WorkshopFilters(ages: [.everyone, .questionable], kinds: [.scene, .video], genres: [.nature])
+        let unionRequest = WorkshopBrowse.Request(query: "mountain", filters: union)
+        let unionURL = URLComponents(url: WorkshopBrowse.url(request: unionRequest, page: 2), resolvingAgainstBaseURL: false)!.queryItems!
+        check(unionRequest.tags == ["Nature"] && unionRequest.excludedTags == ["Mature", "Web", "Application"], "age/type OR keeps genre AND and excludes unselected groups")
+        check(unionURL.filter { $0.name == "requiredtags[]" }.compactMap(\.value) == ["Nature"]
+              && unionURL.filter { $0.name == "excludedtags[]" }.compactMap(\.value) == unionRequest.excludedTags,
+              "multi-choice request sends only safe server-side constraints")
+        func fixture(_ id: String, _ tags: [String]) -> [String: Any] {
+            ["publishedfileid": id, "consumer_appid": 431960, "title": "Fixture " + id,
+             "tags": tags.map { ["tag": $0] }, "file_size": "1024"]
+        }
+        let candidates = [fixture("101", ["Everyone", "Scene", "Nature"]), fixture("102", ["Questionable", "Video", "Nature"]),
+                          fixture("103", ["Mature", "Scene", "Nature"]), fixture("104", ["Everyone", "Web", "Nature"]),
+                          fixture("105", ["Scene", "Nature"])]
+        let unionPage = try WorkshopBrowse.decode(html(unionRequest, results: candidates), request: unionRequest, page: 1)
+        check(unionPage.items.map(\.id) == ["101", "102"] && unionPage.candidateCount, "local OR accepts either selected age/type and rejects missing or unwanted tags")
+        check(unionPage.total == 5 && unionPage.pages == 2, "candidate total is retained for honest pagination")
+        rejects("stale excluded tags rejected") { _ = try WorkshopBrowse.decode(html(unionRequest, excluded: []), request: unionRequest, page: 1) }
+        union.ages = []; union.kinds = []
+        check(WorkshopBrowse.Request(query: "mountain", filters: union).tags == ["Nature"], "clearing age and type keeps the genre constraint")
         var multi = migrated; multi.genres = [.nature, .landscape]
         let multiRequest = WorkshopBrowse.Request(query: "mountain", filters: multi)
         let multiArgs = URLComponents(url: WorkshopBrowse.url(request: multiRequest, page: 2), resolvingAgainstBaseURL: false)!.queryItems!
@@ -117,9 +145,12 @@ import Foundation
         check(calls.last!.0.tags == multiRequest.tags && calls.last!.1 == 2, "multiple genres retained on next page")
         multi.genres = []; model.setFilters(multi); try await idle()
         check(calls.last!.0.tags == ["Everyone", "Scene"], "clearing genres keeps age and type constraints")
+        model.setFilters(WorkshopFilters(ages: [.everyone, .questionable], kinds: [.scene, .video], genres: [.nature])); try await idle()
+        let unionSnapshot = calls.last!.0; model.search(page: 2); try await idle()
+        check(calls.last!.0 == unionSnapshot && calls.last!.1 == 2, "multi-age/type candidate pages retain exact query snapshot")
 
         if CommandLine.arguments.contains("--live") {
-            var live = WorkshopFilters(age: .everyone, kind: .scene, genres: [.nature])
+            var live = WorkshopFilters(ages: [.everyone], kinds: [.scene], genres: [.nature])
             for sort in [WorkshopFilters.Sort.latest, .popular, .subscribers] {
                 live.sort = sort
                 let query = WorkshopBrowse.Request(query: "mountain", filters: live)
@@ -138,6 +169,12 @@ import Foundation
             check(!dated.items.isEmpty, "live Steam acknowledges exact custom creation bounds")
             let combined = try await WorkshopBrowse.fetch(request: multiRequest, page: 1)
             check(!combined.items.isEmpty && combined.items.allSatisfy { Set($0.tags).isSuperset(of: Set(multiRequest.tags)) }, "live two-genre response matches every selected tag")
+            let firstUnion = try await WorkshopBrowse.fetch(request: unionRequest, page: 1)
+            check(firstUnion.candidateCount && firstUnion.pages > 1 && !firstUnion.items.isEmpty
+                  && firstUnion.items.allSatisfy(unionRequest.matches), "live first page matches age/type OR and genre AND")
+            let secondUnion = try await WorkshopBrowse.fetch(request: unionRequest, page: 2)
+            check(secondUnion.candidateCount && secondUnion.number == 2 && !secondUnion.items.isEmpty
+                  && secondUnion.items.allSatisfy(unionRequest.matches), "live second candidate page preserves multi-choice conditions")
         }
         print("\(count) Workshop filter checks passed")
     }

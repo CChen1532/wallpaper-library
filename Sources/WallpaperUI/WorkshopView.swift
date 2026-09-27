@@ -10,8 +10,6 @@ struct WorkshopView: View {
     @State private var invalidGuard = false
     @State private var tab = 0
     @State private var showSubscriptions = false
-    @State private var showGenres = false
-    @State private var genreDraft: Set<WorkshopFilters.Genre> = []
     @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
     @FocusState private var guardFocused: Bool
     let showLibrary: () -> Void
@@ -50,13 +48,20 @@ struct WorkshopView: View {
                 if tab != 2, let item = workshop.item { details(item).id("selectedWorkshop") }
                 if tab == 0, let page = workshop.searchPage {
                     HStack {
-                        Text(String(format: AppStrings.text("共 %d 项", locale: locale), page.total)).font(.caption).foregroundStyle(.secondary)
+                        Text(page.candidateCount
+                             ? String(format: AppStrings.text("本页符合条件 %d 项", locale: locale), page.items.count)
+                             : String(format: AppStrings.text("共 %d 项", locale: locale), page.total))
+                            .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("上一页") { workshop.search(page: page.number - 1) }.disabled(workshop.busy || page.number <= 1)
                         Text("\(page.number) / \(max(1, page.pages))").font(.caption).monospacedDigit()
                         Button("下一页") { workshop.search(page: page.number + 1) }.disabled(workshop.busy || page.number >= page.pages)
                     }
-                    if page.items.isEmpty { ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass", description: Text("试试其他关键词或放宽筛选条件。")) }
+                    if page.items.isEmpty {
+                        ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass",
+                            description: Text(page.candidateCount && page.number < page.pages
+                                ? "本页没有符合条件的壁纸，可以继续下一页。" : "试试其他关键词或放宽筛选条件。"))
+                    }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 16)], spacing: 16) {
                         ForEach(page.items) { item in
                             Button {
@@ -132,10 +137,18 @@ struct WorkshopView: View {
     private var browseFilters: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
-                filterPicker("年龄分级", key: \.age, id: "workshop.age")
-                    .help("按作者在 Steam 标注的分级筛选。")
-                filterPicker("壁纸类型", key: \.kind, id: "workshop.kind")
-                genrePicker
+                WorkshopMultiChoiceFilter(title: "年龄分级", allLabel: "全部年龄", countLabel: "已选 %d 项分级",
+                    hint: "同组任选其一，按作者在 Steam 标注的分级筛选。",
+                    choices: WorkshopFilters.Age.allCases.filter { $0 != .all },
+                    selection: filterBinding(\.ages), id: "workshop.age")
+                WorkshopMultiChoiceFilter(title: "壁纸类型", allLabel: "全部类型", countLabel: "已选 %d 项类型",
+                    hint: "场景、视频或网页，同组任选其一。",
+                    choices: WorkshopFilters.Kind.allCases.filter { $0 != .all && $0 != .application },
+                    selection: filterBinding(\.kinds), id: "workshop.kind")
+                WorkshopMultiChoiceFilter(title: "内容题材", allLabel: "全部题材", countLabel: "已选 %d 项题材",
+                    hint: "同时匹配所有勾选题材；不勾选表示不限。",
+                    choices: WorkshopFilters.Genre.allCases.filter { $0 != .all },
+                    selection: filterBinding(\.genres), id: "workshop.genre")
             }
             HStack(alignment: .bottom, spacing: 16) {
                 filterPicker("排序方式", key: \.sort, id: "workshop.sort")
@@ -159,61 +172,14 @@ struct WorkshopView: View {
             if workshop.filters.browseSort(query: workshop.searchText.trimmingCharacters(in: .whitespacesAndNewlines)) == "trend" {
                 Text("最热门按近 7 天热度排序；日期范围按作品发布时间筛选。").font(.caption).foregroundStyle(.secondary)
             }
-            if workshop.filters.kind == .web || workshop.filters.kind == .application {
-                Text("网页和应用程序壁纸可浏览，暂不支持在此应用中播放。").font(.caption).foregroundStyle(.secondary)
+            if workshop.filters.kinds.contains(.web) {
+                Text("网页壁纸可浏览，暂不支持在此应用中播放。").font(.caption).foregroundStyle(.secondary)
+            }
+            if workshop.filters.needsLocalMatch {
+                Text("同组多选按任一条件匹配；每页显示该页符合条件的项目，页数以 Steam 候选结果为准。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }.disabled(workshop.busy)
-    }
-
-    private var genrePicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("内容题材").font(.caption).foregroundStyle(.secondary)
-            Button {
-                genreDraft = workshop.filters.genres
-                showGenres = true
-            } label: {
-                HStack {
-                    Text(genreSelectionLabel).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Image(systemName: "chevron.down").font(.caption2)
-                }.frame(maxWidth: .infinity)
-            }.accessibilityIdentifier("workshop.genre")
-                .accessibilityLabel(Text("内容题材"))
-                .accessibilityValue(Text(genreSelectionLabel))
-                .popover(isPresented: $showGenres, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("内容题材").font(.headline)
-                        Text("同时匹配所有勾选题材；不勾选表示不限。").font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        ScrollView {
-                            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 12) {
-                                ForEach(WorkshopFilters.Genre.allCases.filter { $0 != .all }, id: \.self) { genre in
-                                    Toggle(LocalizedStringKey(genre.label), isOn: Binding(
-                                        get: { genreDraft.contains(genre) },
-                                        set: { selected in if selected { genreDraft.insert(genre) } else { genreDraft.remove(genre) } }
-                                    )).toggleStyle(.checkbox)
-                                }
-                            }.padding(2)
-                        }.frame(maxHeight: 330)
-                        Divider()
-                        HStack {
-                            Button("清空勾选") { genreDraft = [] }.disabled(genreDraft.isEmpty)
-                            Spacer()
-                            Button("取消") { showGenres = false }.keyboardShortcut(.cancelAction)
-                            Button("应用") {
-                                var next = workshop.filters; next.genres = genreDraft
-                                showGenres = false; workshop.setFilters(next)
-                            }.keyboardShortcut(.defaultAction)
-                        }
-                    }.padding(18).frame(width: 350)
-                }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private var genreSelectionLabel: String {
-        let genres = workshop.filters.selectedGenres
-        if genres.isEmpty { return AppStrings.text("全部题材", locale: locale) }
-        if genres.count == 1 { return AppStrings.text(genres[0].label, locale: locale) }
-        return String(format: AppStrings.text("已选 %d 项题材", locale: locale), genres.count)
     }
 
     private func details(_ item: WorkshopItem) -> some View {
@@ -374,5 +340,68 @@ struct WorkshopView: View {
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.message = AppStrings.text("选择官方 SteamCMD 可执行文件（steamcmd）。", locale: locale)
         if panel.runModal() == .OK, let url = panel.url { workshop.selectComponent(url) }
+    }
+}
+
+private struct WorkshopMultiChoiceFilter<Choice: WorkshopFilterChoice>: View {
+    @Environment(\.locale) private var locale
+    let title: String
+    let allLabel: String
+    let countLabel: String
+    let hint: String
+    let choices: [Choice]
+    @Binding var selection: Set<Choice>
+    let id: String
+    @State private var draft: Set<Choice> = []
+    @State private var showing = false
+
+    private var selected: [Choice] { choices.filter { selection.contains($0) } }
+    private var summary: String {
+        if selected.isEmpty { return AppStrings.text(allLabel, locale: locale) }
+        if selected.count == 1 { return AppStrings.text(selected[0].label, locale: locale) }
+        return String(format: AppStrings.text(countLabel, locale: locale), selected.count)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(LocalizedStringKey(title)).font(.caption).foregroundStyle(.secondary)
+            Button {
+                draft = selection
+                showing = true
+            } label: {
+                HStack {
+                    Text(summary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity)
+            }.buttonStyle(.bordered).controlSize(.regular)
+                .accessibilityIdentifier(id)
+                .accessibilityLabel(Text(LocalizedStringKey(title)))
+                .accessibilityValue(Text(summary))
+                .popover(isPresented: $showing, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(LocalizedStringKey(title)).font(.headline)
+                        Text(LocalizedStringKey(hint)).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ScrollView {
+                            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                                      alignment: .leading, spacing: 12) {
+                                ForEach(choices, id: \.self) { choice in
+                                    Toggle(LocalizedStringKey(choice.label), isOn: Binding(
+                                        get: { draft.contains(choice) },
+                                        set: { selected in if selected { draft.insert(choice) } else { draft.remove(choice) } }
+                                    )).toggleStyle(.checkbox)
+                                }
+                            }.padding(2)
+                        }.frame(maxHeight: 330)
+                        Divider()
+                        HStack {
+                            Button("清空勾选") { draft = [] }.disabled(draft.isEmpty)
+                            Spacer()
+                            Button("取消") { showing = false }.keyboardShortcut(.cancelAction)
+                            Button("应用") { showing = false; selection = draft }.keyboardShortcut(.defaultAction)
+                        }
+                    }.padding(18).frame(width: 350)
+                }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

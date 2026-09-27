@@ -570,3 +570,13 @@
 "同时匹配所有勾选题材；不勾选表示不限。" = "Match all selected genres. Leave unchecked for any genre.";
 "清空勾选" = "Clear Selection";
 "已选 %d 项题材" = "%d genres selected";
+
+/* Workshop rating and type selection */
+"本页符合条件 %d 项" = "%d matches on this page";
+"本页没有符合条件的壁纸，可以继续下一页。" = "No matches on this page. Continue to the next page.";
+"同组任选其一，按作者在 Steam 标注的分级筛选。" = "Match any selected rating declared by the author on Steam.";
+"场景、视频或网页，同组任选其一。" = "Match any selected type: scene, video, or web.";
+"网页壁纸可浏览，暂不支持在此应用中播放。" = "Web wallpapers can be browsed, but playback is not supported in this app.";
+"同组多选按任一条件匹配；每页显示该页符合条件的项目，页数以 Steam 候选结果为准。" = "Multiple ratings or types match any selected option. Matches are shown per Steam candidate page.";
+"已选 %d 项分级" = "%d ratings selected";
+"已选 %d 项类型" = "%d types selected";

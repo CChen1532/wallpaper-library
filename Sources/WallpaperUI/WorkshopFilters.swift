@@ -47,16 +47,30 @@ struct WorkshopFilters: Codable, Equatable, Sendable {
             switch self { case .all: "不限日期"; case .week: "最近一周"; case .month: "最近一个月"; case .year: "最近一年"; case .custom: "自定义日期" }
         }
     }
-    var age: Age = .all
-    var kind: Kind = .all
+    var ages: Set<Age> = []
+    var kinds: Set<Kind> = []
     var genres: Set<Genre> = []
     var sort: Sort = .relevance
     var period: Period = .all
     var startDate: Date = Calendar.current.startOfDay(for: Date())
     var endDate: Date = Calendar.current.startOfDay(for: Date())
+    var selectedAges: [Age] { Age.allCases.filter { $0 != .all && ages.contains($0) } }
+    // Application remains decodable and visible as item metadata, but is no longer a filter choice.
+    var selectedKinds: [Kind] { Kind.allCases.filter { $0 != .all && $0 != .application && kinds.contains($0) } }
     var selectedGenres: [Genre] { Genre.allCases.filter { $0 != .all && genres.contains($0) } }
-    var requiredTags: [String] { ([age.rawValue, kind.rawValue] + selectedGenres.map(\.rawValue)).filter { !$0.isEmpty } }
-    var isDefault: Bool { age == .all && kind == .all && selectedGenres.isEmpty && sort == .relevance && period == .all }
+    // Public Steam browsing combines required tags with AND. A single age/type
+    // is sent to Steam; multiple choices in the same group are matched locally.
+    var requiredTags: [String] {
+        (selectedAges.count == 1 ? selectedAges.map(\.rawValue) : [])
+        + (selectedKinds.count == 1 ? selectedKinds.map(\.rawValue) : [])
+        + selectedGenres.map(\.rawValue)
+    }
+    var excludedTags: [String] {
+        (selectedAges.count > 1 ? Age.allCases.filter { $0 != .all && !ages.contains($0) }.map(\.rawValue) : [])
+        + (selectedKinds.count > 1 ? Kind.allCases.filter { $0 != .all && !kinds.contains($0) }.map(\.rawValue) : [])
+    }
+    var needsLocalMatch: Bool { selectedAges.count > 1 || selectedKinds.count > 1 }
+    var isDefault: Bool { selectedAges.isEmpty && selectedKinds.isEmpty && selectedGenres.isEmpty && sort == .relevance && period == .all }
     var validDates: Bool { period != .custom || Calendar.current.startOfDay(for: startDate) <= Calendar.current.startOfDay(for: endDate) }
     func browseSort(query: String) -> String { sort == .relevance && query.isEmpty ? Sort.popular.rawValue : sort.rawValue }
 
@@ -89,12 +103,16 @@ struct WorkshopFilters: Codable, Equatable, Sendable {
 }
 
 extension WorkshopFilters {
-    private enum CodingKeys: String, CodingKey { case age, kind, genre, genres, sort, period, startDate, endDate }
+    private enum CodingKeys: String, CodingKey { case age, ages, kind, kinds, genre, genres, sort, period, startDate, endDate }
     init(from decoder: Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        age = try values.decodeIfPresent(Age.self, forKey: .age) ?? .all
-        kind = try values.decodeIfPresent(Kind.self, forKey: .kind) ?? .all
+        let ageValues = try values.decodeIfPresent([String].self, forKey: .ages)
+            ?? values.decodeIfPresent(String.self, forKey: .age).map { [$0] } ?? []
+        ages = Set(ageValues.compactMap(Age.init(rawValue:)).filter { $0 != .all })
+        let kindValues = try values.decodeIfPresent([String].self, forKey: .kinds)
+            ?? values.decodeIfPresent(String.self, forKey: .kind).map { [$0] } ?? []
+        kinds = Set(kindValues.compactMap(Kind.init(rawValue:)).filter { $0 != .all && $0 != .application })
         sort = try values.decodeIfPresent(Sort.self, forKey: .sort) ?? .relevance
         period = try values.decodeIfPresent(Period.self, forKey: .period) ?? .all
         startDate = try values.decodeIfPresent(Date.self, forKey: .startDate) ?? startDate
@@ -106,7 +124,8 @@ extension WorkshopFilters {
     }
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(age, forKey: .age); try values.encode(kind, forKey: .kind)
+        try values.encode(selectedAges.map(\.rawValue), forKey: .ages)
+        try values.encode(selectedKinds.map(\.rawValue), forKey: .kinds)
         try values.encode(selectedGenres.map(\.rawValue), forKey: .genres)
         try values.encode(sort, forKey: .sort); try values.encode(period, forKey: .period)
         try values.encode(startDate, forKey: .startDate); try values.encode(endDate, forKey: .endDate)

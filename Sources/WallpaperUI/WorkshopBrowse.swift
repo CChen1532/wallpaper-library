@@ -3,15 +3,29 @@ import Foundation
 // Steam public SSR strategy informed by Loomscreen (MIT), pinned in Licenses.
 // Only JSON is decoded. No scripts from a downloaded page are evaluated here.
 enum WorkshopBrowse {
-    struct Page: Sendable { let items: [WorkshopItem]; let number: Int; let pages: Int; let total: Int }
+    struct Page: Sendable {
+        let items: [WorkshopItem]; let number: Int; let pages: Int; let total: Int
+        var candidateCount = false
+    }
     struct Request: Equatable, Sendable {
         let query: String
         let tags: [String]
+        let excludedTags: [String]
+        let ageOptions: [String]
+        let kindOptions: [String]
         let sort: String
         let dates: WorkshopFilters.DateRange?
         init(query: String, filters: WorkshopFilters = .init(), now: Date = Date(), calendar: Calendar = .current) {
-            self.query = query; tags = filters.requiredTags; sort = filters.browseSort(query: query)
+            self.query = query; tags = filters.requiredTags; excludedTags = filters.excludedTags
+            ageOptions = filters.selectedAges.map(\.rawValue); kindOptions = filters.selectedKinds.map(\.rawValue)
+            sort = filters.browseSort(query: query)
             dates = filters.dateRange(now: now, calendar: calendar)
+        }
+        var needsLocalMatch: Bool { ageOptions.count > 1 || kindOptions.count > 1 }
+        func matches(_ item: WorkshopItem) -> Bool {
+            let values = Set(item.tags.map { $0.lowercased() })
+            return (ageOptions.isEmpty || ageOptions.contains { values.contains($0.lowercased()) })
+                && (kindOptions.isEmpty || kindOptions.contains { values.contains($0.lowercased()) })
         }
     }
     static func url(query: String, page: Int) -> URL { url(request: Request(query: query), page: page) }
@@ -21,6 +35,7 @@ enum WorkshopBrowse {
                            .init(name: "searchtext", value: request.query), .init(name: "search_text_target", value: "0"), .init(name: "days", value: "7"),
                            .init(name: "p", value: String(max(1, page))), .init(name: "l", value: "english")]
         parts.queryItems! += request.tags.map { .init(name: "requiredtags[]", value: $0) }
+        parts.queryItems! += request.excludedTags.map { .init(name: "excludedtags[]", value: $0) }
         if let dates = request.dates {
             parts.queryItems! += [.init(name: "created_date_range_filter_start", value: String(dates.start)),
                                  .init(name: "created_date_range_filter_end", value: String(dates.end))]
@@ -61,7 +76,7 @@ enum WorkshopBrowse {
                   (identity["search_text_target"] as? Int ?? 0) == 0,
                   (identity["section"] as? String ?? "readytouseitems") == "readytouseitems",
                   Set(identity["required_tags"] as? [String] ?? []) == Set(request.tags),
-                  (identity["excluded_tags"] as? [String] ?? []).isEmpty,
+                  Set(identity["excluded_tags"] as? [String] ?? []) == Set(request.excludedTags),
                   (identity["trend_days"] as? Int ?? 7) == 7,
                   matchesDates(identity, request: request),
                   let state = entry["state"] as? [String: Any], let data = state["data"] as? [String: Any],
@@ -77,8 +92,8 @@ enum WorkshopBrowse {
                 var detail = value; detail["consumer_app_id"] = value["consumer_appid"]; detail["result"] = 1
                 guard let data = try? JSONSerialization.data(withJSONObject: ["response": ["publishedfiledetails": [detail]]]) else { return nil }
                 return try? WorkshopMetadata.decode(data, expectedID: id)
-            }
-            return Page(items: items, number: page, pages: pages, total: total)
+            }.filter { !request.needsLocalMatch || request.matches($0) }
+            return Page(items: items, number: page, pages: pages, total: total, candidateCount: request.needsLocalMatch)
         }
         throw WorkshopFailure.pageChanged
     }
