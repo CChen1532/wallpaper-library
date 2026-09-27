@@ -75,12 +75,19 @@ public struct MirageSceneRuntime: Sendable {
                                   horizontalCropPosition: Double = 0.5,
                                   mouseEnabled: Bool = true, mouseButtonsEnabled: Bool = true,
                                   inputHz: Int = 60, soundEnabled: Bool = false,
-                                  audioResponseEnabled: Bool = false) throws -> [String] {
+                                  audioResponseEnabled: Bool = false,
+                                  renderScale: Double = 1, metalFX: Bool = false, msaa: Int = 1,
+                                  fillMode: String = "cover", verticalPosition: Double = 0.5) throws -> [String] {
         guard [30, 60, 120].contains(inputHz) else {
             throw MirageSceneBridgeError.invalid("鼠标采样频率请选择 30、60 或 120 Hz")
         }
-        guard [30, 60].contains(fps) else {
-            throw MirageSceneBridgeError.invalid("场景帧率请选择 30 或 60 FPS")
+        guard [15, 30, 60, 120].contains(fps) else {
+            throw MirageSceneBridgeError.invalid("场景帧率请选择 15、30、60 或 120 FPS")
+        }
+        guard renderScale.isFinite, (0.25...1).contains(renderScale),
+              verticalPosition.isFinite, (0...1).contains(verticalPosition),
+              [1, 2, 4, 8].contains(msaa), ["cover", "contain", "stretch"].contains(fillMode) else {
+            throw MirageSceneBridgeError.invalid("场景画质参数无效")
         }
         var arguments = try trialArguments(scenePackage: scenePackage, displayID: displayID,
                                            followFocus: true, horizontalCropPosition: horizontalCropPosition)
@@ -93,6 +100,9 @@ public struct MirageSceneRuntime: Sendable {
         var input = ["--input-hz", String(inputHz)]
         if !mouseEnabled { input.append("--no-mouse") }
         if !mouseButtonsEnabled { input.append("--no-mouse-buttons") }
+        input += ["--render-scale", String(renderScale), "--msaa", String(msaa),
+                  "--fill", fillMode, "--position-y", String(verticalPosition)]
+        if metalFX { input.append("--metalfx") }
         arguments.insert(contentsOf: input, at: arguments.count - 2)
         return arguments
     }
@@ -122,6 +132,8 @@ public final class MirageSceneChild: @unchecked Sendable {
     private let condition = NSCondition()
     private var pending = Data()
     private var observed: Set<String> = []
+    private var storageResponses: [String: Data] = [:]
+    private var shortcuts: [(String, String)] = []
     private var snapshotResponses: [String: Bool] = [:]
     private var lastMovedDisplayID: UInt32?
     private var exitCode: Int32?
@@ -220,12 +232,17 @@ public final class MirageSceneChild: @unchecked Sendable {
         }
         let lines = try values.keys.sorted().map { key -> Data in
             guard !key.isEmpty, key.utf8.count <= 256, let value = values[key],
-                  value is String || value is NSNumber,
-                  (value as? NSNumber)?.doubleValue.isFinite != false else {
+                  Self.validJSON(value) else {
                 throw MirageSceneBridgeError.invalid("场景效果参数无效")
             }
-            return try JSONSerialization.data(withJSONObject: ["cmd": "setProperty", "key": key, "value": value],
-                                              options: [.sortedKeys]) + Data([10])
+            var message: [String: Any] = ["cmd": "setProperty", "key": key, "value": value]
+            if let descriptor = value as? [String: String], descriptor["type"] == "scenetexture" {
+                message["type"] = "scenetexture"
+                message["value"] = descriptor["value"] ?? ""
+            } else if !(value is String || value is NSNumber) {
+                throw MirageSceneBridgeError.invalid("场景效果参数无效")
+            }
+            return try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys]) + Data([10])
         }
         guard lines.reduce(0, { $0 + $1.count }) <= 65_536 else {
             throw MirageSceneBridgeError.invalid("场景效果参数过大")
@@ -234,6 +251,50 @@ public final class MirageSceneChild: @unchecked Sendable {
             try Task.checkCancellation()
             try input.fileHandleForWriting.write(contentsOf: line)
         }
+    }
+
+    private static func validJSON(_ value: Any) -> Bool {
+        if let number = value as? NSNumber { return number.doubleValue.isFinite }
+        if value is String || value is NSNull { return true }
+        if let array = value as? [Any] { return array.allSatisfy(validJSON) }
+        if let object = value as? [String: Any] { return object.values.allSatisfy(validJSON) }
+        return false
+    }
+
+    /// Only the scene worker calls this; the UI never writes to stdin directly.
+    public func control(_ message: [String: Any]) throws {
+        let allowed = ["pause", "resume", "power", "volume", "muted", "fps", "fillmode", "position", "speed", "mediaStatus", "exportScriptStorage", "resetScriptStorage"]
+        guard process.isRunning, let command = message["cmd"] as? String,
+              allowed.contains(command), Self.validJSON(message) else {
+            throw MirageSceneBridgeError.invalid("场景控制请求无效")
+        }
+        let data = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys])
+        guard data.count <= 65_536 else { throw MirageSceneBridgeError.invalid("场景控制请求过大") }
+        try Task.checkCancellation()
+        try input.fileHandleForWriting.write(contentsOf: data + Data([10]))
+    }
+
+    public func takeShortcuts() -> [(String, String)] {
+        condition.lock(); defer { condition.unlock() }
+        let result = shortcuts; shortcuts.removeAll(); return result
+    }
+
+    public func exportStorage(timeout: TimeInterval = 5) throws -> Data {
+        guard timeout.isFinite, timeout > 0, timeout <= 15 else {
+            throw MirageSceneBridgeError.invalid("事件等待时间无效")
+        }
+        let token = UUID().uuidString
+        defer { condition.lock(); storageResponses.removeValue(forKey: token); condition.unlock() }
+        try control(["cmd": "exportScriptStorage", "token": token])
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock(); defer { condition.unlock() }
+        while storageResponses[token] == nil {
+            try Task.checkCancellation()
+            try checkLiveEventState()
+            guard Date() < deadline else { throw MirageSceneBridgeError.failed("导出场景数据超时") }
+            _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.1)))
+        }
+        return storageResponses[token]!
     }
 
     /// Nonblocking status for a cancellable async host. All process commands
@@ -283,14 +344,16 @@ public final class MirageSceneChild: @unchecked Sendable {
 
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
-        defer { condition.unlock() }
+        defer { snapshotResponses.removeValue(forKey: token); condition.unlock() }
         while snapshotResponses[token] == nil {
+            try Task.checkCancellation()
             if let exitCode {
                 throw MirageSceneBridgeError.failed("渲染器在静帧请求期间退出（\(exitCode)）：\(errorTail)")
             }
-            if !condition.wait(until: deadline) {
+            if Date() >= deadline {
                 throw MirageSceneBridgeError.failed("等待 Mirage Scene 静帧超时：\(errorTail)")
             }
+            _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.1)))
         }
         let ok = snapshotResponses.removeValue(forKey: token) == true
         guard ok else { throw MirageSceneBridgeError.failed("Mirage Scene 静帧导出失败") }
@@ -371,6 +434,17 @@ public final class MirageSceneChild: @unchecked Sendable {
             if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                let event = object["event"] as? String, event.count <= 80 {
                 observed.insert(event)
+                if event == "script-storage", let token = object["token"] as? String,
+                   let values = object["values"] as? [String: String], values.count <= 1024,
+                   let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]),
+                   data.count <= 1_048_576, storageResponses.count < 4 {
+                    storageResponses[token] = data
+                }
+                if event == "open-shortcut", let name = object["name"] as? String,
+                   let target = object["value"] as? String, name.count <= 256,
+                   target.count <= 4096, shortcuts.count < 8 {
+                    shortcuts.append((name, target))
+                }
                 if event == "display-moved", let number = object["display_id"] as? NSNumber {
                     lastMovedDisplayID = number.uint32Value
                 }

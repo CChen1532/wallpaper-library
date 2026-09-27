@@ -1,3 +1,24 @@
+diff --git a/SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp b/SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp
+index d70c93e..604ee3a 100644
+--- a/SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp
++++ b/SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp
+@@ -64,3 +64,3 @@ struct RenderStop {
+ };
+-struct RenderDraw {};
++struct RenderDraw { bool explicit_request { false }; };
+ struct RenderSwapchainReady {
+@@ -1268,4 +1268,5 @@ void SceneRenderController::on(RenderStop&& m) {
+ 
+-void SceneRenderController::on(RenderDraw&&) {
++void SceneRenderController::on(RenderDraw&& request) {
+     if (m_stopped) {
++        if (request.explicit_request) redrawStoppedFrame();
+         frame_timer.FrameBegin();
+@@ -2142,3 +2143,3 @@ void SceneWallpaper::pause(uint32_t fade_ms) {
+ void SceneWallpaper::requestFrame() {
+-    (void)m_runtime->renderSender().send(RenderMsg { RenderDraw {} });
++    (void)m_runtime->renderSender().send(RenderMsg { RenderDraw { true } });
+ }
 diff --git a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h b/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h
 index f72a1d0..22ab671 100644
 --- a/SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h
@@ -133,11 +154,46 @@ index 778c779..2e58504 100644
      std::function<void(const std::string&)> m_on_storage;
 +    std::function<void(std::uint32_t)> m_on_move;
      std::atomic<bool>     m_running { false };
+diff --git a/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h b/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h
+index fe5a535..915e71c 100644
+--- a/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h
++++ b/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h
+@@ -18,2 +18,3 @@
+ #include <string>
++#include <functional>
+ 
+@@ -23,4 +24,6 @@ namespace mirage {
+ // no HEVC encoder). Gives up after roughly `timeout_seconds` without a frame,
+-// which is what happens when the wallpaper is paused while fully occluded.
+-bool WriteSceneSnapshot(const std::string& path, double timeout_seconds = 4.0);
++// after registering readback. request_frame may redraw a frozen scene without
++// restarting its animation timer.
++bool WriteSceneSnapshot(const std::string& path, double timeout_seconds = 4.0,
++                        std::function<void()> request_frame = {});
+ 
+diff --git a/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm b/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm
+index 2b71045..5f93335 100644
+--- a/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm
++++ b/SceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm
+@@ -130,3 +130,4 @@ bool EncodeRGBA(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t hei
+ 
+-bool WriteSceneSnapshot(const std::string& path, double timeout_seconds) {
++bool WriteSceneSnapshot(const std::string& path, double timeout_seconds,
++                        std::function<void()> request_frame) {
+     if (path.empty()) return false;
+@@ -141,2 +142,3 @@ bool WriteSceneSnapshot(const std::string& path, double timeout_seconds) {
+     SceneRendererSetLiveFrameCallback(&OnLiveFrame, nullptr);
++    if (request_frame) request_frame();
+ 
 diff --git a/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp b/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
-index cae3ccf..d31c165 100644
+index cae3ccf..f519322 100644
 --- a/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
 +++ b/SceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp
-@@ -153,4 +153,8 @@ struct Options {
+@@ -139,2 +139,3 @@ struct Options {
+     std::string               runtime_settings;
++    std::string               script_storage_dir;
+     std::optional<Resolution> resolution;
+@@ -153,4 +154,8 @@ struct Options {
      bool                      muted { false };
 +    bool                      mouse_enabled { true };
 +    bool                      mouse_buttons_enabled { true };
@@ -146,7 +202,7 @@ index cae3ccf..d31c165 100644
      bool                      deferred_show { false };
 +    bool                      follow_focus { false };
      bool                      spectrum_enabled { true };
-@@ -183,2 +187,14 @@ void EmitLifecycleEvent(const AppState* state, std::string_view event) {
+@@ -183,2 +188,14 @@ void EmitLifecycleEvent(const AppState* state, std::string_view event) {
  
 +void EmitDisplayMove(const AppState* state, std::uint32_t display_id, bool ok) {
 +    const auto elapsed = state == nullptr
@@ -161,22 +217,32 @@ index cae3ccf..d31c165 100644
 +}
 +
  void EmitAudioDemand(bool needed) {
-@@ -252,2 +268,5 @@ void PrintUsage(const char* argv0) {
+@@ -252,2 +269,5 @@ void PrintUsage(const char* argv0) {
          << "      --input-hz N            Desktop mouse polling rate (default 60)\n"
 +        << "      --no-mouse              Disable all scene mouse input\n"
 +        << "      --no-mouse-buttons      Disable scene mouse button input\n"
 +        << "      --print-input-config    Print input policy without starting renderer\n"
          << "      --screen N              Screen index to cover (default 0 = main)\n"
-@@ -257,2 +276,3 @@ void PrintUsage(const char* argv0) {
+@@ -257,4 +277,6 @@ void PrintUsage(const char* argv0) {
          << "      --deferred-show         Keep the window transparent until activated\n"
 +        << "      --follow-focus          Allow one window to follow Spaces and displays\n"
          << "      --no-spectrum           Disable audio response\n"
-@@ -345,2 +365,4 @@ bool ParseArgs(int argc, char** argv, Options& out) {
+         << "      --external-spectrum     Receive spectrum from stdin\n"
++        << "      --script-storage-dir DIR  Per-wallpaper script state directory\n"
+         << "      --load-from-memory      Keep the wallpaper package in memory\n"
+@@ -345,2 +367,4 @@ bool ParseArgs(int argc, char** argv, Options& out) {
              out.deferred_show = true;
 +        } else if (arg == "--follow-focus") {
 +            out.follow_focus = true;
          } else if (arg == "--no-spectrum") {
-@@ -404,2 +426,8 @@ bool ParseArgs(int argc, char** argv, Options& out) {
+@@ -395,2 +419,6 @@ bool ParseArgs(int argc, char** argv, Options& out) {
+             out.user_properties = value;
++        } else if (arg == "--script-storage-dir") {
++            const char* value = require_value(i, arg);
++            if (value == nullptr || value[0] != '/') return false;
++            out.script_storage_dir = value;
+         } else if (arg == "--runtime") {
+@@ -404,2 +432,8 @@ bool ParseArgs(int argc, char** argv, Options& out) {
              if (! out.mouse_position) return false;
 +        } else if (arg == "--no-mouse") {
 +            out.mouse_enabled = false;
@@ -185,7 +251,7 @@ index cae3ccf..d31c165 100644
 +        } else if (arg == "--print-input-config") {
 +            out.print_input_config = true;
          } else if (arg == "--input-hz") {
-@@ -512,2 +540,13 @@ int main(int argc, char** argv) {
+@@ -512,2 +546,13 @@ int main(int argc, char** argv) {
  
 +    const bool mouse_enabled = options.mouse_enabled;
 +    const bool mouse_buttons_enabled = mouse_enabled && options.mouse_buttons_enabled;
@@ -199,7 +265,7 @@ index cae3ccf..d31c165 100644
 +    }
 +
      setenv("MVK_CONFIG_PRESENT_WITH_COMMAND_BUFFER", "1", /*overwrite=*/0);
-@@ -524,2 +563,7 @@ int main(int argc, char** argv) {
+@@ -524,2 +569,7 @@ int main(int argc, char** argv) {
  
 +    if (options.follow_focus && (!options.control_stdin || !options.deferred_show)) {
 +        std::cerr << "--follow-focus requires --control-stdin and --deferred-show\n";
@@ -207,7 +273,7 @@ index cae3ccf..d31c165 100644
 +    }
 +
      SceneRendererMacDesktopConfig desktop_config {
-@@ -530,7 +574,8 @@ int main(int argc, char** argv) {
+@@ -530,7 +580,8 @@ int main(int argc, char** argv) {
          .deferred_show = options.deferred_show,
 +        .follow_focus = options.follow_focus,
      };
@@ -219,7 +285,19 @@ index cae3ccf..d31c165 100644
 +        .mouse_button = mouse_buttons_enabled ? MouseButtonCallback : nullptr,
 +        .mouse_enter  = mouse_enabled ? MouseEnterCallback : nullptr,
          .closed       = nullptr,
-@@ -751,2 +796,6 @@ int main(int argc, char** argv) {
+@@ -584,2 +635,3 @@ int main(int argc, char** argv) {
+     config.load_from_memory = options.load_from_memory;
++    config.script_storage_dir = options.script_storage_dir;
+     config.script_storage_callback = [](std::string snapshot) {
+@@ -741,4 +793,5 @@ int main(int argc, char** argv) {
+             [desktop]() { SceneRendererMacDesktopDeactivate(desktop); },
+-            [](const std::string& path, const std::string& token) {
+-                const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);
++            [renderer = wallpaper.get()](const std::string& path, const std::string& token) {
++                const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(
++                    path, 4.0, [renderer]() { renderer->requestFrame(); });
+                 EmitSnapshotDone(token, ok);
+@@ -751,2 +804,6 @@ int main(int argc, char** argv) {
                  });
 +            },
 +            [desktop, &state](std::uint32_t display_id) {

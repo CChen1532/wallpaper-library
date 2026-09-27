@@ -13,6 +13,10 @@ cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
 cp .build/release/GravitySceneRenderer "$app/Contents/Resources/GravitySceneRenderer"
 cp -R .build/release/WallpaperUI_GravitySceneRenderer.bundle "$app/Contents/Resources/"
 cp -R Scenes/GravityJourney "$app/Contents/Resources/GravityScenes"
+mkdir -p "$app/Contents/Resources/NowPlaying"
+xcrun clang++ -dynamiclib -fobjc-arc -framework AppKit -framework Foundation \
+    -mmacosx-version-min=14.0 Sources/MediaBridge/NowPlayingBridge.mm \
+    -o "$app/Contents/Resources/NowPlaying/libWallpaperNowPlaying.dylib"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp -R Resources/en.lproj Resources/zh-Hans.lproj "$app/Contents/Resources/"
 # Use the committed icon for reproducible packaging; iconutil may reject a
@@ -40,6 +44,7 @@ if [[ "$identity_present" -ne 1 ]]; then
 fi
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.wallpaperswitch "$app/Contents/Resources/WallpaperSwitch/space-inventory"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.gravity "$app/Contents/Resources/GravitySceneRenderer"
+codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.media "$app/Contents/Resources/NowPlaying/libWallpaperNowPlaying.dylib"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library "$app"
 codesign --verify --deep --strict "$app"
 .build/release/MirageSceneBridgeProbe --verify-input-runtime "$app/Contents/Resources/SceneRuntime"

@@ -88,6 +88,8 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                     Button(AppStrings.text("紧凑窗口", language: language)) { resizeWindow(width: 980, height: 680) }
                     Button(AppStrings.text("标准窗口", language: language)) { resizeWindow(width: 1200, height: 800) }
                     Divider()
+                    Button(AppStrings.text(model.scenePlayer.manualPause ? "继续场景" : "暂停场景", language: language)) { model.scenePlayer.togglePause() }
+                        .keyboardShortcut("p", modifiers: [.command, .option]).disabled(!model.scenePlayer.supportsControls)
                     Button(AppStrings.text("停止所有壁纸", language: language)) { Task { await model.perform(.off) } }
                         .keyboardShortcut(".", modifiers: [.command, .option])
                 }
@@ -114,6 +116,9 @@ private struct WallpaperMenu: View {
         Button("打开资料库") {
             openWindow(id: "library")
             NSApp.activate(ignoringOtherApps: true)
+        }
+        if scenePlayer.supportsControls {
+            Button(LocalizedStringKey(scenePlayer.manualPause ? "继续场景" : "暂停场景")) { scenePlayer.togglePause() }
         }
         Button("停止所有壁纸") { Task { await model.perform(.off) } }
             .disabled(model.busy || scenePlayer.phase == .stopping)

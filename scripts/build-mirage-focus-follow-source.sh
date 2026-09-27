@@ -27,7 +27,7 @@ else
 fi
 revision='d639939b925f08cfa0e5227ed9bea79529348fd6'
 ffmpeg_root="$upstream/Mirage/build/ffmpeg/arm64"
-expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+expected_files=$'SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
 
 die() { printf 'Mirage focus-follow source: %s\n' "$*" >&2; exit 2; }
 [[ -d "$upstream/SceneRenderer" && -f "$patch" ]] || die 'pinned source or patch is missing'

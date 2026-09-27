@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Bindings capture the represented package instead of a shared selection draft.
 struct SceneInspectorSettings: View {
@@ -12,6 +13,11 @@ struct SceneInspectorSettings: View {
     let package: URL
     let catalogRevision: String
     @State private var showPlayback = false
+    @State private var showQuality = false
+    @State private var showAutomation = false
+    @State private var importingImage = false
+    @State private var operationMessage: String?
+    @State private var confirmReset = false
     @State private var catalog: ScenePropertyCatalog = .empty
     @State private var catalogLoading = true
     @State private var availableDisplays = SceneDisplay.connected()
@@ -151,6 +157,23 @@ struct SceneInspectorSettings: View {
                             supportsOpacity: colorHasOpacity(property))
                     .labelsHidden()
             }.padding(10).modifier(HoverHighlight())
+        case .imageFile:
+            VStack(alignment: .leading, spacing: 6) {
+                Text(LocalizedStringKey(property.label))
+                HStack {
+                    Button("选择图片…") { chooseImage(property) }.disabled(importingImage)
+                    Button("恢复默认") { properties.save(property.sourceDefault, for: property, package: package) }
+                }
+                if case .texture(let path) = propertyBinding(property, values: values).wrappedValue, !path.isEmpty {
+                    Text(URL(fileURLWithPath: path).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }.padding(10)
+        case .shortcut:
+            VStack(alignment: .leading, spacing: 6) {
+                Text(LocalizedStringKey(property.label))
+                TextField("网页地址或所选文件", text: stringBinding(property, values: values)).textFieldStyle(.roundedBorder)
+                Button("选择应用或文件…") { chooseShortcut(property) }
+            }.padding(10)
         case .textInput:
             VStack(alignment: .leading, spacing: 5) {
                 Text(LocalizedStringKey(property.label))
@@ -184,6 +207,66 @@ struct SceneInspectorSettings: View {
             Picker(LocalizedStringKey(label), selection: value(keyPath), content: options)
                 .labelsHidden().accessibilityLabel(AppStrings.text(label, locale: locale)).frame(width: 112)
         }.padding(10).modifier(HoverHighlight())
+    }
+
+    private func slider(_ label: String, _ path: WritableKeyPath<ScenePreferences, Double>, range: ClosedRange<Double>, step: Double) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack { Text(LocalizedStringKey(label)); Spacer(); Text(value(path).wrappedValue.formatted(.number.precision(.fractionLength(0...2)))).monospacedDigit().foregroundStyle(.secondary) }
+            Slider(value: value(path), in: range, step: step).accessibilityLabel(AppStrings.text(label, locale: locale))
+        }.padding(10)
+    }
+
+    private func chooseImage(_ property: ScenePropertyDefinition) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        let represented = package
+        panel.begin { response in
+            guard response == .OK, let source = panel.url else { return }
+            importingImage = true
+            Task { @MainActor in
+                defer { importingImage = false }
+                do {
+                    let result = try await Task.detached(priority: .utility) { try SceneImageImport.importImage(source, for: represented) }.value
+                    properties.save(.texture(result.path), for: property, package: represented)
+                } catch { model.error = error.localizedDescription }
+            }
+        }
+    }
+    private func chooseShortcut(_ property: ScenePropertyDefinition) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
+        let represented = package
+        panel.begin { response in
+            guard response == .OK, let file = panel.url else { return }
+            guard let target = SceneShortcut.target(file.path) else { model.error = AppStrings.text("不支持此快捷入口，请选择应用、文件夹、文档或媒体文件", locale: locale); return }
+            properties.save(.string(target.path), for: property, package: represented)
+        }
+    }
+    private func exportFile(screenshot: Bool) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = screenshot ? [.png] : [.json]
+        panel.nameFieldStringValue = screenshot ? "Wallpaper.png" : "SceneData.json"
+        let represented = package
+        panel.begin { response in
+            guard response == .OK, let destination = panel.url else { return }
+            runExport(screenshot ? .screenshot(destination) : .storage(destination), package: represented)
+        }
+    }
+    private func resetData() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "SceneData-backup.json"
+        panel.message = AppStrings.text("先保存当前数据的备份，再重置此场景。", locale: locale)
+        let represented = package
+        panel.begin { response in
+            guard response == .OK, let backup = panel.url else { return }
+            runExport(.resetStorage(backup), package: represented)
+        }
+    }
+    private func runExport(_ action: SceneExportAction, package: URL) {
+        Task { @MainActor in
+            do { try await scenePlayer.export(action, for: package); operationMessage = "操作已完成" }
+            catch { model.error = error.localizedDescription }
+        }
     }
 
     var body: some View {
@@ -240,18 +323,30 @@ struct SceneInspectorSettings: View {
             })) {
                 VStack(spacing: 0) {
                     picker("帧率上限", \.fps) {
+                        Text("15 FPS").tag(15)
                         Text("30 FPS").tag(30)
                         Text("60 FPS").tag(60)
+                        Text("120 FPS").tag(120)
                     }
                     picker("画面位置", \.cropMode) {
                         Text("自动适配").tag("auto")
                         Text("居中").tag("center")
                         Text("靠左").tag("left")
                         Text("靠右").tag("right")
+                        Text("自定义").tag("custom")
                     }
+                    if preferences.cropMode == "custom" { slider("横向位置", \.positionX, range: 0...1, step: 0.01) }
+                    slider("纵向位置", \.positionY, range: 0...1, step: 0.01)
+                    picker("填充方式", \.fillMode) {
+                        Text("铺满裁切").tag("cover")
+                        Text("完整显示").tag("contain")
+                        Text("拉伸").tag("stretch")
+                    }
+                    slider("动画速度", \.speed, range: 0.25...2, step: 0.05)
                     displayPicker
                     Divider()
                     toggle("播放场景声音", \.soundEnabled)
+                    slider("场景音量", \.volume, range: 0...1, step: 0.01)
                     toggle("音频响应", \.audioResponseEnabled)
                         .help("响应系统声音，需场景支持。首次使用可能需要系统录音权限。")
                 }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
@@ -260,12 +355,50 @@ struct SceneInspectorSettings: View {
                 Text("播放与声音").frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 5).modifier(HoverHighlight())
             }
+            DisclosureGroup("画质", isExpanded: $showQuality) {
+                VStack(spacing: 0) {
+                    slider("渲染比例", \.renderScale, range: 0.25...1, step: 0.05)
+                    toggle("MetalFX 放大", \.metalFX)
+                    picker("多重采样抗锯齿", \.msaa) {
+                        Text("关闭").tag(1)
+                        Text("2×").tag(2)
+                        Text("4×").tag(4)
+                        Text("8×").tag(8)
+                    }
+                }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                Text("画质修改需重新加载；降低渲染比例可减少 GPU 负担，MetalFX 效果取决于设备支持。").font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("自动控制与媒体", isExpanded: $showAutomation) {
+                VStack(spacing: 0) {
+                    toggle("自动节能", \.energySaving)
+                    toggle("前台窗口覆盖屏幕时暂停", \.pauseWhenCovered)
+                    toggle("显示当前歌曲信息", \.mediaInfoEnabled)
+                    if catalog.properties.contains(where: { $0.kind == .shortcut }) {
+                        toggle("允许场景快捷入口", \.shortcutsEnabled)
+                    }
+                }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                Text("节能时降至 15 FPS；温度过高时暂停。手动暂停不会被自动恢复。").font(.caption).foregroundStyle(.secondary)
+                if preferences.mediaInfoEnabled && isPlaying {
+                    Text(LocalizedStringKey(scenePlayer.mediaStatus)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if isPlaying && scenePlayer.supportsControls {
+                HStack {
+                    Button(LocalizedStringKey(scenePlayer.manualPause ? "继续场景" : "暂停场景")) { scenePlayer.togglePause() }
+                    Menu("更多场景操作") {
+                        Button("导出当前画面…") { exportFile(screenshot: true) }
+                        Button("导出场景数据…") { exportFile(screenshot: false) }
+                        Button("重置场景数据…") { confirmReset = true }
+                    }.disabled(scenePlayer.isTransitioning)
+                }
+                if let operationMessage { Text(LocalizedStringKey(operationMessage)).font(.caption).foregroundStyle(.secondary) }
+            }
             if !catalogLoading && isPlaying && pendingChanges {
                 Button("应用到此壁纸") {
                     let representedPackage = package
                     Task { await model.applyScenePreferences(for: representedPackage) }
                 }.frame(maxWidth: .infinity).disabled(model.isWorking)
-                    .help("场景效果会实时更新；播放与交互设置可能需要重新启动。")
+                    .help("效果、声音、速度和画面位置可实时更新；画质与输入设置需要重新启动。")
             }
             Text(LocalizedStringKey(settingsStatus(pendingChanges: pendingChanges)))
                 .font(.caption).foregroundStyle(.secondary)
@@ -273,7 +406,11 @@ struct SceneInspectorSettings: View {
                 .contentTransition(.opacity)
                 .animation(LibraryMotion.selection(reduceMotion), value: isPlaying && !pendingChanges)
         }.font(.callout).toggleStyle(.switch).controlSize(.small)
-            .task(id: catalogRevision) {
+            .confirmationDialog("重置此场景的数据？", isPresented: $confirmReset) {
+            Button("保存备份并重置") { resetData() }
+            Button("取消", role: .cancel) {}
+        } message: { Text("将清除脚本保存的数据，壁纸效果设置保持不变。") }
+        .task(id: catalogRevision) {
                 catalogLoading = true
                 catalog = .empty
                 let loaded = await properties.loadCatalogInBackground(for: package)

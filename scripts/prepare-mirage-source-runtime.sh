@@ -21,7 +21,7 @@ if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ||
         mirage_root="$PWD/dist/MirageFocusFollowSource"
         target='dist/MirageFocusFollowRuntime'
         patch="$PWD/patches/mirage-focus-follow.patch"
-        expected_files=$'SceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+        expected_files=$'SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
     elif [[ "$mode" == '--managed-transition' ]]; then
         mirage_root="$PWD/dist/MirageSpaceTransitionSource"
         target='dist/MirageSpaceTransitionRuntime'

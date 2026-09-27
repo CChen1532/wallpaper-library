@@ -648,6 +648,42 @@ import UniformTypeIdentifiers
         try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences, values: liveValues)
         check(log("live-effects").components(separatedBy: "setProperty").count - 1 == propertyMessages.count,
               "无变化效果不会重复发送命令")
+        var livePreferences = liveConfig.preferences
+        livePreferences.fps = 60
+        livePreferences.volume = 0.4
+        livePreferences.speed = 1.25
+        livePreferences.soundEnabled = true
+        livePreferences.fillMode = "contain"
+        livePreferences.cropMode = "custom"
+        livePreferences.positionX = 0.2
+        livePreferences.positionY = 0.8
+        try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: livePreferences, values: liveValues)
+        try await wait { log("live-effects").contains(#""cmd":"power","fps":60"#) }
+        check(livePlayer.activePreferences == livePreferences && liveBackdrop.events == ["apply:1"],
+              "帧率音量速度填充和位置在原会话应用且保留底图")
+        let liveCommands = log("live-effects").split(separator: "\n").compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }
+        check(liveCommands.contains { $0["cmd"] as? String == "volume" && $0["value"] as? Double == 0.4 } &&
+              liveCommands.contains { $0["cmd"] as? String == "speed" && $0["value"] as? Double == 1.25 } &&
+              liveCommands.contains { $0["cmd"] as? String == "position" && $0["x"] as? Double == 0.2 && $0["y"] as? Double == 0.8 },
+              "实时播放参数准确序列化到控制管道")
+        livePlayer.togglePause()
+        try await wait { livePlayer.effectivePaused }
+        check(livePlayer.manualPause && livePlayer.phase == .playing && liveBackdrop.events == ["apply:1"],
+              "暂停保留渲染器及底图租约")
+        livePreferences.volume = 0.2
+        try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: livePreferences, values: liveValues)
+        check(livePlayer.manualPause, "暂停期间应用声音参数不会取消手动暂停")
+        livePlayer.togglePause()
+        try await wait { !livePlayer.effectivePaused }
+        check(!livePlayer.manualPause && livePlayer.phase == .playing, "继续原暂停会话无需重启")
+        var changedQuality = livePreferences
+        changedQuality.renderScale = 0.5
+        check(!livePlayer.canApplyEffectsLive(for: liveConfig.package, preferences: changedQuality, values: liveValues),
+              "渲染比例变化不会错误标记为实时生效")
+        // Restore the baseline before the cancellation race below.
+        try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences, values: liveValues)
         let pendingApply = Task { try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences,
                                                                       values: liveConfig.userPropertyValues) }
         await Task.yield()

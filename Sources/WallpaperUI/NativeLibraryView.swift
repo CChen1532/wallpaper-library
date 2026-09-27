@@ -516,6 +516,11 @@ struct NativeLibraryView: View {
                 }
                 Divider().frame(height: 22)
             }
+            if scenePlayer.supportsControls {
+                Button { scenePlayer.togglePause() } label: {
+                    Label(LocalizedStringKey(scenePlayer.manualPause ? "继续场景" : "暂停场景"), systemImage: scenePlayer.manualPause ? "play.fill" : "pause.fill")
+                }.disabled(model.isWorking)
+            }
             Button { Task { await model.perform(.stop) } } label: {
                 Label("停止", systemImage: "stop.fill").font(.system(size: 11, weight: .medium))
             }.help("停止场景或视频，保留视频轮播设置").accessibilityLabel("停止桌面播放")

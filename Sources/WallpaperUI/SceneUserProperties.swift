@@ -7,13 +7,18 @@ enum ScenePropertyValue: Equatable, Sendable {
     case boolean(Bool)
     case number(Double)
     case string(String)
+    case texture(String)
 
     var jsonValue: Any {
         switch self {
         case .boolean(let value): value
         case .number(let value): value
-        case .string(let value): value
+        case .string(let value), .texture(let value): value
         }
+    }
+    var controlValue: Any {
+        if case .texture(let path) = self { return ["type": "scenetexture", "value": path] }
+        return jsonValue
     }
 }
 
@@ -29,6 +34,8 @@ enum ScenePropertyKind: Equatable, Sendable {
     case choice([ScenePropertyChoice])
     case color
     case textInput
+    case imageFile
+    case shortcut
 }
 
 struct ScenePropertyDefinition: Identifiable, Sendable {
@@ -56,6 +63,14 @@ struct ScenePropertyDefinition: Identifiable, Sendable {
         case .color:
             guard let value = raw as? String, let normalized = Self.normalizedColor(value) else { return nil }
             return .string(normalized)
+        case .imageFile:
+            guard let path = raw as? String, path.count <= 4096,
+                  !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
+            return .texture(path)
+        case .shortcut:
+            guard let path = raw as? String, path.count <= 4096,
+                  !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
+            return .string(path)
         case .textInput:
             guard let value = raw as? String, value.count <= 256,
                   !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
@@ -119,6 +134,10 @@ struct ScenePropertyCatalog: Sendable {
                 kind = .color
             case "textinput":
                 kind = .textInput
+            case "scenetexture", "texture", "replacetexture", "file":
+                kind = .imageFile
+            case "usershortcut":
+                kind = .shortcut
             default:
                 // HTML information, groups and external shortcuts are not editable properties.
                 continue
@@ -193,7 +212,9 @@ struct ScenePropertyLaunch: Sendable {
         for property in catalog.properties {
             let value = saved[property.id].flatMap(property.validated) ?? property.preferredDefault
             effective[property.id] = value
-            if value != property.sourceDefault { overrides[property.id] = value.jsonValue }
+            if value != property.sourceDefault || property.kind == .imageFile {
+                overrides[property.id] = value.controlValue
+            }
         }
         guard !overrides.isEmpty else { return .init(file: nil, effectiveValues: effective) }
         try Task.checkCancellation()

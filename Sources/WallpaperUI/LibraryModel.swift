@@ -101,6 +101,13 @@ import Combine
                 preferences: preferences)
             guard !shuttingDown, request == sceneRequestRevision else { return }
             configuration.setUserProperties(try await sceneUserProperties.launchInBackground(for: configuration.package))
+            if configuration.supportsLiveProperties {
+                let storagePackage = configuration.package
+                let storage = try await Task.detached(priority: .utility) {
+                    try SceneScriptStorage.prepare(package: storagePackage)
+                }.value
+                configuration.arguments.insert(contentsOf: ["--script-storage-dir", storage.path], at: configuration.arguments.count - 2)
+            }
             configuration.backdrop = try backdropConfiguration()
             let sourcePackage = configuration.package
             configuration.backdrop?.sourcePackage = sourcePackage
