@@ -10,6 +10,8 @@ struct WorkshopView: View {
     @State private var invalidGuard = false
     @State private var tab = 0
     @State private var showSubscriptions = false
+    @State private var showGenres = false
+    @State private var genreDraft: Set<WorkshopFilters.Genre> = []
     @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
     @FocusState private var guardFocused: Bool
     let showLibrary: () -> Void
@@ -133,7 +135,7 @@ struct WorkshopView: View {
                 filterPicker("年龄分级", key: \.age, id: "workshop.age")
                     .help("按作者在 Steam 标注的分级筛选。")
                 filterPicker("壁纸类型", key: \.kind, id: "workshop.kind")
-                filterPicker("内容题材", key: \.genre, id: "workshop.genre")
+                genrePicker
             }
             HStack(alignment: .bottom, spacing: 16) {
                 filterPicker("排序方式", key: \.sort, id: "workshop.sort")
@@ -161,6 +163,57 @@ struct WorkshopView: View {
                 Text("网页和应用程序壁纸可浏览，暂不支持在此应用中播放。").font(.caption).foregroundStyle(.secondary)
             }
         }.disabled(workshop.busy)
+    }
+
+    private var genrePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("内容题材").font(.caption).foregroundStyle(.secondary)
+            Button {
+                genreDraft = workshop.filters.genres
+                showGenres = true
+            } label: {
+                HStack {
+                    Text(genreSelectionLabel).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down").font(.caption2)
+                }.frame(maxWidth: .infinity)
+            }.accessibilityIdentifier("workshop.genre")
+                .accessibilityLabel(Text("内容题材"))
+                .accessibilityValue(Text(genreSelectionLabel))
+                .popover(isPresented: $showGenres, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("内容题材").font(.headline)
+                        Text("同时匹配所有勾选题材；不勾选表示不限。").font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ScrollView {
+                            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 12) {
+                                ForEach(WorkshopFilters.Genre.allCases.filter { $0 != .all }, id: \.self) { genre in
+                                    Toggle(LocalizedStringKey(genre.label), isOn: Binding(
+                                        get: { genreDraft.contains(genre) },
+                                        set: { selected in if selected { genreDraft.insert(genre) } else { genreDraft.remove(genre) } }
+                                    )).toggleStyle(.checkbox)
+                                }
+                            }.padding(2)
+                        }.frame(maxHeight: 330)
+                        Divider()
+                        HStack {
+                            Button("清空勾选") { genreDraft = [] }.disabled(genreDraft.isEmpty)
+                            Spacer()
+                            Button("取消") { showGenres = false }.keyboardShortcut(.cancelAction)
+                            Button("应用") {
+                                var next = workshop.filters; next.genres = genreDraft
+                                showGenres = false; workshop.setFilters(next)
+                            }.keyboardShortcut(.defaultAction)
+                        }
+                    }.padding(18).frame(width: 350)
+                }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var genreSelectionLabel: String {
+        let genres = workshop.filters.selectedGenres
+        if genres.isEmpty { return AppStrings.text("全部题材", locale: locale) }
+        if genres.count == 1 { return AppStrings.text(genres[0].label, locale: locale) }
+        return String(format: AppStrings.text("已选 %d 项题材", locale: locale), genres.count)
     }
 
     private func details(_ item: WorkshopItem) -> some View {

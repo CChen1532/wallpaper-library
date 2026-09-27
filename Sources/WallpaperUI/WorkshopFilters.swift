@@ -49,13 +49,14 @@ struct WorkshopFilters: Codable, Equatable, Sendable {
     }
     var age: Age = .all
     var kind: Kind = .all
-    var genre: Genre = .all
+    var genres: Set<Genre> = []
     var sort: Sort = .relevance
     var period: Period = .all
     var startDate: Date = Calendar.current.startOfDay(for: Date())
     var endDate: Date = Calendar.current.startOfDay(for: Date())
-    var requiredTags: [String] { [age.rawValue, kind.rawValue, genre.rawValue].filter { !$0.isEmpty } }
-    var isDefault: Bool { age == .all && kind == .all && genre == .all && sort == .relevance && period == .all }
+    var selectedGenres: [Genre] { Genre.allCases.filter { $0 != .all && genres.contains($0) } }
+    var requiredTags: [String] { ([age.rawValue, kind.rawValue] + selectedGenres.map(\.rawValue)).filter { !$0.isEmpty } }
+    var isDefault: Bool { age == .all && kind == .all && selectedGenres.isEmpty && sort == .relevance && period == .all }
     var validDates: Bool { period != .custom || Calendar.current.startOfDay(for: startDate) <= Calendar.current.startOfDay(for: endDate) }
     func browseSort(query: String) -> String { sort == .relevance && query.isEmpty ? Sort.popular.rawValue : sort.rawValue }
 
@@ -84,5 +85,30 @@ struct WorkshopFilters: Codable, Equatable, Sendable {
     }
     static func supportsPlayback(tags: [String]) -> Bool {
         !tags.contains { ["web", "application"].contains($0.lowercased()) }
+    }
+}
+
+extension WorkshopFilters {
+    private enum CodingKeys: String, CodingKey { case age, kind, genre, genres, sort, period, startDate, endDate }
+    init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        age = try values.decodeIfPresent(Age.self, forKey: .age) ?? .all
+        kind = try values.decodeIfPresent(Kind.self, forKey: .kind) ?? .all
+        sort = try values.decodeIfPresent(Sort.self, forKey: .sort) ?? .relevance
+        period = try values.decodeIfPresent(Period.self, forKey: .period) ?? .all
+        startDate = try values.decodeIfPresent(Date.self, forKey: .startDate) ?? startDate
+        endDate = try values.decodeIfPresent(Date.self, forKey: .endDate) ?? endDate
+        // The new empty array deliberately overrides a retained legacy single value.
+        let raw = try values.decodeIfPresent([String].self, forKey: .genres)
+            ?? values.decodeIfPresent(String.self, forKey: .genre).map { [$0] } ?? []
+        genres = Set(raw.compactMap(Genre.init(rawValue:)).filter { $0 != .all })
+    }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(age, forKey: .age); try values.encode(kind, forKey: .kind)
+        try values.encode(selectedGenres.map(\.rawValue), forKey: .genres)
+        try values.encode(sort, forKey: .sort); try values.encode(period, forKey: .period)
+        try values.encode(startDate, forKey: .startDate); try values.encode(endDate, forKey: .endDate)
     }
 }

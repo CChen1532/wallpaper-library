@@ -565,3 +565,8 @@
 "最热门按近 7 天热度排序；日期范围按作品发布时间筛选。" = "Popularity uses the past 7 days. Date filters use the publication date.";
 "网页和应用程序壁纸可浏览，暂不支持在此应用中播放。" = "Web and application wallpapers can be browsed, but playback is not supported in this app.";
 "按作者在 Steam 标注的分级筛选。" = "Filter by the age rating declared by the author on Steam.";
+
+/* Multiple Workshop genres */
+"同时匹配所有勾选题材；不勾选表示不限。" = "Match all selected genres. Leave unchecked for any genre.";
+"清空勾选" = "Clear Selection";
+"已选 %d 项题材" = "%d genres selected";

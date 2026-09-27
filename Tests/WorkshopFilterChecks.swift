@@ -19,7 +19,7 @@ import Foundation
         }
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/New_York")!
         let date = calendar.date(from: DateComponents(year: 2026, month: 3, day: 8))!
-        var filters = WorkshopFilters(age: .everyone, kind: .scene, genre: .nature, sort: .subscribers, period: .custom, startDate: date, endDate: date)
+        var filters = WorkshopFilters(age: .everyone, kind: .scene, genres: [.nature], sort: .subscribers, period: .custom, startDate: date, endDate: date)
         let request = WorkshopBrowse.Request(query: "雪 & p=5", filters: filters, now: date, calendar: calendar)
         let url = WorkshopBrowse.url(request: request, page: 2)
         let args = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
@@ -32,7 +32,7 @@ import Foundation
         rejects("ignored age filter cannot pass as filtered result") { _ = try WorkshopBrowse.decode(html(request, tags: ["Scene", "Nature"]), request: request, page: 1) }
         rejects("stale sort rejected") { _ = try WorkshopBrowse.decode(html(request, sort: "mostrecent"), request: request, page: 1) }
         rejects("stale dates rejected") { _ = try WorkshopBrowse.decode(html(request, dates: .init(start: 1, end: 2)), request: request, page: 1) }
-        rejects("unexpected date restriction rejected") { _ = try WorkshopBrowse.decode(html(request), request: .init(query: request.query, filters: .init(age: .everyone, kind: .scene, genre: .nature, sort: .subscribers)), page: 1) }
+        rejects("unexpected date restriction rejected") { _ = try WorkshopBrowse.decode(html(request), request: .init(query: request.query, filters: .init(age: .everyone, kind: .scene, genres: [.nature], sort: .subscribers)), page: 1) }
         for sort in WorkshopFilters.Sort.allCases {
             filters.sort = sort
             let current = WorkshopBrowse.Request(query: "mountain", filters: filters)
@@ -69,7 +69,7 @@ import Foundation
         model.searchText = "unsubmitted edit"; model.search(page: 2); try await idle(); model.search(page: 1); try await idle()
         check(calls.map { $0.0.query } == ["mountain", "mountain", "mountain"], "both next and previous pages preserve submitted text")
         check(calls.map { $0.1 } == [1, 2, 1], "paging supports return to first page")
-        var selected = WorkshopFilters(age: .everyone, kind: .scene, genre: .nature, sort: .latest, period: .week)
+        var selected = WorkshopFilters(age: .everyone, kind: .scene, genres: [.nature], sort: .latest, period: .week)
         model.setFilters(selected)
         check(model.searchPage == nil && model.busy, "new filters immediately remove stale results")
         try await idle()
@@ -96,8 +96,30 @@ import Foundation
         defaults.set(Data("{broken}".utf8), forKey: "workshopBrowseFilters")
         check(WorkshopModel(defaults: defaults).filters.isDefault, "invalid stored filters recover to defaults")
 
+        let legacy = Data(#"{"age":"Everyone","kind":"Scene","genre":"Nature","sort":"mostrecent","period":"all"}"#.utf8)
+        defaults.set(legacy, forKey: "workshopBrowseFilters")
+        let migrated = WorkshopModel(defaults: defaults).filters
+        check(migrated.genres == [.nature] && migrated.age == .everyone && migrated.sort == .latest, "legacy single genre migrates without losing other filters")
+        let saved = try JSONEncoder().encode(migrated)
+        let savedObject = try JSONSerialization.jsonObject(with: saved) as! [String: Any]
+        check(savedObject["genre"] == nil && savedObject["genres"] as? [String] == ["Nature"], "migration writes only the new collection format")
+        check(try JSONDecoder().decode(WorkshopFilters.self, from: saved) == migrated, "migrated preferences survive round trip")
+        check(try JSONDecoder().decode(WorkshopFilters.self, from: Data(#"{"genre":""}"#.utf8)).genres.isEmpty, "legacy unlimited genre remains unlimited")
+        check(try JSONDecoder().decode(WorkshopFilters.self, from: Data(#"{"genres":[],"genre":"Nature"}"#.utf8)).genres.isEmpty, "new cleared selection overrides a legacy value")
+        let normalized = try JSONDecoder().decode(WorkshopFilters.self, from: Data(#"{"genres":["Nature","Landscape","Nature","","Unknown"]}"#.utf8))
+        check(normalized.genres == [.nature, .landscape], "duplicate, empty and unknown genre values normalized")
+        var multi = migrated; multi.genres = [.nature, .landscape]
+        let multiRequest = WorkshopBrowse.Request(query: "mountain", filters: multi)
+        let multiArgs = URLComponents(url: WorkshopBrowse.url(request: multiRequest, page: 2), resolvingAgainstBaseURL: false)!.queryItems!
+        check(multiArgs.filter { $0.name == "requiredtags[]" }.compactMap(\.value) == ["Everyone", "Scene", "Landscape", "Nature"], "all selected genres encoded once in stable order")
+        check(try WorkshopBrowse.decode(html(multiRequest, tags: multiRequest.tags.reversed()), request: multiRequest, page: 1).total == 0, "response matching handles multiple genres")
+        model.setFilters(multi); try await idle(); model.search(page: 2); try await idle()
+        check(calls.last!.0.tags == multiRequest.tags && calls.last!.1 == 2, "multiple genres retained on next page")
+        multi.genres = []; model.setFilters(multi); try await idle()
+        check(calls.last!.0.tags == ["Everyone", "Scene"], "clearing genres keeps age and type constraints")
+
         if CommandLine.arguments.contains("--live") {
-            var live = WorkshopFilters(age: .everyone, kind: .scene, genre: .nature)
+            var live = WorkshopFilters(age: .everyone, kind: .scene, genres: [.nature])
             for sort in [WorkshopFilters.Sort.latest, .popular, .subscribers] {
                 live.sort = sort
                 let query = WorkshopBrowse.Request(query: "mountain", filters: live)
@@ -114,6 +136,8 @@ import Foundation
             live.endDate = ISO8601DateFormatter().date(from: "2025-12-31T00:00:00Z")!
             let dated = try await WorkshopBrowse.fetch(request: .init(query: "mountain", filters: live), page: 1)
             check(!dated.items.isEmpty, "live Steam acknowledges exact custom creation bounds")
+            let combined = try await WorkshopBrowse.fetch(request: multiRequest, page: 1)
+            check(!combined.items.isEmpty && combined.items.allSatisfy { Set($0.tags).isSuperset(of: Set(multiRequest.tags)) }, "live two-genre response matches every selected tag")
         }
         print("\(count) Workshop filter checks passed")
     }
