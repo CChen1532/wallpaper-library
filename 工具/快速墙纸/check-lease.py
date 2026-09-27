@@ -35,6 +35,28 @@ with tempfile.TemporaryDirectory() as folder:
                                   'Displays': {'display': {
         'Type': 'individual', 'Desktop': {'original': 'aerial'}, 'Idle': {'unchanged': True}}}}}}
     image = root / 'image.png'; image.write_bytes(b'fixture')
+    # A newly created Space or a historical monitor can leave sparse maps.
+    # These are known nodes, not a new schema, and must round-trip exactly.
+    sparse = copy.deepcopy(original)
+    sparse['Displays']['inactive'] = copy.deepcopy(original['Displays']['display'])
+    sparse['Spaces']['a']['Displays'] = {'inactive': copy.deepcopy(original['Displays']['display'])}
+    sparse['Spaces']['historical'] = copy.deepcopy(sparse['Spaces']['a'])
+    sparse['Spaces']['historical']['Displays'] = {}
+    m.validate_all_spaces(sparse, 'display', ['a'])
+    assert m.schema_fingerprint(sparse) == m.schema_fingerprint(original)
+    patches = m.prepare(sparse, 'display', ['a'], image, all_spaces_visible=True)
+    active = m.merge(sparse, patches)
+    assert active['Spaces'] == {}
+    assert m.merge(active, patches, restore=True, original=sparse) == sparse
+    # Unknown references still fail before a journal or system write exists.
+    invalid = copy.deepcopy(sparse)
+    invalid['Spaces']['a']['Displays']['unregistered'] = {}
+    try:
+        m.validate_all_spaces(invalid, 'display', ['a'])
+        raise AssertionError('unregistered display accepted')
+    except m.CompatibilityMismatch:
+        pass
+    print('PASS: sparse Space display maps round-trip; unknown displays remain blocked')
     state = root / 'state'; state.mkdir()
     runner = root / 'lease.py'
     runner.write_text('''import importlib.util, pathlib, sys, signal, fcntl
@@ -137,4 +159,4 @@ with (root/'crash.log').open('wb') as output:
     assert restored() and plistlib.loads(store.read_bytes()) == original
     print('PASS: restoration remains available after compatibility changes')
 
-print('6 offline lease checks passed; no system wallpaper settings accessed.')
+print('7 offline lease checks passed; no system wallpaper settings accessed.')

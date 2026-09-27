@@ -9,6 +9,12 @@ import tempfile
 spec = importlib.util.spec_from_file_location('switcher', Path(__file__).with_name('wallpaper-switch.py'))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+# Recovery fixtures deliberately include synthetic keys. Exercise the gate
+# against each fixture's schema; check-lease.py separately tests rejection of
+# unsupported OS versions and unknown schemas against the production pin.
+check_fixture_compatibility = m.check_compatibility
+m.check_compatibility = lambda state, document: check_fixture_compatibility(
+    state, document, release=m.SUPPORTED_MACOS, expected_schema=m.schema_fingerprint(document))
 original = {'Content': {'Choices': [{'Provider': 'com.apple.wallpaper.choice.aerials',
              'Configuration': m.encoded({'assetID': 'original-aerial'}), 'Files': []}], 'Shuffle': '$null'}}
 node = {'Type': 'individual', 'Desktop': original, 'Idle': {'preserve': 'OtherWallpaper'}}

@@ -161,6 +161,30 @@ def image_desktop(image):
                      'Files': [{'relative': image.as_uri()}]}], 'Shuffle': '$null'}}
 
 
+def validate_all_spaces(document, display_uuid, space_uuids):
+    """Validate recoverable scopes, including sparse historical display maps.
+
+    A Space need not contain the active display: macOS keeps records from
+    other monitors and can inherit its Default selection. The whole Spaces
+    value is journalled, so preserve those missing entries on restoration.
+    """
+    shared = document.get('AllSpacesAndDisplays')
+    if not isinstance(shared, dict) or shared.get('Type') != 'idle' or 'Desktop' in shared:
+        raise CompatibilityMismatch('全空间墙纸配置不是已验证的 idle 形式，拒绝改动')
+    spaces, displays = document.get('Spaces'), document.get('Displays')
+    if not isinstance(spaces, dict) or not isinstance(displays, dict) or display_uuid not in displays:
+        raise CompatibilityMismatch('当前显示器没有可恢复的墙纸记录')
+    if not set(space_uuids).issubset(spaces):
+        raise CompatibilityMismatch('目标 Space 已变化，拒绝改动')
+    for space in spaces.values():
+        if (not isinstance(space, dict) or not isinstance(space.get('Default'), dict) or
+                not isinstance(space.get('Displays'), dict) or
+                not set(space['Displays']).issubset(displays)):
+            raise CompatibilityMismatch('全空间切换遇到未知 Space 显示器结构')
+        if any(not isinstance(node, dict) for node in space['Displays'].values()):
+            raise CompatibilityMismatch('全空间切换遇到未知显示器墙纸节点')
+
+
 def prepare(document, display_uuid, space_uuids, image, all_spaces_visible=False):
     global_entry = document.get('AllSpacesAndDisplays', {})
     if isinstance(global_entry, dict) and 'Desktop' in global_entry:
@@ -170,22 +194,8 @@ def prepare(document, display_uuid, space_uuids, image, all_spaces_visible=False
         # The system's switch moves the selection to these shared scopes and
         # clears Spaces. Keeping per-Space records made Settings show "on" but
         # Mission Control still used the previous thumbnails on this Mac.
-        if not isinstance(global_entry, dict) or global_entry.get('Type') != 'idle':
-            raise ValueError('全空间墙纸配置不是已验证的 idle 形式，拒绝改动')
-        spaces = document['Spaces']
-        displays = document.get('Displays')
-        if not isinstance(spaces, dict) or not isinstance(displays, dict) or display_uuid not in displays:
-            raise ValueError('当前显示器没有可恢复的墙纸记录')
-        if not set(space_uuids).issubset(spaces):
-            raise ValueError('目标 Space 已变化，拒绝改动')
-        for space in spaces.values():
-            if (not isinstance(space, dict) or not isinstance(space.get('Default'), dict) or
-                    not isinstance(space.get('Displays'), dict) or display_uuid not in space['Displays'] or
-                    not set(space['Displays']).issubset(displays)):
-                raise ValueError('全空间切换遇到未知 Space 显示器结构')
-            for display_node in space['Displays'].values():
-                if not isinstance(display_node, dict):
-                    raise ValueError('全空间切换遇到未知显示器墙纸节点')
+        validate_all_spaces(document, display_uuid, space_uuids)
+        displays = document['Displays']
         system = entry(document, ['SystemDefault'])
         patches = [
             {'path': [], 'field': 'Spaces', 'before': selected(document, 'Spaces'),
@@ -500,6 +510,9 @@ def main():
             inv = inventory(args.display, args.inventory)
             _, document = load_store(switcher.store)
             check_compatibility(state, document)
+            if inv.get('screen_count') != 1:
+                raise CompatibilityMismatch('自动全空间底图需要单屏并覆盖全部普通桌面')
+            validate_all_spaces(document, inv['display_uuid'], [row['uuid'] for row in inv['spaces']])
             print('WALLPAPER_COMPATIBILITY_OK', flush=True)
         else:
             if args.command == 'timed' and not 0 < args.seconds <= 86400:
