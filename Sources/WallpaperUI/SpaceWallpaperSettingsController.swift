@@ -46,9 +46,17 @@ struct SystemWallpaperActivationGate {
     private var stability = SystemWallpaperStabilityGate()
     private(set) var pressCount = 0
     private var previousPress: TimeInterval?
+    private var observedEnabledSwitch = false
+
+    /// Once an enabled switch or our press has been observed, confirmation only
+    /// needs the cheap plist samples. AX discovery must not starve that clock.
+    func needsSwitchObservation(matches: Bool) -> Bool {
+        !matches || (pressCount == 0 && !observedEnabledSwitch)
+    }
 
     mutating func observe(matches: Bool, switchIsOn: Bool?, at uptime: TimeInterval) -> SystemWallpaperActivationAction {
-        let canConfirm = pressCount > 0 || switchIsOn == true
+        if switchIsOn == true { observedEnabledSwitch = true }
+        let canConfirm = pressCount > 0 || observedEnabledSwitch
         if stability.observe(matches: canConfirm && matches, at: uptime) { return .complete }
         guard switchIsOn == false, !matches, pressCount < Self.maximumPresses else { return .wait }
         if let previousPress, uptime - previousPress < Self.retryInterval { return .wait }
@@ -208,37 +216,101 @@ enum SpaceWallpaperSettingsController {
         // delayed WallpaperAgent write puts the per-Space selection back.
         // Confirmation must be stable, and a reverted switch may be pressed
         // again within a small, bounded number of attempts.
-        let discoveryDeadline = ProcessInfo.processInfo.systemUptime + 20
+        let started = ProcessInfo.processInfo.systemUptime
+        let discoveryDeadline = started + 20
         var confirmationDeadline: TimeInterval?
         var activation = SystemWallpaperActivationGate()
+        var cachedControl: AXUIElement?
+        var diagnostics = SystemWallpaperActivationDiagnostics()
+        defer { diagnostics.save(elapsed: ProcessInfo.processInfo.systemUptime - started,
+                                 presses: activation.pressCount) }
         while true {
             try Task.checkCancellation()
-            let now = ProcessInfo.processInfo.systemUptime
+            var matches = systemStateMatches(imageURL)
+            var switchIsOn: Bool?
+            if activation.needsSwitchObservation(matches: matches) {
+                let lookupStarted = ProcessInfo.processInfo.systemUptime
+                // Reuse the identified element; rediscover only if it is stale.
+                switchIsOn = cachedControl.flatMap(switchValue)
+                if switchIsOn == nil {
+                    cachedControl = allSpacesSwitch()
+                    switchIsOn = cachedControl.flatMap(switchValue)
+                }
+                diagnostics.recordLookup(duration: ProcessInfo.processInfo.systemUptime - lookupStarted)
+                try Task.checkCancellation()
+                // UI discovery can be slow. Do not timestamp or confirm a
+                // pre-discovery state using the old beginning-of-loop time.
+                matches = systemStateMatches(imageURL)
+            }
+            let observedAt = ProcessInfo.processInfo.systemUptime
             if let confirmationDeadline {
-                guard now < confirmationDeadline else { break }
-            } else if now >= discoveryDeadline {
+                guard observedAt < confirmationDeadline else { break }
+            } else if observedAt >= discoveryDeadline {
                 throw BackendError.message("无法定位系统墙纸的全空间开关，正在恢复原壁纸")
             }
-            let control = allSpacesSwitch()
-            let action = activation.observe(matches: systemStateMatches(imageURL),
-                                            switchIsOn: control.flatMap(switchValue), at: now)
+            diagnostics.recordSample(matches: matches, at: observedAt)
+            let action = activation.observe(matches: matches, switchIsOn: switchIsOn, at: observedAt)
             switch action {
             case .complete:
+                diagnostics.completed = true
                 return
             case .press:
-                if let control {
+                // Recheck immediately before pressing; a stale/off observation
+                // must not turn an already-enabled switch back off.
+                if let control = cachedControl, switchValue(control) == false {
                     guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
                         throw BackendError.message("无法操作系统墙纸的全空间开关")
                     }
-                    if confirmationDeadline == nil { confirmationDeadline = now + 25 }
                 }
+                if confirmationDeadline == nil { confirmationDeadline = observedAt + 25 }
             case .wait:
-                if confirmationDeadline == nil, control.flatMap(switchValue) == true {
-                    confirmationDeadline = now + 25
+                if confirmationDeadline == nil, switchIsOn == true {
+                    confirmationDeadline = observedAt + 25
                 }
             }
             try await Task.sleep(for: .milliseconds(200))
         }
         throw BackendError.message("系统全空间底图未持续稳定，正在恢复原壁纸")
+    }
+}
+
+/// A bounded, path-free summary of the most recent attempt, for distinguishing
+/// actual WallpaperAgent reversion from delayed observations after a failure.
+private struct SystemWallpaperActivationDiagnostics: Encodable {
+    var completed = false
+    var samples = 0
+    var matchingSamples = 0
+    var switchReads = 0
+    var longestSwitchRead: TimeInterval = 0
+    var largestSampleGap: TimeInterval = 0
+    var elapsed: TimeInterval = 0
+    var presses = 0
+    private var previousSample: TimeInterval?
+
+    private enum CodingKeys: String, CodingKey {
+        case completed, samples, matchingSamples, switchReads, longestSwitchRead
+        case largestSampleGap, elapsed, presses
+    }
+
+    mutating func recordLookup(duration: TimeInterval) {
+        switchReads += 1
+        longestSwitchRead = max(longestSwitchRead, duration)
+    }
+
+    mutating func recordSample(matches: Bool, at uptime: TimeInterval) {
+        samples += 1
+        if matches { matchingSamples += 1 }
+        if let previousSample { largestSampleGap = max(largestSampleGap, uptime - previousSample) }
+        previousSample = uptime
+    }
+
+    mutating func save(elapsed: TimeInterval, presses: Int) {
+        self.elapsed = elapsed
+        self.presses = presses
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/WallpaperUI/SpaceBackdrop")
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: directory.appendingPathComponent("last-activation.json"), options: .atomic)
     }
 }

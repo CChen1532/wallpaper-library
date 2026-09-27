@@ -100,6 +100,47 @@ import UniformTypeIdentifiers
               bounded.observe(matches: false, switchIsOn: false, at: 4) == .press &&
               bounded.observe(matches: false, switchIsOn: false, at: 6) == .wait,
               "最多尝试三次，避免无限切换系统开关")
+        // Reproduce a Settings tree that costs 850 ms per read. The old loop
+        // never accumulates 3 seconds because every gap exceeds 600 ms.
+        var legacySlow = SystemWallpaperActivationGate()
+        var legacyCompleted = false
+        for sample in 0..<25 {
+            legacyCompleted = legacySlow.observe(matches: true, switchIsOn: true,
+                at: Double(sample) * 1.05) == .complete || legacyCompleted
+        }
+        check(!legacyCompleted, "慢速系统设置查询可复现旧轮询稳定性超时")
+        var slow = SystemWallpaperActivationGate()
+        var simulatedTime = 0.0
+        var switchReads = 0
+        var slowCompleted = false
+        for _ in 0..<25 {
+            var value: Bool?
+            if slow.needsSwitchObservation(matches: true) {
+                simulatedTime += 0.85
+                switchReads += 1
+                value = true
+            }
+            if slow.observe(matches: true, switchIsOn: value, at: simulatedTime) == .complete {
+                slowCompleted = true
+                break
+            }
+            simulatedTime += 0.2
+        }
+        check(slowCompleted && switchReads == 1 && simulatedTime >= 3.85 && simulatedTime < 5,
+              "慢速首次查询后独立采样仍须稳定3秒并能完成确认")
+        check(slow.needsSwitchObservation(matches: false) &&
+              slow.observe(matches: false, switchIsOn: true, at: simulatedTime + 0.2) == .wait &&
+              slow.observe(matches: true, switchIsOn: nil, at: simulatedTime + 0.4) == .wait,
+              "真实状态回退仍重新检查开关并重置稳定计时，不关闭已开启开关")
+        var unknownSwitch = SystemWallpaperActivationGate()
+        check(unknownSwitch.needsSwitchObservation(matches: true) &&
+              unknownSwitch.observe(matches: true, switchIsOn: nil, at: 0) == .wait &&
+              unknownSwitch.needsSwitchObservation(matches: true),
+              "未曾确认开关或按下时不能仅凭匹配文档跳过查询")
+        var pressed = SystemWallpaperActivationGate()
+        check(pressed.observe(matches: false, switchIsOn: false, at: 0) == .press &&
+              !pressed.needsSwitchObservation(matches: true) && pressed.needsSwitchObservation(matches: false),
+              "首次按下后稳定采样不再遍历界面，失配时仍检查是否需要重试")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("scene-player-checks-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
