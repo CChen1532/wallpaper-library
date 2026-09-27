@@ -15,6 +15,8 @@ import Combine
     @Published var searchText = ""
     @Published private(set) var searchPage: WorkshopBrowse.Page?
     @Published private(set) var searchedText = ""
+    @Published private(set) var filters: WorkshopFilters
+    private var searchedRequest: WorkshopBrowse.Request?
     @Published private(set) var subscriptions: [WorkshopItem] = []
     @Published private(set) var subscriptionCount = 0
     @Published private(set) var subscriptionReadAt: Date?
@@ -31,31 +33,51 @@ import Combine
     private let findExisting: (String) -> URL?
     private let libraryBusy: () -> Bool
     private let metadata: ([String]) async throws -> [WorkshopItem]
+    private let browse: (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page
     var busy: Bool { activity != .idle }
     var waitingForGuard: Bool { event == .guardCode && activity == .download && !cancelling }
 
     init(storage: WorkshopStorage = WorkshopStorage(), defaults: UserDefaults = .standard,
          findExisting: @escaping (String) -> URL? = { _ in nil }, libraryBusy: @escaping () -> Bool = { false },
          component: URL? = nil, metadata: @escaping ([String]) async throws -> [WorkshopItem] = { try await WorkshopMetadata.fetch(ids: $0) },
+         browse: @escaping (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page = { try await WorkshopBrowse.fetch(request: $0, page: $1) },
          onImported: @escaping (URL) async -> Void = { _ in }) {
         self.storage = storage; self.defaults = defaults; self.onImported = onImported
         self.findExisting = findExisting
         self.libraryBusy = libraryBusy
         self.metadata = metadata
+        self.browse = browse
+        filters = defaults.data(forKey: "workshopBrowseFilters").flatMap { try? JSONDecoder().decode(WorkshopFilters.self, from: $0) } ?? .init()
         account = defaults.string(forKey: "workshopAccount") ?? ""
         self.component = component ?? WorkshopComponent.locate(storage: storage, custom: defaults.string(forKey: "workshopSteamCMD"))
     }
 
-    func search(page: Int = 1) {
-        guard !busy else { return }
-        let query = page == 1 ? String(searchText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) : searchedText
+    func setFilters(_ value: WorkshopFilters, searchImmediately: Bool = true) {
+        guard !busy, filters != value else { return }
+        filters = value
+        if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: "workshopBrowseFilters") }
+        searchPage = nil; searchedRequest = nil; item = nil; importedURL = nil; error = nil
+        if searchImmediately, value.period != .custom { search() }
+    }
+    func search(page requestedPage: Int? = nil) {
+        guard !busy, filters.validDates else { return }
+        let request: WorkshopBrowse.Request
+        let page: Int
+        if let requestedPage {
+            guard let previous = searchedRequest, let previousPage = searchPage,
+                  requestedPage >= 1, requestedPage <= max(1, previousPage.pages) else { return }
+            request = previous; page = requestedPage
+        } else {
+            request = .init(query: String(searchText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)), filters: filters)
+            page = 1; searchPage = nil; searchedRequest = nil; item = nil; importedURL = nil
+        }
         activity = .search; error = nil
         job = Task {
             defer { finish() }
             do {
-                let result = try await WorkshopBrowse.fetch(query: query, page: page)
+                let result = try await browse(request, page)
                 try Task.checkCancellation()
-                searchPage = result; searchedText = query; item = nil; importedURL = nil
+                searchPage = result; searchedText = request.query; searchedRequest = request; item = nil; importedURL = nil
             } catch { record(error) }
         }
     }
@@ -189,6 +211,7 @@ import Combine
 
     func download(password: String) {
         guard !busy, !libraryBusy(), let item, importedURL == nil else { return }
+        guard WorkshopFilters.supportsPlayback(tags: item.tags) else { error = WorkshopFailure.unsupportedProject.localizedDescription; return }
         if let existing = findExisting(item.id) { importedURL = existing; return }
         guard let component else { error = WorkshopFailure.componentMissing.localizedDescription; return }
         let account = account.trimmingCharacters(in: .whitespacesAndNewlines)

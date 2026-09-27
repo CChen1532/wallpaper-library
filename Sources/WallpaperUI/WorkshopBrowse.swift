@@ -4,18 +4,40 @@ import Foundation
 // Only JSON is decoded. No scripts from a downloaded page are evaluated here.
 enum WorkshopBrowse {
     struct Page: Sendable { let items: [WorkshopItem]; let number: Int; let pages: Int; let total: Int }
-    static func url(query: String, page: Int) -> URL {
+    struct Request: Equatable, Sendable {
+        let query: String
+        let tags: [String]
+        let sort: String
+        let dates: WorkshopFilters.DateRange?
+        init(query: String, filters: WorkshopFilters = .init(), now: Date = Date(), calendar: Calendar = .current) {
+            self.query = query; tags = filters.requiredTags; sort = filters.browseSort(query: query)
+            dates = filters.dateRange(now: now, calendar: calendar)
+        }
+    }
+    static func url(query: String, page: Int) -> URL { url(request: Request(query: query), page: page) }
+    static func url(request: Request, page: Int) -> URL {
         var parts = URLComponents(string: "https://steamcommunity.com/workshop/browse/")!
-        parts.queryItems = [URLQueryItem(name: "appid", value: "431960"), .init(name: "browsesort", value: query.isEmpty ? "trend" : "textsearch"),
-                           .init(name: "searchtext", value: query), .init(name: "search_text_target", value: "0"),
+        parts.queryItems = [URLQueryItem(name: "appid", value: "431960"), .init(name: "browsesort", value: request.sort),
+                           .init(name: "searchtext", value: request.query), .init(name: "search_text_target", value: "0"), .init(name: "days", value: "7"),
                            .init(name: "p", value: String(max(1, page))), .init(name: "l", value: "english")]
+        parts.queryItems! += request.tags.map { .init(name: "requiredtags[]", value: $0) }
+        if let dates = request.dates {
+            parts.queryItems! += [.init(name: "created_date_range_filter_start", value: String(dates.start)),
+                                 .init(name: "created_date_range_filter_end", value: String(dates.end))]
+        }
         return parts.url!
     }
     static func fetch(query: String, page: Int) async throws -> Page {
-        let data = try await WorkshopNetwork.read(URLRequest(url: url(query: query, page: page)), maximum: 8 * 1024 * 1024)
-        return try decode(String(decoding: data, as: UTF8.self), query: query, page: page)
+        try await fetch(request: Request(query: query), page: page)
+    }
+    static func fetch(request: Request, page: Int) async throws -> Page {
+        let data = try await WorkshopNetwork.read(URLRequest(url: url(request: request, page: page)), maximum: 8 * 1024 * 1024)
+        return try decode(String(decoding: data, as: UTF8.self), request: request, page: page)
     }
     static func decode(_ html: String, query: String, page: Int) throws -> Page {
+        try decode(html, request: Request(query: query), page: page)
+    }
+    static func decode(_ html: String, request: Request, page: Int) throws -> Page {
         guard html.utf8.count <= 8 * 1024 * 1024,
               let start = html.range(of: "window.SSR.renderContext=JSON.parse(")?.upperBound, start < html.endIndex,
               html[start] == "\"" else { throw WorkshopFailure.pageChanged }
@@ -34,12 +56,14 @@ enum WorkshopBrowse {
         for entry in queries {
             guard let key = entry["queryKey"] as? [Any], key.count > 1, key[0] as? String == "workshop_browse",
                   let identity = key[1] as? [String: Any], identity["appid"] as? Int == 431960,
-                  identity["page"] as? Int == page, identity["browse_sort"] as? String == (query.isEmpty ? "trend" : "textsearch"),
-                  (identity["search_text"] as? String ?? "") == query,
+                  identity["page"] as? Int == page, identity["browse_sort"] as? String == request.sort,
+                  (identity["search_text"] as? String ?? "") == request.query,
                   (identity["search_text_target"] as? Int ?? 0) == 0,
                   (identity["section"] as? String ?? "readytouseitems") == "readytouseitems",
-                  (identity["required_tags"] as? [String] ?? []).isEmpty,
+                  Set(identity["required_tags"] as? [String] ?? []) == Set(request.tags),
                   (identity["excluded_tags"] as? [String] ?? []).isEmpty,
+                  (identity["trend_days"] as? Int ?? 7) == 7,
+                  matchesDates(identity, request: request),
                   let state = entry["state"] as? [String: Any], let data = state["data"] as? [String: Any],
                   data["eresult"] as? Int == 1, data["current_page"] as? Int == page,
                   let pages = data["total_pages"] as? Int, pages >= 0,
@@ -57,6 +81,13 @@ enum WorkshopBrowse {
             return Page(items: items, number: page, pages: pages, total: total)
         }
         throw WorkshopFailure.pageChanged
+    }
+    private static func matchesDates(_ identity: [String: Any], request: Request) -> Bool {
+        // A stale or ignored filter must not be presented as a matching search.
+        guard identity["date_range_updated"] == nil else { return false }
+        guard let dates = request.dates else { return identity["date_range_created"] == nil }
+        guard let actual = identity["date_range_created"] as? [String: Any] else { return false }
+        return actual["timestamp_start"] as? Int == dates.start && actual["timestamp_end"] as? Int == dates.end
     }
 }
 

@@ -29,9 +29,10 @@ struct WorkshopView: View {
                         TextField("搜索标题与描述", text: $workshop.searchText).textFieldStyle(.roundedBorder)
                             .onSubmit { workshop.search() }.disabled(workshop.busy)
                             .accessibilityIdentifier("workshop.searchText")
-                        Button("搜索") { workshop.search() }.disabled(workshop.busy)
+                        Button("搜索") { workshop.search() }.disabled(workshop.busy || !workshop.filters.validDates)
                             .accessibilityIdentifier("workshop.search")
                     }
+                    browseFilters
                     if workshop.activity == .search { ProgressView("正在搜索…").controlSize(.small) }
                 } else if tab == 1 {
                     HStack(spacing: 10) {
@@ -53,7 +54,7 @@ struct WorkshopView: View {
                         Text("\(page.number) / \(max(1, page.pages))").font(.caption).monospacedDigit()
                         Button("下一页") { workshop.search(page: page.number + 1) }.disabled(workshop.busy || page.number >= page.pages)
                     }
-                    if page.items.isEmpty { ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass", description: Text("试试其他关键词。")) }
+                    if page.items.isEmpty { ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass", description: Text("试试其他关键词或放宽筛选条件。")) }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 16)], spacing: 16) {
                         ForEach(page.items) { item in
                             Button {
@@ -65,7 +66,7 @@ struct WorkshopView: View {
                                         .frame(height: 112).clipped()
                                     Text(item.title).font(.callout.weight(.medium)).lineLimit(2).frame(height: 36, alignment: .topLeading)
                                         .padding(.horizontal, 10)
-                                    Text(item.tags.prefix(3).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    Text(classification(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                         .padding(.horizontal, 10).padding(.bottom, 10)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                     .background(.background, in: RoundedRectangle(cornerRadius: 12))
@@ -109,6 +110,59 @@ struct WorkshopView: View {
         .onChange(of: workshop.busy) { _, busy in if !busy { password = ""; guardCode = "" } }
     }
 
+    private func classification(_ item: WorkshopItem) -> String {
+        WorkshopFilters.classification(tags: item.tags).map { AppStrings.text($0, locale: locale) }.joined(separator: " · ")
+    }
+    private func filterBinding<Value>(_ key: WritableKeyPath<WorkshopFilters, Value>, immediate: Bool = true) -> Binding<Value> {
+        Binding(get: { workshop.filters[keyPath: key] }, set: { value in
+            var next = workshop.filters; next[keyPath: key] = value
+            workshop.setFilters(next, searchImmediately: immediate)
+        })
+    }
+    private func filterPicker<Value: WorkshopFilterChoice>(_ title: String, key: WritableKeyPath<WorkshopFilters, Value>, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(AppStrings.text(title, locale: locale)).font(.caption).foregroundStyle(.secondary)
+            Picker(LocalizedStringKey(title), selection: filterBinding(key)) {
+                ForEach(Array(Value.allCases), id: \.self) { option in Text(LocalizedStringKey(option.label)).tag(option) }
+            }.labelsHidden().accessibilityIdentifier(id)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var browseFilters: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                filterPicker("年龄分级", key: \.age, id: "workshop.age")
+                    .help("按作者在 Steam 标注的分级筛选。")
+                filterPicker("壁纸类型", key: \.kind, id: "workshop.kind")
+                filterPicker("内容题材", key: \.genre, id: "workshop.genre")
+            }
+            HStack(alignment: .bottom, spacing: 16) {
+                filterPicker("排序方式", key: \.sort, id: "workshop.sort")
+                filterPicker("发布日期", key: \.period, id: "workshop.period")
+                Button("重置筛选") { workshop.setFilters(.init()) }
+                    .disabled(workshop.filters.isDefault).frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityIdentifier("workshop.resetFilters")
+            }
+            if workshop.filters.period == .custom {
+                HStack(spacing: 16) {
+                    DatePicker("开始日期", selection: filterBinding(\.startDate, immediate: false), in: Date(timeIntervalSince1970: 0)...Date(), displayedComponents: .date)
+                        .accessibilityIdentifier("workshop.startDate")
+                    DatePicker("结束日期", selection: filterBinding(\.endDate, immediate: false), in: Date(timeIntervalSince1970: 0)...Date(), displayedComponents: .date)
+                        .accessibilityIdentifier("workshop.endDate")
+                    Button("应用日期") { workshop.search() }.disabled(!workshop.filters.validDates)
+                }
+                if !workshop.filters.validDates {
+                    Text("结束日期不能早于开始日期。").font(.caption).foregroundStyle(.red)
+                }
+            }
+            if workshop.filters.browseSort(query: workshop.searchText.trimmingCharacters(in: .whitespacesAndNewlines)) == "trend" {
+                Text("最热门按近 7 天热度排序；日期范围按作品发布时间筛选。").font(.caption).foregroundStyle(.secondary)
+            }
+            if workshop.filters.kind == .web || workshop.filters.kind == .application {
+                Text("网页和应用程序壁纸可浏览，暂不支持在此应用中播放。").font(.caption).foregroundStyle(.secondary)
+            }
+        }.disabled(workshop.busy)
+    }
+
     private func details(_ item: WorkshopItem) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
@@ -120,6 +174,7 @@ struct WorkshopView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(item.title).font(.headline).lineLimit(3).textSelection(.enabled)
                     Text("ID " + item.id).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(classification(item)).font(.caption).foregroundStyle(.secondary)
                     if item.bytes > 0 { Text(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)).font(.caption).foregroundStyle(.secondary) }
                     Link("在 Steam 中查看", destination: item.communityURL)
                 }
@@ -132,6 +187,8 @@ struct WorkshopView: View {
                     Button("加入并查看资料库") { Task { await workshop.registerImported(); showLibrary() } }.buttonStyle(.borderedProminent)
                     Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([imported]) }
                 }
+            } else if !WorkshopFilters.supportsPlayback(tags: item.tags) {
+                Text("网页和应用程序壁纸可浏览，暂不支持在此应用中播放。").foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     accountForm
