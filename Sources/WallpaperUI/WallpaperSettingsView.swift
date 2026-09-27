@@ -10,7 +10,6 @@ struct WallpaperSettingsView: View {
     @EnvironmentObject private var workshop: WorkshopModel
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     @AppStorage("appLanguage") private var language = AppLanguage.chinese
-    @AppStorage("libraryPage") private var page = LibraryPage.library
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
     @State private var accessibilityTrusted = false
     @State private var copiedVersionInfo = false
@@ -31,11 +30,9 @@ struct WallpaperSettingsView: View {
                     Text("简体中文").tag(AppLanguage.chinese)
                     Text("English").tag(AppLanguage.english)
                 }
-                Text("切换后立即应用到界面，不影响正在播放的壁纸。")
-                    .font(.callout).foregroundStyle(.secondary)
             }
             Section("素材文件夹") {
-                Text("每60秒自动识别新场景与 MP4 视频，应用运行时持续检查。")
+                Text("每分钟自动检查新素材。")
                     .font(.callout).foregroundStyle(.secondary)
                 ForEach(catalog.roots, id: \.path) { root in
                     HStack {
@@ -62,22 +59,11 @@ struct WallpaperSettingsView: View {
                     Label(AppStrings.text(issue, locale: locale), systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 }
-                Text("自动轮播仍使用原视频素材目录。其他文件夹中的视频可以单独播放。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("创意工坊") {
-                Text("搜索创意工坊、通过链接添加壁纸，或同步 Steam 订阅。下载完成后自动加入资料库。")
-                    .font(.callout).foregroundStyle(.secondary)
-                Button("打开创意工坊") { page = .workshop }
-            }
-            Section("壁纸设置") {
-                Text("选中壁纸后，在右侧详情栏调整播放与交互。每张壁纸单独保存。")
-                    .foregroundStyle(.secondary)
             }
             Section {
                 Toggle("场景自动匹配过渡底图", isOn: $automaticBackdrop)
                     .disabled(model.isWorking || scenePlayer.isActive)
-                Text("默认关闭。开启后会临时修改 macOS 系统壁纸，以场景截图承接 Space 过渡；停止、换片或退出时恢复原设置。")
+                Text("使用场景截图作为 Space 过渡底图；停止、换片或退出时恢复原壁纸。")
                     .font(.callout).foregroundStyle(.secondary)
                 if let issue = model.backdropCompatibilityIssue {
                     Text(AppStrings.text(issue, locale: locale)).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
@@ -113,26 +99,27 @@ struct WallpaperSettingsView: View {
             } header: {
                 Text("场景 Space 切换")
             } footer: {
-                Text("视频的过渡底图可在每个视频的详情栏单独设置。首次自动切换需允许本应用的辅助功能权限，以操作系统墙纸的“在所有空间中显示”开关。")
+                Text("首次自动切换需要辅助功能权限。视频底图可在各视频详情中设置。")
             }
             Section("关于") {
-                LabeledContent(AppStrings.text("应用", locale: locale), value: "WallpaperUI")
                 LabeledContent("版本", value: versionText)
-                LabeledContent("构建", value: buildText)
-                LabeledContent("版权", value: "© 2026 Cheng (CChen1532)")
-                Text("本应用源码采用 MIT 许可；内置的 Mirage 场景运行时采用 GPL-3.0。")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Button("打开项目主页") { openProjectHomepage() }
-                    Button("在访达中显示许可文件") { revealLicenseFiles() }
-                    Button("复制版本信息") { copyVersionInfo() }
+                DisclosureGroup("更多信息") {
+                    LabeledContent("构建", value: buildText)
+                    LabeledContent("版权", value: "© 2026 Cheng (CChen1532)")
+                    Text("本应用源码采用 MIT 许可；内置的 Mirage 场景运行时采用 GPL-3.0。")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button("打开项目主页") { openProjectHomepage() }
+                        Button("在访达中显示许可文件") { revealLicenseFiles() }
+                        Button("复制版本信息") { copyVersionInfo() }
+                    }
+                    if copiedVersionInfo {
+                        Text("已复制版本信息").font(.callout).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("辅助功能授权") { Text(LocalizedStringKey(accessibilityTrusted ? "已授权" : "未授权")) }
+                    Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
+                    Button("显示器与运行状态", action: showDiagnostics)
                 }
-                if copiedVersionInfo {
-                    Text("已复制版本信息").font(.callout).foregroundStyle(.secondary)
-                }
-                LabeledContent("辅助功能授权") { Text(LocalizedStringKey(accessibilityTrusted ? "已授权" : "未授权")) }
-                Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
-                Button("显示器与运行状态", action: showDiagnostics)
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden)

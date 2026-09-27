@@ -279,11 +279,7 @@ struct SceneInspectorSettings: View {
         VStack(alignment: .leading, spacing: 12) {
             if catalogLoading { ProgressView("正在读取场景效果…").font(.caption) }
             if !catalog.properties.isEmpty {
-                HStack {
-                    Text("场景效果").font(.headline)
-                    Spacer()
-                    Text("仅此壁纸").font(.caption).foregroundStyle(.secondary)
-                }
+                Text("场景效果").font(.headline)
                 VStack(spacing: 0) {
                     ForEach(Array(catalog.properties.enumerated()), id: \.element.id) { index, property in
                         if index > 0 { Divider().padding(.horizontal, 10) }
@@ -311,12 +307,6 @@ struct SceneInspectorSettings: View {
                 }.disabled(!preferences.mouseEnabled)
                     .help("鼠标位置的采样频率，与画面帧率不同；需先开启鼠标交互。")
             }.background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
-
-            Text(LocalizedStringKey(preferences.mouseEnabled
-                 ? "效果取决于场景支持；采样频率不等于画面帧率。"
-                 : "开启鼠标交互后，可设置点击响应和采样频率。"))
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             DisclosureGroup(isExpanded: Binding(get: { showPlayback }, set: { value in
                 withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlayback = value }

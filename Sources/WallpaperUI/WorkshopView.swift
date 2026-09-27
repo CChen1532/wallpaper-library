@@ -10,6 +10,8 @@ struct WorkshopView: View {
     @State private var invalidGuard = false
     @State private var tab = 0
     @State private var showSubscriptions = false
+    @State private var showFilterInfo = false
+    @State private var showComponentDetails = false
     @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
     @FocusState private var guardFocused: Bool
     let showLibrary: () -> Void
@@ -17,13 +19,12 @@ struct WorkshopView: View {
     var body: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Text("创意工坊").font(.title2.weight(.semibold)).id("workshopTop")
+            VStack(alignment: .leading, spacing: 18) {
                 Picker("浏览方式", selection: $tab) {
                     Text("全文搜索").tag(0)
                     Text("链接或 ID").tag(1)
                     Text("订阅同步").tag(2)
-                }.pickerStyle(.segmented).disabled(workshop.busy)
+                }.pickerStyle(.segmented).labelsHidden().disabled(workshop.busy).id("workshopTop")
                 if tab == 0 {
                     HStack {
                         TextField("搜索标题与描述", text: $workshop.searchText).textFieldStyle(.roundedBorder)
@@ -47,16 +48,27 @@ struct WorkshopView: View {
                 if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
                 if tab != 2, let item = workshop.item { details(item).id("selectedWorkshop") }
                 if tab == 0, let page = workshop.searchPage {
-                    Text(page.candidateCount
-                         ? String(format: AppStrings.text("本页符合条件 %d 项", locale: locale), page.items.count)
-                         : String(format: AppStrings.text("共 %d 项", locale: locale), page.total))
-                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(page.candidateCount
+                             ? String(format: AppStrings.text("本页符合条件 %d 项", locale: locale), page.items.count)
+                             : String(format: AppStrings.text("共 %d 项", locale: locale), page.total))
+                            .font(.caption).foregroundStyle(.secondary)
+                        if page.candidateCount {
+                            Button { showFilterInfo = true } label: { Image(systemName: "info.circle") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .accessibilityLabel(Text("筛选说明"))
+                                .popover(isPresented: $showFilterInfo) {
+                                    Text("同组多选按任一条件匹配；每页显示该页符合条件的项目，页数以 Steam 候选结果为准。")
+                                        .font(.callout).padding(16).frame(width: 300)
+                                }
+                        }
+                    }
                     if page.items.isEmpty {
                         ContentUnavailableView("没有找到壁纸", systemImage: "magnifyingglass",
                             description: Text(page.candidateCount && page.number < page.pages
                                 ? "本页没有符合条件的壁纸，可以继续下一页。" : "试试其他关键词或放宽筛选条件。"))
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 16)], spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 14)], spacing: 14) {
                         ForEach(page.items) { item in
                             Button {
                                 workshop.select(item)
@@ -83,7 +95,7 @@ struct WorkshopView: View {
                         .accessibilityIdentifier("workshop.error")
                 }
                 componentSection
-            }.padding(28).frame(maxWidth: 900)
+            }.padding(24).frame(maxWidth: 900)
                 .frame(maxWidth: .infinity, alignment: .top)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -154,8 +166,8 @@ struct WorkshopView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var browseFilters: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 16) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 14) {
                 WorkshopMultiChoiceFilter(title: "年龄分级", allLabel: "全部年龄", countLabel: "已选 %d 项分级",
                     hint: "同组任选其一，按作者在 Steam 标注的分级筛选。",
                     choices: WorkshopFilters.Age.allCases.filter { $0 != .all },
@@ -164,17 +176,20 @@ struct WorkshopView: View {
                     hint: "场景、视频或网页，同组任选其一。",
                     choices: WorkshopFilters.Kind.allCases.filter { $0 != .all && $0 != .application },
                     selection: filterBinding(\.kinds), id: "workshop.kind")
+                    .help(Text("网页壁纸可浏览，暂不支持在此应用中播放。"))
                 WorkshopMultiChoiceFilter(title: "内容题材", allLabel: "全部题材", countLabel: "已选 %d 项题材",
                     hint: "同时匹配所有勾选题材；不勾选表示不限。",
                     choices: WorkshopFilters.Genre.allCases.filter { $0 != .all },
                     selection: filterBinding(\.genres), id: "workshop.genre")
             }
-            HStack(alignment: .bottom, spacing: 16) {
+            HStack(alignment: .bottom, spacing: 14) {
                 filterPicker("排序方式", key: \.sort, id: "workshop.sort")
+                    .help(Text("最热门按近 7 天热度排序；日期范围按作品发布时间筛选。"))
                 filterPicker("发布日期", key: \.period, id: "workshop.period")
-                Button("重置筛选") { workshop.setFilters(.init()) }
-                    .disabled(workshop.filters.isDefault).frame(maxWidth: .infinity, alignment: .trailing)
-                    .accessibilityIdentifier("workshop.resetFilters")
+                if !workshop.filters.isDefault {
+                    Button("重置筛选") { workshop.setFilters(.init()) }
+                        .accessibilityIdentifier("workshop.resetFilters")
+                }
             }
             if workshop.filters.period == .custom {
                 HStack(spacing: 16) {
@@ -187,16 +202,6 @@ struct WorkshopView: View {
                 if !workshop.filters.validDates {
                     Text("结束日期不能早于开始日期。").font(.caption).foregroundStyle(.red)
                 }
-            }
-            if workshop.filters.browseSort(query: workshop.searchText.trimmingCharacters(in: .whitespacesAndNewlines)) == "trend" {
-                Text("最热门按近 7 天热度排序；日期范围按作品发布时间筛选。").font(.caption).foregroundStyle(.secondary)
-            }
-            if workshop.filters.kinds.contains(.web) {
-                Text("网页壁纸可浏览，暂不支持在此应用中播放。").font(.caption).foregroundStyle(.secondary)
-            }
-            if workshop.filters.needsLocalMatch {
-                Text("同组多选按任一条件匹配；每页显示该页符合条件的项目，页数以 Steam 候选结果为准。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }.disabled(workshop.busy)
     }
@@ -328,25 +333,33 @@ struct WorkshopView: View {
     }
 
     private var componentSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("下载组件").font(.headline)
-                Spacer()
-                if workshop.component != nil { Label("已就绪", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary) }
-            }
+        Group {
             if let component = workshop.component {
-                Text(component.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            } else {
-                Text("首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                if workshop.component == nil {
-                    Button("准备下载组件") { workshop.installComponent() }.disabled(workshop.busy)
-                        .accessibilityIdentifier("workshop.install")
+                DisclosureGroup(isExpanded: $showComponentDetails) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(component.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy)
+                    }.padding(.top, 8)
+                } label: {
+                    HStack {
+                        Text("下载组件")
+                        Spacer()
+                        Label("已就绪", systemImage: "checkmark.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy)
-                if workshop.activity == .component { ProgressView("正在准备…").controlSize(.small) }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("下载组件").font(.headline)
+                    Text("首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("准备下载组件") { workshop.installComponent() }.disabled(workshop.busy)
+                            .accessibilityIdentifier("workshop.install")
+                        Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy)
+                        if workshop.activity == .component { ProgressView("正在准备…").controlSize(.small) }
+                    }
+                }
             }
         }
     }

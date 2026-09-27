@@ -178,7 +178,6 @@ struct NativeLibraryView: View {
                     Text("\(entries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary)
                     Spacer()
                     if catalog.scanning { ProgressView().controlSize(.small) }
-                    Text("每分钟自动检查").font(.caption).foregroundStyle(.secondary)
                 }.padding(.horizontal, 24).padding(.vertical, 14)
                 if let sceneError { issueBanner(AppStrings.text(sceneError, locale: locale)) }
                 if entries.isEmpty && !catalog.scanning {
@@ -289,7 +288,7 @@ struct NativeLibraryView: View {
     private func sceneDetails(_ item: SceneCatalogPayload.Entry) -> some View {
         let sceneRoot: URL? = item.root
         return ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 inspectorHeading("场景详情") { selectedSceneName = nil; focusedWallpaper = nil }
                 SceneCover(folder: item.folder, size: .inspector)
                     .modifier(ArtworkCrossfade(identity: (sceneRoot?.path ?? "") + "/" + item.name))
@@ -330,11 +329,12 @@ struct NativeLibraryView: View {
                                            catalogRevision: item.propertyCatalogRevision)
                         .id(ScenePreferencesStore.identity(for: package))
                 }
-                Divider()
-                VStack(spacing: 10) {
-                    inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
-                    inspectorMetadata("素材编号", item.name)
-                }
+                DisclosureGroup("文件信息") {
+                    VStack(spacing: 10) {
+                        inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file))
+                        inspectorMetadata("素材编号", item.name)
+                    }.padding(.top, 8)
+                }.font(.caption).tint(.secondary)
                 DisclosureGroup(isExpanded: Binding(get: { showPlaybackNotes }, set: { value in
                     withAnimation(LibraryMotion.expansion(reduceMotion)) { showPlaybackNotes = value }
                 })) {
@@ -451,7 +451,7 @@ struct NativeLibraryView: View {
     }
     private func videoDetails(_ item: Wallpaper) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 inspectorHeading("视频详情") { model.selected = nil; focusedWallpaper = nil }
                 VideoCover(item: item, size: .inspector).modifier(ArtworkCrossfade(identity: item.id)).aspectRatio(4 / 3, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -471,17 +471,15 @@ struct NativeLibraryView: View {
                 VideoInspectorSettings(store: model.videoBackdropPreferences,
                                        backdrop: model.videoBackdrop, video: item)
                     .id(item.id)
-                Divider()
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("视频信息").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    inspectorMetadata("分辨率", "\(item.width) × \(item.height)")
-                    inspectorMetadata("帧率", String(format: "%.2f FPS", item.fps))
-                    inspectorMetadata("时长", String(format: AppStrings.text("%.1f 秒", locale: locale), item.duration))
-                    inspectorMetadata("编码", item.codec.uppercased())
-                    inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.sizeBytes, countStyle: .file))
-                }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-                Text("视频在桌面背景持续播放。上方图片仅为封面。")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                DisclosureGroup("视频信息") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        inspectorMetadata("分辨率", "\(item.width) × \(item.height)")
+                        inspectorMetadata("帧率", String(format: "%.2f FPS", item.fps))
+                        inspectorMetadata("时长", String(format: AppStrings.text("%.1f 秒", locale: locale), item.duration))
+                        inspectorMetadata("编码", item.codec.uppercased())
+                        inspectorMetadata("文件大小", ByteCountFormatter.string(fromByteCount: item.sizeBytes, countStyle: .file))
+                    }.padding(.top, 8)
+                }.font(.caption).tint(.secondary)
                 if item.decodeWarning { Label("此视频可能使用软件解码", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
                 if let warning = item.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
                 Divider()
@@ -506,15 +504,13 @@ struct NativeLibraryView: View {
             Section {
                 LabeledContent("当前状态", value: AppStrings.text(model.rotationStatusText, locale: locale))
                 if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: AppStrings.text(model.rotationIntervalText, locale: locale)) }
-            } header: { Text("桌面视频轮播") } footer: { Text("轮播会定时更换桌面正在播放的视频。关闭应用窗口后，已开启的轮播仍会继续。") }
+            } header: { Text("状态") }
             Section {
                 if let directory = model.capabilities.libraryDirectory {
                     Text(directory.path).font(.caption).textSelection(.enabled)
                 }
-                Text("仅轮播此文件夹中的视频；场景和其他素材文件夹不参与轮播。")
-                    .font(.callout).foregroundStyle(.secondary)
-            } header: { Text("轮播范围") }
-            Section("轮播设置") {
+            } header: { Text("轮播范围") } footer: { Text("仅轮播此文件夹中的视频。") }
+            Section("切换设置") {
                 Picker("切换方式", selection: $mode) {
                     ForEach(model.capabilities.rotationModes, id: \.self) { value in Text(LocalizedStringKey(value == "rand" ? "随机" : value == "next" ? "顺序" : "倒序")).tag(value) }
                 }
@@ -525,7 +521,6 @@ struct NativeLibraryView: View {
                 }
                 if let notice = model.state.notice { Text(LocalizedStringKey(notice)).foregroundStyle(.orange) }
             }.disabled(model.isWorking)
-            Section { Text("“停止桌面播放”保留轮播设置，之后可能再次播放。要恢复静态系统桌面并关闭轮播，请选择“全部关闭”。").font(.callout).foregroundStyle(.secondary) }
         }.formStyle(.grouped)
     }
     private var desktopControls: some View {
