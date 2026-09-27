@@ -133,23 +133,35 @@ struct WorkshopView: View {
     }
     private func floatingPagination(_ page: WorkshopBrowse.Page) -> some View {
         HStack(spacing: 12) {
-            Button("上一页") { workshop.search(page: page.number - 1) }
-                .disabled(workshop.busy || page.number <= 1)
+            paginationButton("上一页", enabled: !workshop.busy && page.number > 1) {
+                workshop.search(page: page.number - 1)
+            }
             Text("\(page.number) / \(page.pages)")
-                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                .font(.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.primary)
                 .accessibilityLabel("\(page.number) / \(page.pages)")
-            Button("下一页") { workshop.search(page: page.number + 1) }
-                .disabled(workshop.busy || page.number >= page.pages)
+            paginationButton("下一页", enabled: !workshop.busy && page.number < page.pages) {
+                workshop.search(page: page.number + 1)
+            }
         }
-        .buttonStyle(.bordered)
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
-        .overlay { Capsule().strokeBorder(.quaternary) }
+        .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+        .overlay { Capsule().strokeBorder(.separator) }
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workshop.pagination")
         .frame(maxWidth: .infinity)
         .padding(.bottom, 12)
+    }
+    private func paginationButton(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(enabled ? Color.white : Color.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(enabled ? Color(nsColor: .systemBlue) : Color(nsColor: .controlBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .disabled(!enabled)
     }
     private func filterBinding<Value>(_ key: WritableKeyPath<WorkshopFilters, Value>, immediate: Bool = true) -> Binding<Value> {
         Binding(get: { workshop.filters[keyPath: key] }, set: { value in
