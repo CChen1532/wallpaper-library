@@ -1,0 +1,7 @@
+Workshop URL parsing is adapted from Loomscreen.
+https://github.com/Paradox07127/macos-wallpaperengine
+Revision: 9b40a6d74de8cc1d0c5e5ddb82d132f3804282f1
+Original path: LiveWallpaper/Infrastructure/Workshop/WorkshopURLParser.swift
+Changes: reject ambiguous duplicate IDs, non-ASCII IDs and oversized input.
+The download workflow is independently implemented, informed by its PTY and staged-import architecture.
+SteamCMD is obtained separately from Valve, and is not included in this application.

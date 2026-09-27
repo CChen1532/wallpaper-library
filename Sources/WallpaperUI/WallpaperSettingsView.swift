@@ -9,6 +9,7 @@ struct WallpaperSettingsView: View {
     @EnvironmentObject private var scenePlayer: ScenePlayer
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     @AppStorage("appLanguage") private var language = AppLanguage.chinese
+    @AppStorage("libraryPage") private var page = LibraryPage.library
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
     @State private var accessibilityTrusted = false
     @State private var copiedVersionInfo = false
@@ -48,6 +49,11 @@ struct WallpaperSettingsView: View {
                 }
                 Text("自动轮播仍使用原视频素材目录。其他文件夹中的视频可以单独播放。")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("创意工坊") {
+                Text("通过链接下载场景或 MP4 视频，完成后自动加入资料库。")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("打开创意工坊") { page = .workshop }
             }
             Section("壁纸设置") {
                 Text("选中壁纸后，在右侧详情栏调整播放与交互。每张壁纸单独保存。")
@@ -139,7 +145,8 @@ struct WallpaperSettingsView: View {
         guard let resources = Bundle.main.resourceURL else { return }
         let licenses = resources.appendingPathComponent("SceneRuntime/Contents/Resources/Licenses")
         let target = FileManager.default.fileExists(atPath: licenses.path) ? licenses : resources
-        NSWorkspace.shared.activateFileViewerSelecting([target])
+        let workshopLicense = resources.appendingPathComponent("Licenses")
+        NSWorkspace.shared.activateFileViewerSelecting([target] + (FileManager.default.fileExists(atPath: workshopLicense.path) ? [workshopLicense] : []))
     }
 
     private func copyVersionInfo() {

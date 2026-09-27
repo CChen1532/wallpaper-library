@@ -4,7 +4,7 @@ import AppKit
 import UniformTypeIdentifiers
 import WESceneCore
 
-enum LibraryPage: String, Hashable { case library, videos, scenes, rotation, settings }
+enum LibraryPage: String, Hashable { case library, videos, scenes, workshop, rotation, settings }
 struct NativeLibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
@@ -62,6 +62,8 @@ struct NativeLibraryView: View {
                 Section("资料库") {
                     SidebarNavigationLabel(title: "全部壁纸", symbol: "photo.on.rectangle", selected: page == .library)
                         .badge(sceneEntries.count + model.items.count).tag(LibraryPage.library)
+                    SidebarNavigationLabel(title: "创意工坊", symbol: "square.and.arrow.down", selected: page == .workshop)
+                        .tag(LibraryPage.workshop)
                 }
                 Section("管理") {
                     SidebarNavigationLabel(title: "自动轮播", symbol: "arrow.triangle.2.circlepath", selected: page == .rotation).tag(LibraryPage.rotation)
@@ -86,11 +88,12 @@ struct NativeLibraryView: View {
                     }
                 }
                 else if page == .rotation { rotationSettings }
+                else if page == .workshop { WorkshopView { page = .library } }
                 else { unifiedLibrary }
                 if page != .settings { Divider(); desktopControls }
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .navigationTitle(AppStrings.text(page == .settings ? "设置" : page == .rotation ? "自动轮播" : "全部壁纸", locale: locale))
+            .navigationTitle(AppStrings.text(page == .settings ? "设置" : page == .rotation ? "自动轮播" : page == .workshop ? "创意工坊" : "全部壁纸", locale: locale))
             .modifier(LibrarySearch(text: $search, enabled: page == .library, prompt: "搜索壁纸"))
             .toolbar {
                 ToolbarItemGroup {

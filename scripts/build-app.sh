@@ -19,6 +19,7 @@ xcrun clang++ -dynamiclib -fobjc-arc -framework AppKit -framework Foundation \
     -o "$app/Contents/Resources/NowPlaying/libWallpaperNowPlaying.dylib"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp -R Resources/en.lproj Resources/zh-Hans.lproj "$app/Contents/Resources/"
+cp -R Resources/Licenses "$app/Contents/Resources/"
 # Use the committed icon for reproducible packaging; iconutil may reject a
 # regenerated iconset even when its input PNG and the existing ICNS are valid.
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"

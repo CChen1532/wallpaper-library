@@ -15,6 +15,13 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 @MainActor private enum AppServices {
     static let model = LibraryModel()
     static let catalog = UnifiedLibrary(model: model)
+    static let workshop = WorkshopModel(findExisting: { id in
+        let candidates = catalog.scenes.map(\.folder) + model.items.map { $0.url.deletingLastPathComponent() }
+        return candidates.first { $0.lastPathComponent == id && FileManager.default.fileExists(atPath: $0.appendingPathComponent("project.json").path) }
+    }, onImported: { folder in
+        catalog.addFolder(folder)
+        await catalog.refresh()
+    })
 }
 
 @MainActor final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
@@ -45,10 +52,12 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         guard !terminating else { return .terminateLater }
         terminating = true
         AppServices.catalog.stop()
+        AppServices.workshop.cancel()
         Task {
             // Shutdown must see an in-flight video activation before polling
             // cancellation can erase it; the model owns cancellation/rollback.
             await AppServices.model.shutdownScene()
+            await AppServices.workshop.shutdown()
             polling?.cancel()
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -66,7 +75,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
         Window(AppStrings.text("壁纸", language: language), id: "library") {
-            NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog)
+            NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog).environmentObject(AppServices.workshop)
                 .environment(\.locale, language.locale)
                 .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
         }.defaultSize(width: 1200, height: 800)
@@ -79,6 +88,9 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                     }.keyboardShortcut(",", modifiers: .command)
                 }
                 CommandGroup(after: .sidebar) {
+                    Button(AppStrings.text("创意工坊", language: language)) {
+                        page = .workshop; openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true)
+                    }.keyboardShortcut("w", modifiers: [.command, .option])
                     Menu(AppStrings.text("外观", language: language)) {
                         Picker(AppStrings.text("外观", language: language), selection: $appearance) {
                             ForEach(AppAppearance.allCases) { Text(AppStrings.text($0.label, language: language)).tag($0) }
