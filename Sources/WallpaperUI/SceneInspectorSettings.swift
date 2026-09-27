@@ -265,7 +265,7 @@ struct SceneInspectorSettings: View {
                     let representedPackage = package
                     Task { await model.applyScenePreferences(for: representedPackage) }
                 }.frame(maxWidth: .infinity).disabled(model.isWorking)
-                    .help("重新启动正在播放的这张壁纸以应用设置。")
+                    .help("场景效果会实时更新；播放与交互设置可能需要重新启动。")
             }
             Text(LocalizedStringKey(settingsStatus(pendingChanges: pendingChanges)))
                 .font(.caption).foregroundStyle(.secondary)

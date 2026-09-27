@@ -341,3 +341,9 @@
 "所选显示器断开时使用可用屏幕，重新连接后自动返回。" = "Use an available screen if the selected display disconnects, and return when it reconnects.";
 "多屏模式下暂不启用 Space 过渡底图，场景仍可选择或跟随显示器播放。" = "Space transition backdrops are unavailable with multiple displays. Scene playback can still use a selected display or follow the active display.";
 "固定在启动场景的显示器；断开后使用其他可用屏幕。" = "Stay on the starting display; use another available screen if it disconnects.";
+"正在应用场景效果…" = "Applying scene effects…";
+"场景效果会实时更新；播放与交互设置可能需要重新启动。" = "Scene effects update live; playback and interaction settings may require a restart.";
+"当前场景状态已变化，请重新应用设置" = "The scene has changed. Please apply the settings again.";
+"场景效果请求无效或渲染进程已退出" = "The scene effect request is invalid or the renderer has exited.";
+"场景效果参数无效" = "Invalid scene effect parameters.";
+"场景效果参数过大" = "The scene effect parameters are too large.";

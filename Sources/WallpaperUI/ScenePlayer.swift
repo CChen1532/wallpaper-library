@@ -20,6 +20,7 @@ struct SceneLaunchConfiguration: Sendable {
     var preferences = ScenePreferences()
     var userPropertyValues: [String: ScenePropertyValue] = [:]
     var backdrop: SceneBackdropConfiguration?
+    var supportsLiveProperties = false
 
     static func prepare(runtimeURL: URL, root: URL, name: String, title: String,
                         expectedBytes: Int64, displayID: UInt32, preferences: ScenePreferences = .init()) throws -> Self {
@@ -56,7 +57,7 @@ struct SceneLaunchConfiguration: Sendable {
                                                       audioResponseEnabled: preferences.audioResponseEnabled)
         return Self(executable: runtime.executable, arguments: arguments,
                     environment: runtime.environment(), package: package,
-                    title: title, displayID: displayID, preferences: preferences)
+                    title: title, displayID: displayID, preferences: preferences, supportsLiveProperties: true)
     }
 
     static func validatedPackage(root: URL, name: String, expectedBytes: Int64) throws -> URL {
@@ -104,6 +105,14 @@ struct SceneLaunchConfiguration: Sendable {
     @Published private(set) var automaticBackdropActive = false
     @Published private(set) var automaticBackdropImage: URL?
     @Published private(set) var preparingBackdrop = false
+    @Published private(set) var applyingEffects = false
+    private var supportsLiveProperties = false
+    private struct PropertyUpdate: Sendable {
+        let values: [String: ScenePropertyValue]
+        let changes: [String: ScenePropertyValue]
+        let completion: CheckedContinuation<Void, Error>
+    }
+    private var pendingProperties: PropertyUpdate?
     private let backdropFactory: @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling
     private var worker: Task<Void, Never>?
     private var generation = UUID()
@@ -123,12 +132,12 @@ struct SceneLaunchConfiguration: Sendable {
     func preferredDisplayID(preferences: ScenePreferences = .init()) -> UInt32? {
         SceneDisplay.resolve(preferences, displays: displayProvider(), focus: focusProvider())
     }
-    var isTransitioning: Bool { phase == .starting || phase == .stopping || recoveringBackdrop }
+    var isTransitioning: Bool { phase == .starting || phase == .stopping || recoveringBackdrop || applyingEffects }
     var statusText: String {
         switch phase {
         case .stopped: return "场景未播放"
         case .starting: return preparingBackdrop ? "正在准备场景与 Space 过渡底图…" : "正在准备场景…"
-        case .playing: return "场景正在桌面播放"
+        case .playing: return applyingEffects ? "正在应用场景效果…" : "场景正在桌面播放"
         case .stopping: return "正在停止场景…"
         case .failed: return "场景播放失败"
         }
@@ -165,6 +174,7 @@ struct SceneLaunchConfiguration: Sendable {
         phase = .starting
         activePreferences = configuration.preferences
         activeUserPropertyValues = configuration.userPropertyValues
+        supportsLiveProperties = configuration.supportsLiveProperties
         title = configuration.title
         package = configuration.package
         displayID = configuration.displayID
@@ -220,6 +230,18 @@ struct SceneLaunchConfiguration: Sendable {
                         await self?.backdropSuspended(token: token)
                     }
                     try backdrop?.checkHealth()
+                    if let update = await self?.takePropertyUpdate(token: token) {
+                        do {
+                            try Task.checkCancellation()
+                            try child.setProperties(update.changes.mapValues(\.jsonValue))
+                            _ = try child.eventReceived("activated")
+                            if let self { await self.completePropertyUpdate(update, token: token) }
+                            else { update.completion.resume(throwing: CancellationError()) }
+                        } catch {
+                            update.completion.resume(throwing: error)
+                            throw error
+                        }
+                    }
                     let needsFocus = configuration.preferences.followsDisplay ||
                         !available.contains(where: { $0.id == handoff.currentDisplayID })
                     let focusedDisplay = needsFocus ? await focus() : nil
@@ -282,6 +304,43 @@ struct SceneLaunchConfiguration: Sendable {
         notice = nil
     }
 
+    func canApplyEffectsLive(for package: URL, preferences: ScenePreferences,
+                             values: [String: ScenePropertyValue]) -> Bool {
+        phase == .playing && worker != nil && !applyingEffects && supportsLiveProperties &&
+            self.package == package && activePreferences == preferences &&
+            Set(activeUserPropertyValues.keys) == Set(values.keys)
+    }
+
+    func applyEffectsLive(for package: URL, preferences: ScenePreferences,
+                          values: [String: ScenePropertyValue]) async throws {
+        try Task.checkCancellation()
+        guard canApplyEffectsLive(for: package, preferences: preferences, values: values) else {
+            throw BackendError.message("当前场景状态已变化，请重新应用设置")
+        }
+        let changes = values.filter { activeUserPropertyValues[$0.key] != $0.value }
+        guard !changes.isEmpty else { return }
+        applyingEffects = true
+        try await withCheckedThrowingContinuation { continuation in
+            pendingProperties = PropertyUpdate(values: values, changes: changes, completion: continuation)
+        }
+    }
+
+    private func takePropertyUpdate(token: UUID) -> PropertyUpdate? {
+        guard token == generation, phase == .playing else { return nil }
+        defer { pendingProperties = nil }
+        return pendingProperties
+    }
+
+    private func completePropertyUpdate(_ update: PropertyUpdate, token: UUID) {
+        guard token == generation, phase == .playing else {
+            update.completion.resume(throwing: CancellationError())
+            return
+        }
+        activeUserPropertyValues = update.values
+        applyingEffects = false
+        update.completion.resume()
+    }
+
     private func backdropSuspended(token: UUID) {
         guard token == generation else { return }
         automaticBackdropActive = false
@@ -306,6 +365,10 @@ struct SceneLaunchConfiguration: Sendable {
     }
     private func finished(token: UUID, failure: String?, pending: Bool) {
         guard token == generation else { return }
+        pendingProperties?.completion.resume(throwing: CancellationError())
+        pendingProperties = nil
+        applyingEffects = false
+        supportsLiveProperties = false
         error = failure
         restorationPending = pending
         automaticBackdropActive = false

@@ -565,6 +565,16 @@ import UniformTypeIdentifiers
         await settingsModel.applyScenePreferences(for: packageB)
         check(await settingsBackend.actions.count == 1 && settingsPlayer.activePreferences == ScenePreferences(),
               "编辑和应用B不会更改或重启正在播放的A")
+        playbackProperties.save(.boolean(true), for: playbackWatermark, package: packageA)
+        await settingsModel.applyScenePreferences(for: packageA)
+        check(settingsPlayer.phase == .playing && settingsPlayer.activeUserPropertyValues["watermark"] == .boolean(true),
+              "仅修改场景效果时在原会话实时更新")
+        check(await settingsBackend.actions.count == 1, "实时应用效果不会再次关闭视频后端或重播场景")
+        let liveLaunches = try String(contentsOf: settingsLog, encoding: .utf8).components(separatedBy: "\n").filter { $0 == "start" }.count
+        check(liveLaunches == 1, "场景效果更新保持同一渲染进程")
+        playbackProperties.save(.boolean(false), for: playbackWatermark, package: packageA)
+        await settingsModel.applyScenePreferences(for: packageA)
+        check(settingsPlayer.activeUserPropertyValues["watermark"] == .boolean(false), "实时更新可恢复原效果")
         store.save(requested, for: packageA)
         playbackProperties.save(.boolean(true), for: playbackWatermark, package: packageA)
         check(settingsPlayer.activePreferences == ScenePreferences(), "编辑A后运行快照保持原值直到应用")
@@ -608,6 +618,55 @@ import UniformTypeIdentifiers
         await automatic.stop()
         check(backdrop.events.last == "restore" && !automatic.automaticBackdropActive && !automatic.restorationPending,
               "停止场景自动复原且清理匹配状态")
+
+        let liveBackdrop = BackdropFixture()
+        let livePlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] }, backdropFactory: { _ in liveBackdrop })
+        var liveConfig = configuration("live-effects")
+        liveConfig.backdrop = backdropConfig
+        liveConfig.supportsLiveProperties = true
+        liveConfig.userPropertyValues = ["enabled": .boolean(false), "amount": .number(1), "label": .string("old")]
+        try livePlayer.start(liveConfig)
+        try await wait { livePlayer.phase == .playing }
+        let liveValues: [String: ScenePropertyValue] = ["enabled": .boolean(true), "amount": .number(2), "label": .string("quote\"\\tail")]
+        check(!livePlayer.canApplyEffectsLive(for: packageB, preferences: liveConfig.preferences, values: liveValues),
+              "实时效果请求拒绝其他壁纸身份")
+        check(!livePlayer.canApplyEffectsLive(for: liveConfig.package, preferences: requested, values: liveValues),
+              "播放交互参数变化保留完整重启路径")
+        check(!livePlayer.canApplyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences, values: [:]),
+              "属性目录变化不复用旧场景定义")
+        try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences, values: liveValues)
+        check(livePlayer.phase == .playing && livePlayer.automaticBackdropActive && liveBackdrop.events == ["apply:1"],
+              "应用效果不恢复重建底图且保持播放")
+        try await wait { log("live-effects").components(separatedBy: "setProperty").count == 4 }
+        let propertyMessages = log("live-effects").split(separator: "\n").compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }.filter { $0["cmd"] as? String == "setProperty" }
+        check(propertyMessages.count == 3 && propertyMessages.first(where: { $0["key"] as? String == "label" })?["value"] as? String == "quote\"\\tail",
+              "效果批次传入布尔数值文本且JSON转义无串行污染")
+        check(log("live-effects").components(separatedBy: "pid=").count == 2 && !log("live-effects").contains("deactivate"),
+              "实时效果批次不隐藏窗口或重新启动渲染器")
+        try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences, values: liveValues)
+        check(log("live-effects").components(separatedBy: "setProperty").count - 1 == propertyMessages.count,
+              "无变化效果不会重复发送命令")
+        let pendingApply = Task { try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences,
+                                                                      values: liveConfig.userPropertyValues) }
+        await Task.yield()
+        await livePlayer.stop()
+        _ = await pendingApply.result
+        check(!livePlayer.applyingEffects && livePlayer.activeUserPropertyValues.isEmpty &&
+              liveBackdrop.events == ["apply:1", "restore"], "停止与实时应用竞争时完成等待且底图只恢复一次")
+        try livePlayer.start(liveConfig)
+        try await wait { livePlayer.phase == .playing }
+        check(livePlayer.activeUserPropertyValues == liveConfig.userPropertyValues, "新会话不会继承旧的待处理效果")
+        var badValues = liveConfig.userPropertyValues
+        badValues["amount"] = .number(.nan)
+        do {
+            try await livePlayer.applyEffectsLive(for: liveConfig.package, preferences: liveConfig.preferences, values: badValues)
+            preconditionFailure("invalid live payload accepted")
+        } catch { check(true, "非法实时效果数据失败时不会把设置标记为已应用") }
+        try await wait { livePlayer.phase == .failed }
+        check(!livePlayer.applyingEffects && !livePlayer.restorationPending && liveBackdrop.events.last == "restore",
+              "控制通道失败沿用原停止与底图恢复流程")
 
         let addedTopology = DisplayFixture([screen1])
         let releasedBackdrop = BackdropFixture()

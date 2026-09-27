@@ -504,7 +504,7 @@ struct NativeLibraryView: View {
                     .frame(width: 7, height: 7).overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2)).offset(x: 3, y: 0)
             }.frame(width: 32)
             VStack(alignment: .leading, spacing: 4) {
-                Text(LocalizedStringKey(model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面待机"))
+                Text(LocalizedStringKey(scenePlayer.applyingEffects ? "正在应用场景效果…" : model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面待机"))
                     .font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text(LocalizedStringKey(playbackSubtitle)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)

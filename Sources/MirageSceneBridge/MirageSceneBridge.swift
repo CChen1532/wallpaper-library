@@ -212,6 +212,30 @@ public final class MirageSceneChild: @unchecked Sendable {
         try input.fileHandleForWriting.write(contentsOf: data)
     }
 
+    /// The owning worker serializes these with snapshots, moves and shutdown.
+    /// Validate the whole batch before writing any command to the control pipe.
+    public func setProperties(_ values: [String: Any]) throws {
+        guard process.isRunning, values.count <= 256 else {
+            throw MirageSceneBridgeError.invalid("场景效果请求无效或渲染进程已退出")
+        }
+        let lines = try values.keys.sorted().map { key -> Data in
+            guard !key.isEmpty, key.utf8.count <= 256, let value = values[key],
+                  value is String || value is NSNumber,
+                  (value as? NSNumber)?.doubleValue.isFinite != false else {
+                throw MirageSceneBridgeError.invalid("场景效果参数无效")
+            }
+            return try JSONSerialization.data(withJSONObject: ["cmd": "setProperty", "key": key, "value": value],
+                                              options: [.sortedKeys]) + Data([10])
+        }
+        guard lines.reduce(0, { $0 + $1.count }) <= 65_536 else {
+            throw MirageSceneBridgeError.invalid("场景效果参数过大")
+        }
+        for line in lines {
+            try Task.checkCancellation()
+            try input.fileHandleForWriting.write(contentsOf: line)
+        }
+    }
+
     /// Nonblocking status for a cancellable async host. All process commands
     /// still belong to a single worker; the reader callbacks only record events.
     public func eventReceived(_ event: String) throws -> Bool {

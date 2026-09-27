@@ -71,7 +71,8 @@ import Combine
             .appendingPathComponent("Contents/Resources/Renderers/SceneWallpaper").path)
     }
 
-    func playScene(root: URL, name: String, title: String, expectedBytes: Int64) async {
+    func playScene(root: URL, name: String, title: String, expectedBytes: Int64,
+                   updatingEffects: Bool = false) async {
         guard beginOperation() else { return }
         sceneRequestRevision += 1
         let request = sceneRequestRevision
@@ -79,6 +80,16 @@ import Combine
         do {
             let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
             let preferences = scenePreferences.preferences(for: package)
+            if updatingEffects {
+                let launch = try await sceneUserProperties.launchInBackground(for: package)
+                guard !shuttingDown, request == sceneRequestRevision else { return }
+                if scenePlayer.canApplyEffectsLive(for: package, preferences: preferences,
+                                                   values: launch.effectiveValues) {
+                    try await scenePlayer.applyEffectsLive(for: package, preferences: preferences,
+                                                          values: launch.effectiveValues)
+                    return
+                }
+            }
             guard let displayID = scenePlayer.preferredDisplayID(preferences: preferences) else {
                 throw BackendError.message("当前没有可用显示器")
             }
@@ -121,7 +132,7 @@ import Combine
             let bytes = try package.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             let folder = package.deletingLastPathComponent()
             await playScene(root: folder.deletingLastPathComponent(), name: folder.lastPathComponent,
-                            title: scenePlayer.title, expectedBytes: Int64(bytes))
+                            title: scenePlayer.title, expectedBytes: Int64(bytes), updatingEffects: true)
         } catch { self.error = error.localizedDescription }
     }
 
