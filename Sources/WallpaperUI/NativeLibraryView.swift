@@ -33,6 +33,8 @@ struct NativeLibraryView: View {
     @State private var scenePreviewImage: NSImage?
     @State private var scenePreviewError: String?
     @State private var scenePreviewLoading = false
+    @State private var coverPreview: SceneCatalogPayload.Entry?
+    @State private var videoPreview: Wallpaper?
     @FocusState private var focusedWallpaper: String?
     @State private var keyboardScrollTarget: String?
     @State private var galleryIndex = GalleryIndex<GalleryEntry>()
@@ -135,11 +137,15 @@ struct NativeLibraryView: View {
         .onChange(of: catalog.scenes.map(\.id)) { _, ids in
             if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
-        .onChange(of: page) { _, newValue in search = ""; if newValue == .rotation { syncRotationFields() } }
+        .onChange(of: page) { _, newValue in
+            search = ""; coverPreview = nil; videoPreview = nil
+            if newValue == .rotation { syncRotationFields() }
+        }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(AppStrings.text(model.error ?? "", locale: locale)) }
         .confirmationDialog("将此壁纸移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("移入废纸篓", role: .destructive) {
                 guard let payload = trashPayload, let target = trashTarget, let stamp = trashStamp else { return }
+                coverPreview = nil; videoPreview = nil
                 Task {
                     guard !workshop.busy else { return }
                     if await model.trashWallpaper(payload: payload, confirmedTarget: target, confirmedStamp: stamp, roots: catalog.roots) {
@@ -153,6 +159,8 @@ struct NativeLibraryView: View {
         .sheet(isPresented: $showDiagnostics) { diagnosticsSheet }
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
+        .sheet(item: $coverPreview) { SceneCoverPreviewSheet(title: $0.title ?? $0.name, folder: $0.folder) }
+        .sheet(item: $videoPreview) { VideoPreviewSheet(item: $0) }
     }
     // Fill each row within a bounded card size; wider windows still add columns.
     private let galleryCardWidth: CGFloat = 192
@@ -315,6 +323,12 @@ struct NativeLibraryView: View {
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
                     .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0)
+                Button { coverPreview = item } label: {
+                    Label("封面动画预览", systemImage: "play.rectangle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .help("使用封面图做轻微动画，不改变桌面壁纸")
                 if item.capability?.limitationCodes.contains("nativeGravityScene") == true {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("自动播放 · 无交互", systemImage: "sparkles").font(.headline)
@@ -465,6 +479,9 @@ struct NativeLibraryView: View {
                     Label("设为动态壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
                 }.buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
+                Button { videoPreview = item } label: {
+                    Label("动态预览", systemImage: "play.rectangle").frame(maxWidth: .infinity)
+                }.buttonStyle(.bordered).disabled(!item.playable)
                 if model.stateIssue == nil && model.state.running && model.state.currentPath == item.id {
                     Label("正在桌面播放", systemImage: "waveform").font(.caption).foregroundStyle(.tint)
                 }
@@ -598,6 +615,41 @@ private struct SceneCover: View {
     var size: CoverSize = .card
     var body: some View { LibraryCover(source: .scene(folder), symbol: "square.3.layers.3d", size: size) }
 }
+private struct SceneCoverPreviewSheet: View {
+    let title: String
+    let folder: URL?
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drifting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("封面动画预览").font(.title2.weight(.semibold))
+                Spacer()
+                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            Text(title).font(.headline).lineLimit(2)
+            GeometryReader { geometry in
+                SceneCover(folder: folder, size: .inspector)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .scaleEffect(reduceMotion ? 1 : (drifting ? 1.13 : 1.05))
+                    .offset(x: reduceMotion ? 0 : (drifting ? -12 : 12),
+                            y: reduceMotion ? 0 : (drifting ? 8 : -8))
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .accessibilityLabel("封面动画预览")
+            Text("封面动画仅用于预览；实际场景效果以桌面播放为准。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 490)
+        .onAppear { drifting = true }
+        .onDisappear { drifting = false }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 7).repeatForever(autoreverses: true), value: drifting)
+    }
+}
 private struct VideoCover: View {
     let item: Wallpaper
     var size: CoverSize = .card
@@ -667,7 +719,6 @@ private struct GalleryCard<Cover: View>: View {
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(borderColor, lineWidth: selected ? 1.5 : 0.5))
         .shadow(color: Color.accentColor.opacity(selected ? 0.13 : 0), radius: selected ? 5 : 0)
         .shadow(color: Color.black.opacity(hovered ? 0.09 : 0.015), radius: hovered ? CGFloat(9) : CGFloat(2), x: 0, y: hovered ? 3 : 1)
-        .offset(y: hovered && !reduceMotion ? -2 : 0)
         .contentShape(RoundedRectangle(cornerRadius: 10))
     }
     private var artwork: some View {

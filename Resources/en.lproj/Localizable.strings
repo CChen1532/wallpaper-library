@@ -592,3 +592,11 @@
 "每分钟自动检查新素材。" = "Automatically check for new items every minute.";
 "状态" = "Status";
 "首次自动切换需要辅助功能权限。视频底图可在各视频详情中设置。" = "The first automatic transition needs Accessibility permission. Configure video backdrops in each video's details.";
+
+/* Local previews */
+"动态预览" = "Live Preview";
+"封面动画预览" = "Animated Cover Preview";
+"使用封面图做轻微动画，不改变桌面壁纸" = "Animate the cover gently without changing the desktop wallpaper";
+"封面动画仅用于预览；实际场景效果以桌面播放为准。" = "Cover motion is only a preview; desktop playback shows the actual scene effects.";
+"声音" = "Sound";
+"仅在应用内预览，不改变桌面壁纸。" = "Preview only in the app; the desktop wallpaper stays unchanged.";

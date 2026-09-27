@@ -30,30 +30,16 @@ struct HoverArtwork<Content: View>: View {
     let active: Bool
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduced
-    @State private var offset = CGSize.zero
 
     var body: some View {
         GeometryReader { geometry in
             content()
                 .scaleEffect(active && !reduced ? 1.045 : 1)
-                .offset(active && !reduced ? offset : .zero)
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .clipped()
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let point):
-                        guard active, !reduced, geometry.size.width > 0, geometry.size.height > 0 else { return }
-                        let next = GalleryNavigation.hoverOffset(at: point, in: geometry.size)
-                        if next != offset { offset = next }
-                    case .ended: offset = .zero
-                    }
-                }
         }
-        .animation(reduced ? nil : .interactiveSpring(response: 0.22, dampingFraction: 1), value: offset)
         .animation(reduced ? nil : LibraryMotion.feedback(false), value: active)
         .animation(nil, value: reduced)
-        .onChange(of: active) { _, active in if !active { offset = .zero } }
-        .onChange(of: reduced) { _, _ in offset = .zero }
     }
 }
 
