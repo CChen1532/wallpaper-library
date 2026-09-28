@@ -81,7 +81,11 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 while process.isRunning && Date() < until { usleep(20_000) }
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
-            process.waitUntilExit()
+            // A serial DispatchQueue can resume on another thread. Foundation's
+            // waitUntilExit may wait forever on the old launching run loop even
+            // after the child exits. Foundation reaps it; only poll with a bound.
+            let reapedBy = Date().addingTimeInterval(1)
+            while process.isRunning && Date() < reapedBy { usleep(10_000) }
             close(master)
         }
     }
@@ -260,7 +264,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 } else if lower.contains("logging in") { publish(.signingIn) }
             } else if !process.isRunning { break }
         }
-        process.waitUntilExit()
+        guard !process.isRunning else { throw WorkshopFailure.timedOut }
         if lock.withLock({ cancelled }) { throw CancellationError() }
         if process.terminationStatus == 42 { throw Bootstrap.restart }
         guard let id else { throw WorkshopFailure.loginFailed }

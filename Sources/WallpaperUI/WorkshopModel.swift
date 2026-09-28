@@ -34,6 +34,18 @@ import Combine
     @Published private(set) var connectionError: String?
     private var connectionJob: Task<Void, Never>?
     private var connectionToken: UUID?
+    enum CardState: Equatable { case available, failed, downloaded, queued, waiting, downloading, importing, unsupported }
+    @Published private(set) var downloadedIDs: Set<String> = []
+    @Published private(set) var downloadQueue: [WorkshopItem] = [] {
+        didSet { queuedIDs = Set(downloadQueue.map(\.id)) }
+    }
+    private var queuedIDs: Set<String> = []
+    @Published private(set) var failedDownloads: [String: WorkshopItem] = [:]
+    var pendingDownload: WorkshopItem? { downloadQueue.first }
+    @Published private(set) var authenticationRequired = false
+    @Published private(set) var activeDownloadID: String?
+    private var installedJob: Task<Void, Never>?
+    private var installedRevision = UUID()
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
     private var process: WorkshopSteamProcess?
@@ -64,13 +76,20 @@ import Combine
         connecting = true; connectionReady = false; connectionError = nil; connectionEvent = .preparing
         let token = UUID(); connectionToken = token
         connectionJob = Task {
-            defer { connecting = false; connectionJob = nil; connectionToken = nil }
+            defer {
+                connecting = false; connectionJob = nil; connectionToken = nil
+                if connectionReady { authenticationRequired = false; resumePendingDownload() }
+                else if pendingDownload != nil, !Task.isCancelled { authenticationRequired = true }
+            }
             do {
                 let stage = try sessionStaging()
                 try await downloadWorker.connect(binary: component, account: account, password: password, staging: stage) { [weak self] event in
                     Task { @MainActor in
                         guard let self, self.connecting, self.connectionToken == token else { return }
                         self.connectionEvent = event
+                        if self.pendingDownload != nil && (event == .guardCode || event == .mobileApproval) {
+                            self.authenticationRequired = true
+                        }
                     }
                 }
                 try Task.checkCancellation()
@@ -83,7 +102,77 @@ import Combine
             }
         }
     }
-    func cancelConnection() { connectionJob?.cancel(); connectionReady = false }
+    func cancelConnection() {
+        connectionJob?.cancel(); connectionReady = false
+        downloadQueue = []; authenticationRequired = false
+    }
+
+    func cardState(_ value: WorkshopItem) -> CardState {
+        if downloadedIDs.contains(value.id) { return .downloaded }
+        if activeDownloadID == value.id { return activity == .importing ? .importing : .downloading }
+        if queuedIDs.contains(value.id) {
+            return pendingDownload?.id == value.id && (connecting || authenticationRequired) ? .waiting : .queued
+        }
+        if failedDownloads[value.id] != nil { return .failed }
+        return WorkshopFilters.supportsPlayback(tags: value.tags) ? .available : .unsupported
+    }
+
+    /// Only page changes/explicit refreshes inspect disk, never a card's body or hover callback.
+    func refreshDownloadedStatus() {
+        installedJob?.cancel()
+        let revision = UUID(); installedRevision = revision
+        let ids = Set(searchPage?.items.map(\.id) ?? [])
+        guard !ids.isEmpty else { return }
+        let known = Set(ids.filter { findExisting($0) != nil })
+        let storage = self.storage
+        installedJob = Task {
+            let scan = Task.detached(priority: .utility) { () -> Set<String> in
+                var result = known
+                for id in ids.subtracting(known) {
+                    if Task.isCancelled { break }
+                    if storage.installed(id) { result.insert(id) }
+                }
+                return result
+            }
+            let found = await withTaskCancellationHandler(operation: { await scan.value }, onCancel: { scan.cancel() })
+            guard !Task.isCancelled, installedRevision == revision else { return }
+            let updated = downloadedIDs.subtracting(ids).union(found)
+            if updated != downloadedIDs { downloadedIDs = updated }
+            installedJob = nil
+        }
+    }
+    private func markDownloaded(_ id: String) {
+        installedRevision = UUID(); installedJob?.cancel()
+        if !downloadedIDs.contains(id) { downloadedIDs.insert(id) }
+    }
+
+    /// Card action is a download request, not a detail selection.
+    func downloadFromCard(_ value: WorkshopItem) {
+        guard !libraryBusy(), WorkshopFilters.supportsPlayback(tags: value.tags),
+              !downloadedIDs.contains(value.id), !queuedIDs.contains(value.id), activeDownloadID != value.id else { return }
+        failedDownloads.removeValue(forKey: value.id)
+        downloadQueue.append(value)
+        if connecting && (connectionEvent == .guardCode || connectionEvent == .mobileApproval) { authenticationRequired = true }
+        resumePendingDownload()
+    }
+    private func resumePendingDownload() {
+        guard !connecting, !busy, !libraryBusy(), !authenticationRequired, let value = pendingDownload else { return }
+        guard component != nil,
+              WorkshopSteamProcess.validCredentials(account: account.trimmingCharacters(in: .whitespacesAndNewlines), password: ""),
+              connectionError == nil else { authenticationRequired = true; return }
+        downloadQueue.removeFirst()
+        item = value; link = value.id; importedURL = nil
+        download(password: "", fromCard: true)
+    }
+    func removeQueuedDownload(_ id: String) {
+        downloadQueue.removeAll { $0.id == id }
+        if downloadQueue.isEmpty, activity != .download { authenticationRequired = false }
+    }
+    func cancelPendingDownload() {
+        downloadQueue = []
+        if activity != .download { authenticationRequired = false }
+    }
+
     private func sessionStaging() throws -> URL {
         if let downloadStage { return downloadStage }
         let stage = try storage.makeStaging(); downloadStage = stage
@@ -144,6 +233,7 @@ import Combine
                 let result = try await browse(request, page)
                 try Task.checkCancellation()
                 searchPage = result; searchedText = request.query; searchedRequest = request; item = nil; importedURL = nil
+                refreshDownloadedStatus()
             } catch { record(error) }
         }
     }
@@ -169,6 +259,7 @@ import Combine
         guard case .ok = WorkshopURLParser.parse(id) else { return }
         var ignored = ignoredIDs; ignored.insert(id)
         defaults.set(ignored.sorted(), forKey: "workshopSyncIgnoredIDs")
+        installedRevision = UUID(); installedJob?.cancel(); downloadedIDs.remove(id)
         syncResults[id] = "已跳过"
         if item?.id == id { importedURL = nil }
     }
@@ -282,26 +373,42 @@ import Combine
         await onImported(storage.library)
     }
 
-    func download(password: String) {
+    func download(password: String, fromCard: Bool = false) {
         guard !busy, !connecting, !libraryBusy(), let item, importedURL == nil else { return }
         guard WorkshopFilters.supportsPlayback(tags: item.tags) else { error = WorkshopFailure.unsupportedProject.localizedDescription; return }
-        if let existing = findExisting(item.id) { importedURL = existing; return }
         guard let component else { error = WorkshopFailure.componentMissing.localizedDescription; return }
         let account = account.trimmingCharacters(in: .whitespacesAndNewlines)
         guard WorkshopSteamProcess.validCredentials(account: account, password: password) else { error = WorkshopFailure.invalidAccount.localizedDescription; return }
         defaults.set(account, forKey: "workshopAccount")
         activity = .download; event = .preparing; error = nil
+        activeDownloadID = item.id; downloadTitle = item.title
         job = Task {
-            defer { process = nil; finish() }
+            defer { process = nil; activeDownloadID = nil; finish() }
             do {
+                // Recheck local state at click time even if the page cache has not loaded yet.
+                if let existing = await existing(item.id) {
+                    importedURL = existing; markDownloaded(item.id); return
+                }
+                try Task.checkCancellation()
                 importedURL = try await downloadOne(item, component: component, account: account, password: password)
                 var ignored = ignoredIDs; ignored.remove(item.id)
                 defaults.set(ignored.sorted(), forKey: "workshopSyncIgnoredIDs")
-            } catch { record(error) }
+                authenticationRequired = false
+            } catch {
+                if fromCard, error as? WorkshopFailure == .passwordRequired || error as? WorkshopFailure == .loginFailed {
+                    downloadQueue.insert(item, at: 0); authenticationRequired = true
+                    connectionError = (error as? WorkshopFailure)?.localizedDescription
+                } else {
+                    if fromCard, !(error is CancellationError), !Task.isCancelled { failedDownloads[item.id] = item }
+                    record(error)
+                }
+            }
         }
     }
 
     private func downloadOne(_ item: WorkshopItem, component: URL, account: String, password: String) async throws -> URL {
+        activeDownloadID = item.id; downloadTitle = item.title
+        defer { activeDownloadID = nil }
         let worker = downloadWorker; process = worker; activity = .download; event = .preparing
         let stage = try sessionStaging()
         let token = UUID(); downloadToken = token
@@ -311,6 +418,7 @@ import Combine
                 Task { @MainActor in
                     guard let self, self.process === worker, self.downloadToken == token, self.activity == .download else { return }
                     self.event = event
+                    if event == .guardCode || event == .mobileApproval { self.authenticationRequired = true }
                 }
             }
             try Task.checkCancellation()
@@ -319,6 +427,7 @@ import Combine
             let storage = self.storage
             let importer = Task.detached(priority: .utility) { try storage.importProject(from: source, item: item, consumeStagedFiles: true) }
             let imported = try await withTaskCancellationHandler(operation: { try await importer.value }, onCancel: { importer.cancel() })
+            markDownloaded(item.id); authenticationRequired = false
             // Publish complete imports even when cancellation arrives just after the atomic rename.
             await onImported(storage.library)
             return imported
@@ -342,11 +451,14 @@ import Combine
         cancelling = true; process?.cancel(); job?.cancel()
     }
     func shutdown() async {
-        cancelConnection(); cancel()
-        await connectionJob?.value; await job?.value
+        cancelConnection(); cancel(); installedJob?.cancel()
+        await connectionJob?.value; await job?.value; await installedJob?.value
         await discardSession()
     }
-    private func finish() { activity = .idle; cancelling = false; job = nil }
+    private func finish() {
+        activity = .idle; cancelling = false; job = nil
+        if !authenticationRequired { resumePendingDownload() }
+    }
     private func record(_ failure: Error) {
         guard !(failure is CancellationError), !Task.isCancelled else { return }
         error = (failure as? WorkshopFailure)?.localizedDescription ?? "无法完成文件操作，请检查磁盘空间与文件夹权限。"

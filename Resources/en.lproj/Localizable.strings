@@ -624,3 +624,31 @@
 "Steam 尚未连接，点此处理登录" = "Steam is not connected. Open connection settings to sign in.";
 
 "进入工坊后自动连接 Steam" = "Steam connects automatically when you open Workshop";
+
+"等待连接…" = "Waiting for connection…";
+
+"下载中…" = "Downloading…";
+
+"正在加入…" = "Importing…";
+
+"暂不支持" = "Unsupported";
+
+"等待 Steam 连接后自动下载" = "Download starts automatically when Steam connects";
+
+"排队中" = "Queued";
+
+"下载队列" = "Download queue";
+
+"等待下载 %d 项" = "%d items waiting";
+
+"清空等待队列" = "Clear waiting items";
+
+"取消当前下载" = "Cancel current download";
+
+"移出队列" = "Remove from queue";
+
+"没有等待中的下载" = "No downloads waiting";
+
+"重试下载" = "Retry download";
+
+"未完成的下载" = "Unfinished downloads";

@@ -28,6 +28,7 @@ final class AnimatedCoverNSView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func configure(_ value: CoverRaster, animate: Bool) {
+        guard raster !== value || self.animate != animate else { return }
         if raster !== value { raster = value; frameIndex = -1; start = ProcessInfo.processInfo.systemUptime }
         self.animate = animate
         if !animate { displayFrame(0) }
@@ -39,12 +40,18 @@ final class AnimatedCoverNSView: NSView {
         observers.removeAll()
         for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
                      NSWindow.didDeminiaturizeNotification, NSApplication.didBecomeActiveNotification,
-                     NSApplication.didResignActiveNotification, NSView.boundsDidChangeNotification] {
+                     NSApplication.didResignActiveNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.updatePlayback()
             })
         }
-        enclosingScrollView?.contentView.postsBoundsChangedNotifications = true
+        if let clip = enclosingScrollView?.contentView {
+            clip.postsBoundsChangedNotifications = true
+            observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
+                                                                     object: clip, queue: .main) { [weak self] _ in
+                self?.updatePlayback()
+            })
+        }
         updatePlayback()
     }
     override func layout() { super.layout(); updatePlayback() }

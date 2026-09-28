@@ -169,6 +169,79 @@ import Foundation
         await model.shutdown()
         check(try fm.contentsOfDirectory(atPath: root.appendingPathComponent("App/Staging").path).isEmpty, "preconnect shutdown removes temporary staging")
 
+        let existingCard = WorkshopItem(id: "401", title: "Existing", previewURL: nil, bytes: 1, tags: ["Video"])
+        let directCard = WorkshopItem(id: "501", title: "Direct", previewURL: nil, bytes: 1, tags: ["Video"])
+        var lookups = 0, cardImports = 0
+        let cards = WorkshopModel(storage: storage, defaults: defaults, findExisting: { _ in lookups += 1; return nil },
+                                  component: executable, browse: { _, page in
+            .init(items: [existingCard, directCard], number: page, pages: 2, total: 2)
+        }, onImported: { _ in cardImports += 1 })
+        func cardsIdle() async throws {
+            let deadline = Date().addingTimeInterval(5)
+            while (cards.busy || cards.connecting), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            check(!cards.busy && !cards.connecting, "card task completes within fixture deadline")
+        }
+        cards.search(); try await cardsIdle()
+        let cacheDeadline = Date().addingTimeInterval(3)
+        while !cards.downloadedIDs.contains("401") && Date() < cacheDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        check(cards.cardState(existingCard) == .downloaded && cards.cardState(directCard) == .available, "page status distinguishes installed and missing projects")
+        let lookupsBefore = lookups
+        let statusStart = Date()
+        for _ in 0..<20_000 { _ = cards.cardState(existingCard); _ = cards.cardState(directCard) }
+        check(lookups == lookupsBefore, "40,000 card status reads perform zero library or disk lookups")
+        print("CARD STATUS 40,000 reads: \(Date().timeIntervalSince(statusStart) * 1000) ms; not frame-rate evidence")
+        cards.account = "cached_user"
+        cards.preconnect()
+        cards.downloadFromCard(directCard)
+        cards.downloadFromCard(existingCard)
+        check(cards.pendingDownload?.id == "501", "click during preconnect retains exactly one requested item")
+        try await cardsIdle()
+        check(storage.installed("501") && cards.cardState(directCard) == .downloaded && cardImports == 1,
+              "one card click automatically downloads after preconnect and marks complete")
+        cards.downloadFromCard(directCard)
+        check(!cards.busy && cardImports == 1, "downloaded card cannot start another transfer")
+        let already = WorkshopItem(id: "101", title: "Uncached existing", previewURL: nil, bytes: 1, tags: ["Video"])
+        cards.downloadFromCard(already); try await cardsIdle()
+        check(cards.cardState(already) == .downloaded && cardImports == 1, "click-time recheck prevents redownloading an uncached local project")
+        let failed = WorkshopItem(id: "107", title: "Failed", previewURL: nil, bytes: 1, tags: ["Video"])
+        cards.downloadFromCard(failed); try await cardsIdle()
+        check(cards.cardState(failed) == .failed && cards.error != nil, "failed download is retryable and never marked downloaded")
+        await cards.shutdown()
+        cards.account = "test_user"
+        let authCard = WorkshopItem(id: "502", title: "Auth retry", previewURL: nil, bytes: 1, tags: ["Video"])
+        cards.downloadFromCard(authCard); try await cardsIdle()
+        check(cards.authenticationRequired && cards.pendingDownload?.id == "502", "expired login keeps clicked item for authentication")
+        cards.preconnect(password: "fixture; $(never-run) \"password\"", automatic: false)
+        try await cardsIdle()
+        check(storage.installed("502") && !cards.authenticationRequired && cards.pendingDownload == nil,
+              "sign-in resumes original download without a second download click")
+        cards.account = "cached_user"; cards.preconnect(); try await cardsIdle()
+        func queued(_ id: String) -> WorkshopItem { .init(id: id, title: "Queue " + id, previewURL: nil, bytes: 1, tags: ["Video"]) }
+        let beforeQueue = cardImports
+        cards.downloadFromCard(queued("601")); cards.downloadFromCard(queued("602")); cards.downloadFromCard(queued("603"))
+        cards.downloadFromCard(queued("601")); cards.downloadFromCard(queued("603"))
+        check(cards.activeDownloadID == "601" && cards.downloadQueue.map(\.id) == ["602", "603"], "rapid clicks queue multiple items in order without duplicate active or queued IDs")
+        check(cards.cardState(queued("603")) == .queued, "waiting card displays queued status")
+        cards.removeQueuedDownload("602")
+        try await cardsIdle()
+        check(storage.installed("601") && storage.installed("603") && !storage.installed("602") && cardImports == beforeQueue + 2,
+              "queue automatically drains and individually removed item never downloads")
+        cards.downloadFromCard(queued("104")); cards.downloadFromCard(queued("604"))
+        try await Task.sleep(for: .milliseconds(180)); cards.cancel(); try await cardsIdle()
+        check(!storage.installed("104") && storage.installed("604"), "cancel current transfer continues with the next queued item")
+        cards.downloadFromCard(queued("107")); cards.downloadFromCard(queued("605")); try await cardsIdle()
+        check(cards.cardState(queued("107")) == .failed && storage.installed("605"), "failed item stays retryable while remaining queue continues")
+
+        try fm.removeItem(at: storage.destination("401"))
+        cards.recordRemoval(storage.destination("401")); cards.refreshDownloadedStatus()
+        check(cards.cardState(existingCard) == .available, "removing local project immediately clears downloaded badge")
+        await cards.shutdown()
+        cards.account = "slow_user"; cards.preconnect()
+        let waitingCard = WorkshopItem(id: "503", title: "Cancelled wait", previewURL: nil, bytes: 1, tags: ["Video"])
+        cards.downloadFromCard(waitingCard); cards.cancelPendingDownload()
+        await cards.shutdown()
+        check(cards.pendingDownload == nil && !storage.installed("503"), "cancelled pending card is never downloaded")
+
         if CommandLine.arguments.contains("--live") {
             let first = try await WorkshopBrowse.fetch(query: "mountain", page: 1)
             let second = try await WorkshopBrowse.fetch(query: "mountain", page: 2)

@@ -39,7 +39,7 @@ if item in ('104', '105'):
     print('Downloading item', flush=True)
     while True:
         time.sleep(1)
-if account != 'cached_user' or item is not None:
+if account != 'cached_user':
     print('Pass', end='', flush=True)
     time.sleep(0.05)
     print('word:', end='', flush=True)

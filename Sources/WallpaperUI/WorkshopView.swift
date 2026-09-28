@@ -12,6 +12,7 @@ struct WorkshopView: View {
     @State private var showSubscriptions = false
     @State private var showDownloadDetails = false
     @State private var showConnectionDetails = false
+    @State private var showDownloadQueue = false
     @State private var showFilterInfo = false
     @State private var showComponentDetails = false
     @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
@@ -72,30 +73,12 @@ struct WorkshopView: View {
                     }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 14)], spacing: 14) {
                         ForEach(page.items) { item in
-                            VStack(spacing: 0) {
-                            Button {
-                                openDownloadDetails(item)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    LibraryCover(source: .remote(item.previewURL), symbol: "photo")
-                                        .aspectRatio(16 / 9, contentMode: .fit).clipped()
-                                    Text(item.title).font(.callout.weight(.medium)).lineLimit(2).frame(height: 36, alignment: .topLeading)
-                                        .padding(.horizontal, 10)
-                                    Text(classification(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                        .padding(.horizontal, 10).padding(.bottom, 10)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary) }
-                            }.buttonStyle(.plain).modifier(HoverHighlight()).disabled(workshop.busy)
-                            Button { openDownloadDetails(item) } label: {
-                                Label("下载", systemImage: "arrow.down.circle")
-                                    .frame(maxWidth: .infinity)
-                            }.buttonStyle(.bordered)
-                                .disabled(workshop.busy || !WorkshopFilters.supportsPlayback(tags: item.tags))
-                                .accessibilityIdentifier("workshop.card.download." + item.id)
-                                .padding(.top, 6)
-                            }
+                            WorkshopCard(item: item, state: workshop.cardState(item),
+                                         locked: model.isWorking, detailsLocked: workshop.busy,
+                                         classification: classification(item),
+                                         showDetails: { openDownloadDetails(item) },
+                                         download: { workshop.downloadFromCard(item) })
+                                .equatable()
                         }
                     }
                 }
@@ -117,10 +100,33 @@ struct WorkshopView: View {
         .onChange(of: workshop.searchPage?.number) { _, _ in proxy.scrollTo("workshopTop", anchor: .top) }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !showDownloadDetails, !showConnectionDetails, let error = workshop.error {
+                Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.orange).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.bar)
+            }
+            if !workshop.downloadQueue.isEmpty || workshop.activeDownloadID != nil || !workshop.failedDownloads.isEmpty {
+                HStack {
+                    Button("下载队列") { showDownloadQueue = true }
+                        .accessibilityIdentifier("workshop.queue")
+                        .popover(isPresented: $showDownloadQueue) { queueContents }
+                    Text(String(format: AppStrings.text("等待下载 %d 项", locale: locale), workshop.downloadQueue.count))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if !workshop.downloadQueue.isEmpty {
+                        Button("清空等待队列") { workshop.cancelPendingDownload() }
+                    }
+                }.padding(12).background(.bar)
+            }
             if workshop.busy {
                 HStack {
                     if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
                     else { ProgressView().controlSize(.small) }
+                    if workshop.activity == .download || workshop.activity == .importing {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(workshop.downloadTitle).font(.caption).lineLimit(1)
+                            downloadStatus
+                        }
+                    }
                     if workshop.syncing { Text(String(format: AppStrings.text("正在同步 %d / %d", locale: locale), workshop.syncPosition, workshop.syncTotal)).font(.caption) }
                     Spacer()
                     Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
@@ -128,7 +134,9 @@ struct WorkshopView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { connectionBar }
-        .sheet(isPresented: $showConnectionDetails, onDismiss: { password = ""; guardCode = "" }) {
+        .sheet(isPresented: $showConnectionDetails, onDismiss: {
+            password = ""; guardCode = ""
+        }) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
                     Text("Steam 连接").font(.headline)
@@ -139,6 +147,8 @@ struct WorkshopView: View {
                 HStack {
                     if workshop.connecting {
                         Button("取消连接") { workshop.cancelConnection() }
+                    } else if workshop.activity == .download {
+                        Button("取消任务") { workshop.cancel() }
                     } else {
                         Button("连接 Steam") { workshop.preconnect(password: password, automatic: false); password = "" }
                             .buttonStyle(.borderedProminent)
@@ -186,12 +196,57 @@ struct WorkshopView: View {
         .sheet(isPresented: $showSubscriptions) {
             WorkshopSubscriptionSheet(browser: subscriptionBrowser) { workshop.receiveSubscriptions($0) }
         }
-        .onAppear { workshop.refreshComponent(); workshop.preconnect() }
+        .onAppear { workshop.refreshComponent(); workshop.preconnect(); workshop.refreshDownloadedStatus() }
+        .onChange(of: workshop.authenticationRequired) { _, required in
+            if required && !showDownloadDetails { showConnectionDetails = true }
+            else if !required { showConnectionDetails = false }
+        }
         .onChange(of: workshop.component) { _, _ in workshop.preconnect() }
         .onDisappear { password = ""; guardCode = "" }
         .onChange(of: workshop.waitingForGuard) { _, waiting in
             invalidGuard = false; guardCode = ""; guardFocused = waiting
         }
+    }
+
+    private var queueContents: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("下载队列").font(.headline)
+            if workshop.activeDownloadID != nil {
+                Text(workshop.downloadTitle).font(.callout).lineLimit(2)
+                downloadStatus
+                Button("取消当前下载") { workshop.cancel() }.disabled(workshop.cancelling)
+                Divider()
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(workshop.downloadQueue) { item in
+                        HStack {
+                            Text(item.title).font(.callout).lineLimit(2)
+                            Spacer()
+                            Button { workshop.removeQueuedDownload(item.id) } label: {
+                                Image(systemName: "xmark.circle")
+                            }.buttonStyle(.plain).accessibilityLabel(Text("移出队列"))
+                        }
+                    }
+                }
+            }.frame(maxHeight: 260)
+            if workshop.downloadQueue.isEmpty { Text("没有等待中的下载").foregroundStyle(.secondary) }
+            if !workshop.failedDownloads.isEmpty {
+                Divider()
+                Text("未完成的下载").font(.headline)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(workshop.failedDownloads.values.sorted { $0.id < $1.id }) { item in
+                            HStack {
+                                Text(item.title).lineLimit(1)
+                                Spacer()
+                                Button("重试下载") { workshop.downloadFromCard(item) }
+                            }
+                        }
+                    }
+                }.frame(maxHeight: 140)
+            }
+        }.padding(16).frame(width: 360)
     }
 
     private var connectionBar: some View {

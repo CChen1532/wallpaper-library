@@ -212,6 +212,16 @@ final class WorkshopEventLog: @unchecked Sendable {
         check(mobileEvents.contains(.mobileApproval), "preconnect exposes phone confirmation")
         await mobile.closeSession()
 
+        let cleanupWorker = WorkshopSteamProcess(), cleanupStage = try storage.makeStaging()
+        for _ in 0..<8 {
+            try await cleanupWorker.connect(binary: executable, account: "cached_user", staging: cleanupStage) { _ in }
+            let pid = Int32(try String(contentsOf: cleanupStage.appendingPathComponent("child.pid"), encoding: .utf8))!
+            let began = Date()
+            await cleanupWorker.closeSession()
+            check(Date().timeIntervalSince(began) < 3 && kill(pid, 0) == -1,
+                  "idle session shutdown stays bounded across serial-queue thread reuse")
+        }
+
         if CommandLine.arguments.contains("--live") {
             let live = try await WorkshopMetadata.fetch(id: "1000000001")
             check(live.id == "1000000001" && !live.title.isEmpty, "real Steam public metadata request")
