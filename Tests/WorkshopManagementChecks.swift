@@ -123,7 +123,7 @@ import Foundation
         check(!storage.installed("107") && model.syncResults["107"] == "同步失败，可重试", "per-item failure remains retryable")
         check(model.syncResults["110"] == "格式暂不支持", "unsupported subscription skipped without launching download")
         check(imports == 1, "only validated imports published to library")
-        check(try fm.contentsOfDirectory(atPath: root.appendingPathComponent("App/Staging").path).isEmpty, "batch staging removed after success and failure")
+
         model.syncSubscriptions(password: "fixture; $(never-run) \"password\""); try await idle()
         check(imports == 1 && model.syncResults["101"] == "已在资料库", "resync does not overwrite or duplicate existing item")
         let downloaded = storage.destination("101").appendingPathComponent("movie.mp4")
@@ -136,6 +136,9 @@ import Foundation
         check(!storage.installed("104") && model.syncResults["104"] == "待同步", "cancelled sync leaves no incomplete item")
         check(storage.installed("101"), "unsubscribing never removes an earlier local copy")
         check(!defaults.dictionaryRepresentation().values.contains { String(describing: $0).contains("never-run") }, "password never persisted in settings")
+
+        await model.shutdown()
+        check(try fm.contentsOfDirectory(atPath: root.appendingPathComponent("App/Staging").path).isEmpty, "session staging removed on shutdown after success and failure")
 
         if CommandLine.arguments.contains("--live") {
             let first = try await WorkshopBrowse.fetch(query: "mountain", page: 1)

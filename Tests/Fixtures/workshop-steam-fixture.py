@@ -47,3 +47,29 @@ out.mkdir(parents=True)
 (out / 'project.json').write_text(json.dumps({'type': 'video', 'file': 'movie.mp4'}))
 (out / 'movie.mp4').write_bytes(b'fixture-media-not-for-playback')
 print('Success. Downloaded item ' + item + ' to "' + str(out) + '"', flush=True)
+# Interactive mode: one authenticated process serves subsequent commands.
+if '+quit' not in args:
+    while True:
+        print('Steam', end='', flush=True)
+        time.sleep(0.02)
+        print('>', end='', flush=True)
+        command = sys.stdin.readline().strip().split()
+        if not command or command == ['quit']:
+            break
+        assert command[:2] == ['workshop_download_item', '431960']
+        item = command[2]
+        if item == '107':
+            print('ERROR! Download item failed (No Connection).', flush=True)
+            continue
+        if item in ('104', '105'):
+            print('Downloading item', flush=True)
+            while True:
+                time.sleep(1)
+        if item == '111':
+            # A prompt without the current success marker must never finish a download.
+            continue
+        out = stage / 'steamapps' / 'workshop' / 'content' / '431960' / item
+        out.mkdir(parents=True, exist_ok=True)
+        (out / 'project.json').write_text(json.dumps({'type': 'video', 'file': 'movie.mp4'}))
+        (out / 'movie.mp4').write_bytes(b'fixture-media-not-for-playback')
+        print('Success. Downloaded item ' + item + ' to "' + str(out) + '"', flush=True)

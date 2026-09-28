@@ -53,7 +53,7 @@ enum WorkshopSteamEvent: Equatable, Sendable {
     case preparing, signingIn, guardCode, mobileApproval, downloading(Double?)
 }
 
-/// A short-lived process per download. Secrets only enter the PTY, never argv or app logs.
+/// Downloads may share an authenticated interactive process. Secrets only enter the PTY.
 /// The worker serializes input and output; the main actor receives semantic events only.
 final class WorkshopSteamProcess: @unchecked Sendable {
     private enum Bootstrap: Error { case restart }
@@ -61,6 +61,35 @@ final class WorkshopSteamProcess: @unchecked Sendable {
     private var cancelled = false
     private var pendingCode: String?
     private var started = false
+    private let queue = DispatchQueue(label: "WallpaperUI.WorkshopSteam")
+    // Accessed only on queue. A session is reusable only after a success marker and prompt.
+    private var session: Session?
+    private final class Session {
+        let process: Process
+        let master: Int32
+        let account: String
+        let binary: URL
+        let staging: URL
+        init(process: Process, master: Int32, account: String, binary: URL, staging: URL) {
+            self.process = process; self.master = master; self.account = account
+            self.binary = binary; self.staging = staging
+        }
+        deinit {
+            if process.isRunning {
+                process.terminate()
+                let until = Date().addingTimeInterval(1)
+                while process.isRunning && Date() < until { usleep(20_000) }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+            process.waitUntilExit()
+            close(master)
+        }
+    }
+    func closeSession() async {
+        await withCheckedContinuation { continuation in
+            queue.async { self.session = nil; continuation.resume() }
+        }
+    }
 
     func cancel() { lock.withLock { cancelled = true } }
     func submitGuardCode(_ code: String) -> Bool {
@@ -75,17 +104,18 @@ final class WorkshopSteamProcess: @unchecked Sendable {
     }
 
     func download(binary: URL, account: String, password: String, id: String, staging: URL,
-                  timeout: TimeInterval = 3600, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
+                  timeout: TimeInterval = 3600, keepAlive: Bool = false, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
         guard Self.validCredentials(account: account, password: password), case .ok = WorkshopURLParser.parse(id) else { throw WorkshopFailure.invalidAccount }
-        let available = lock.withLock { if started { return false }; started = true; return true }
+        let available = lock.withLock { if started { return false }; started = true; cancelled = false; pendingCode = nil; return true }
         guard available else { throw WorkshopFailure.busy }
+        defer { lock.withLock { started = false } }
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .utility).async {
+                self.queue.async {
                     for attempt in 0..<3 {
                         do {
                             let result = try self.run(binary: binary, account: account, password: password,
-                                                      id: id, staging: staging, timeout: timeout, onEvent: onEvent)
+                                                      id: id, staging: staging, timeout: timeout, keepAlive: keepAlive, onEvent: onEvent)
                             continuation.resume(returning: result); return
                         } catch Bootstrap.restart {
                             // Valve's bootstrap exits with 42 after replacing itself; its shell wrapper normally restarts it.
@@ -97,44 +127,48 @@ final class WorkshopSteamProcess: @unchecked Sendable {
         }, onCancel: { self.cancel() })
     }
 
-    static func arguments(account: String, id: String, staging: URL) -> [String] {
+    static func arguments(account: String, id: String, staging: URL, keepAlive: Bool = false) -> [String] {
         ["+force_install_dir", staging.path, "+login", account,
-         "+workshop_download_item", "431960", id, "+quit"]
+         "+workshop_download_item", "431960", id] + (keepAlive ? [] : ["+quit"])
     }
 
     private func run(binary: URL, account: String, password: String, id: String, staging: URL,
-                     timeout: TimeInterval, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) throws -> URL {
+                     timeout: TimeInterval, keepAlive: Bool, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) throws -> URL {
         if lock.withLock({ cancelled }) { throw CancellationError() }
-        var master: Int32 = -1, slave: Int32 = -1
-        guard openpty(&master, &slave, nil, nil, nil) == 0 else { throw WorkshopFailure.launchFailed }
-        defer { close(master) }
-        var ownsSlave = true
-        defer { if ownsSlave { close(slave) } }
-        var attributes = termios()
-        guard tcgetattr(slave, &attributes) == 0 else { throw WorkshopFailure.launchFailed }
-        attributes.c_lflag &= ~tcflag_t(ECHO | ECHONL)
-        _ = tcsetattr(slave, TCSANOW, &attributes)
-        let terminal = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
-        let process = Process()
-        process.executableURL = binary
-        process.currentDirectoryURL = binary.deletingLastPathComponent()
-        process.arguments = Self.arguments(account: account, id: id, staging: staging)
-        // Keep SteamCMD's profile away from the user's Steam client. No app credential store is created.
-        let profile = staging.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Profile")
-        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        process.environment = ["HOME": profile.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8", "TERM": "dumb"]
-        process.standardInput = terminal; process.standardOutput = terminal; process.standardError = terminal
-        do { try process.run() } catch { throw WorkshopFailure.launchFailed }
-        close(slave); ownsSlave = false
-        defer {
-            if process.isRunning {
-                process.terminate()
-                let until = Date().addingTimeInterval(1)
-                while process.isRunning && Date() < until { usleep(20_000) }
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            }
-            process.waitUntilExit()
+        if let current = session, !keepAlive || !current.process.isRunning || current.account != account || current.binary != binary || current.staging != staging {
+            session = nil
         }
+        let reused = session != nil
+        if session == nil {
+            var master: Int32 = -1, slave: Int32 = -1
+            guard openpty(&master, &slave, nil, nil, nil) == 0 else { throw WorkshopFailure.launchFailed }
+            var ownsMaster = true
+            defer { if ownsMaster { close(master) } }
+            var ownsSlave = true
+            defer { if ownsSlave { close(slave) } }
+            var attributes = termios()
+            guard tcgetattr(slave, &attributes) == 0 else { throw WorkshopFailure.launchFailed }
+            attributes.c_lflag &= ~tcflag_t(ECHO | ECHONL)
+            _ = tcsetattr(slave, TCSANOW, &attributes)
+            let terminal = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
+            let process = Process()
+            process.executableURL = binary
+            process.currentDirectoryURL = binary.deletingLastPathComponent()
+            process.arguments = Self.arguments(account: account, id: id, staging: staging, keepAlive: keepAlive)
+            // Keep SteamCMD's profile away from the user's Steam client. No app credential store is created.
+            let profile = staging.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Profile")
+            try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            process.environment = ["HOME": profile.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8", "TERM": "dumb"]
+            process.standardInput = terminal; process.standardOutput = terminal; process.standardError = terminal
+            do { try process.run() } catch { throw WorkshopFailure.launchFailed }
+            close(slave); ownsSlave = false
+            ownsMaster = false
+            session = Session(process: process, master: master, account: account, binary: binary, staging: staging)
+        }
+        guard let current = session else { throw WorkshopFailure.launchFailed }
+        let process = current.process, master = current.master
+        var reusable = false
+        defer { if !reusable { session = nil } }
 
         var lastEvent: WorkshopSteamEvent?
         func publish(_ event: WorkshopSteamEvent) { if lastEvent != event { lastEvent = event; onEvent(event) } }
@@ -154,10 +188,11 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 }
             }
         }
-        var transcript = "", sentPassword = false, waitingGuard = false, success = false
+        var transcript = "", sentPassword = reused, waitingGuard = false, success = false
+        if reused { try send("workshop_download_item 431960 " + id) }
         let deadline = Date().addingTimeInterval(timeout)
         var lastOutput = Date()
-        publish(.preparing)
+        publish(reused ? .downloading(nil) : .preparing)
         while true {
             if lock.withLock({ cancelled }) { throw CancellationError() }
             guard Date() < deadline, Date().timeIntervalSince(lastOutput) < 600 else { throw WorkshopFailure.timedOut }
@@ -176,7 +211,17 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 if lower.contains("invalid password") || lower.contains("invalidpassword") || lower.contains("invalid login auth code") || lower.contains("account logon denied") {
                     throw WorkshopFailure.loginFailed
                 }
-                if lower.contains("success. downloaded item \(id) to ") { success = true }
+                if lower.contains("error! download item") || lower.contains("failed to download item") {
+                    throw WorkshopFailure.downloadFailed
+                }
+                if let marker = lower.range(of: "success. downloaded item \(id) to ") {
+                    success = true
+                    // Only a prompt after this item's success is a command boundary.
+                    if keepAlive && lower[marker.upperBound...].contains("steam>") {
+                        reusable = process.isRunning
+                        return staging.appendingPathComponent("steamapps/workshop/content/431960/" + id, isDirectory: true)
+                    }
+                }
                 if !sentPassword && (lower.contains("password:") || lower.contains("password: ")) {
                     guard !password.isEmpty else { throw WorkshopFailure.loginFailed }
                     sentPassword = true; try send(password); transcript = ""; publish(.signingIn)

@@ -132,6 +132,51 @@ final class WorkshopEventLog: @unchecked Sendable {
         catch { check(true, "repeated self-update cannot create an infinite loop") }
         check(try String(contentsOf: restartStage.appendingPathComponent("updated"), encoding: .utf8) == "3", "self-update stops after three attempts")
 
+        let shared = WorkshopSteamProcess(), sharedStage = try storage.makeStaging()
+        func sharedDownload(_ id: String, password supplied: String = "", account: String = "test_user", timeout: TimeInterval = 3) async throws -> URL {
+            try await shared.download(binary: executable, account: account, password: supplied, id: id,
+                                      staging: sharedStage, timeout: timeout, keepAlive: true) { _ in }
+        }
+        func sharedPID() throws -> Int32 {
+            Int32(try String(contentsOf: sharedStage.appendingPathComponent("child.pid"), encoding: .utf8))!
+        }
+        let firstStart = Date()
+        _ = try await sharedDownload("201", password: password)
+        let firstTime = Date().timeIntervalSince(firstStart), firstPID = try sharedPID()
+        check(kill(firstPID, 0) == 0, "successful interactive download keeps session alive")
+        let nextStart = Date()
+        let next = try await sharedDownload("202")
+        let nextTime = Date().timeIntervalSince(nextStart)
+        try storage.validateProject(next)
+        check(try sharedPID() == firstPID, "second item reuses PID and requires no password or login")
+        print("FIXTURE TIMING cold=\(firstTime)s reused=\(nextTime)s (not real Steam timing)")
+        do { _ = try await sharedDownload("107"); fatalError("interactive error accepted") }
+        catch { check(kill(firstPID, 0) == -1, "interactive download failure closes session promptly") }
+        _ = try await sharedDownload("203", password: password)
+        let recoveryPID = try sharedPID()
+        check(recoveryPID != firstPID, "next attempt creates a fresh session after failure")
+        _ = try await sharedDownload("204", password: password, account: "other_user")
+        let changedPID = try sharedPID()
+        check(changedPID != recoveryPID && kill(recoveryPID, 0) == -1, "account change closes previous authenticated process")
+        await shared.closeSession()
+        check(kill(changedPID, 0) == -1, "shutdown reaps idle interactive process")
+        _ = try await sharedDownload("205", password: password)
+        let promptPID = try sharedPID()
+        do { _ = try await sharedDownload("111", timeout: 0.3); fatalError("prompt alone accepted") }
+        catch { check(kill(promptPID, 0) == -1, "old success or bare prompt cannot finish next item; timeout reaps process") }
+        _ = try await sharedDownload("206", password: password)
+        let cancelPID = try sharedPID()
+        let sharedTask = Task { try await sharedDownload("104") }
+        try await Task.sleep(for: .milliseconds(100))
+        do { _ = try await sharedDownload("207"); fatalError("concurrent request accepted") }
+        catch WorkshopFailure.busy { check(true, "concurrent requests cannot interleave PTY commands") }
+        sharedTask.cancel()
+        do { _ = try await sharedTask.value; fatalError("shared cancellation ignored") }
+        catch is CancellationError { check(kill(cancelPID, 0) == -1, "cancelling reused download terminates its session") }
+        _ = try await sharedDownload("208", password: password)
+        check(try sharedPID() != cancelPID, "worker can recover after cancellation")
+        await shared.closeSession()
+
         if CommandLine.arguments.contains("--live") {
             let live = try await WorkshopMetadata.fetch(id: "1000000001")
             check(live.id == "1000000001" && !live.title.isEmpty, "real Steam public metadata request")

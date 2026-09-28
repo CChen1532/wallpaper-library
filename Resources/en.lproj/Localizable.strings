@@ -602,3 +602,7 @@
 "预览：直接拖动、滚轮缩放，双击复位；松手后继续自转。" = "Preview: drag to rotate, scroll to zoom, double-click to reset. The Moon keeps rotating after release.";
 "打开月球交互预览" = "Open Interactive Moon Preview";
 "当前应用缺少月球场景渲染器，请重新构建应用" = "The Moon renderer is missing. Rebuild the application.";
+
+"下载" = "Download";
+
+"下载壁纸" = "Download wallpaper";

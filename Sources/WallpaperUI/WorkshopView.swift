@@ -10,6 +10,7 @@ struct WorkshopView: View {
     @State private var invalidGuard = false
     @State private var tab = 0
     @State private var showSubscriptions = false
+    @State private var showDownloadDetails = false
     @State private var showFilterInfo = false
     @State private var showComponentDetails = false
     @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
@@ -46,7 +47,7 @@ struct WorkshopView: View {
                     }
                 } else { subscriptionSection }
                 if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
-                if tab != 2, let item = workshop.item { details(item).id("selectedWorkshop") }
+                if tab == 1, let item = workshop.item { details(item).id("selectedWorkshop") }
                 if tab == 0, let page = workshop.searchPage {
                     HStack(spacing: 6) {
                         Text(page.candidateCount
@@ -70,8 +71,9 @@ struct WorkshopView: View {
                     }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 14)], spacing: 14) {
                         ForEach(page.items) { item in
+                            VStack(spacing: 0) {
                             Button {
-                                workshop.select(item)
+                                openDownloadDetails(item)
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
                                     LibraryCover(source: .remote(item.previewURL), symbol: "photo")
@@ -85,6 +87,14 @@ struct WorkshopView: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
                                     .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary) }
                             }.buttonStyle(.plain).modifier(HoverHighlight()).disabled(workshop.busy)
+                            Button { openDownloadDetails(item) } label: {
+                                Label("下载", systemImage: "arrow.down.circle")
+                                    .frame(maxWidth: .infinity)
+                            }.buttonStyle(.bordered)
+                                .disabled(workshop.busy || !WorkshopFilters.supportsPlayback(tags: item.tags))
+                                .accessibilityIdentifier("workshop.card.download." + item.id)
+                                .padding(.top, 6)
+                            }
                         }
                     }
                 }
@@ -102,7 +112,7 @@ struct WorkshopView: View {
                 floatingPagination(page)
             }
         }
-        .onChange(of: workshop.item?.id) { _, id in if id != nil { proxy.scrollTo("selectedWorkshop", anchor: .top) } }
+        .onChange(of: workshop.item?.id) { _, id in if id != nil, tab == 1 { proxy.scrollTo("selectedWorkshop", anchor: .top) } }
         .onChange(of: workshop.searchPage?.number) { _, _ in proxy.scrollTo("workshopTop", anchor: .top) }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -116,6 +126,38 @@ struct WorkshopView: View {
                 }.padding(12).background(.bar)
             }
         }
+        .sheet(isPresented: $showDownloadDetails, onDismiss: { password = ""; guardCode = "" }) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("下载壁纸").font(.headline)
+                    Spacer()
+                    Button("完成") { showDownloadDetails = false }
+                        .keyboardShortcut(.cancelAction).disabled(workshop.busy)
+                }.padding(16)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if let item = workshop.item { details(item) }
+                        if let error = workshop.error {
+                            Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange).textSelection(.enabled)
+                        }
+                        componentSection
+                    }.padding(16)
+                }
+                if workshop.busy {
+                    Divider()
+                    HStack {
+                        if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
+                        else if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
+                        Spacer()
+                        Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
+                    }.padding(12)
+                }
+            }.frame(width: 620, height: 540)
+                .interactiveDismissDisabled(workshop.busy)
+                .environment(\.locale, locale)
+        }
         .sheet(isPresented: $showSubscriptions) {
             WorkshopSubscriptionSheet(browser: subscriptionBrowser) { workshop.receiveSubscriptions($0) }
         }
@@ -125,6 +167,11 @@ struct WorkshopView: View {
             invalidGuard = false; guardCode = ""; guardFocused = waiting
         }
         .onChange(of: workshop.busy) { _, busy in if !busy { password = ""; guardCode = "" } }
+    }
+
+    private func openDownloadDetails(_ item: WorkshopItem) {
+        workshop.select(item)
+        showDownloadDetails = true
     }
 
     private func classification(_ item: WorkshopItem) -> String {

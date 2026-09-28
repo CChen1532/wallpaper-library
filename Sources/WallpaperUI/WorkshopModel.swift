@@ -31,6 +31,9 @@ import Combine
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
     private var process: WorkshopSteamProcess?
+    private let downloadWorker = WorkshopSteamProcess()
+    private var downloadStage: URL?
+    private var downloadToken: UUID?
     private let defaults: UserDefaults
     private let onImported: (URL) async -> Void
     private let findExisting: (String) -> URL?
@@ -245,23 +248,33 @@ import Combine
     }
 
     private func downloadOne(_ item: WorkshopItem, component: URL, account: String, password: String) async throws -> URL {
-        let worker = WorkshopSteamProcess(); process = worker; activity = .download; event = .preparing
-        let stage = try storage.makeStaging()
-        defer { try? FileManager.default.removeItem(at: stage) }
-        let source = try await worker.download(binary: component, account: account, password: password, id: item.id, staging: stage) { [weak self] event in
-            Task { @MainActor in
-                guard let self, self.process === worker, self.activity == .download else { return }
-                self.event = event
+        let worker = downloadWorker; process = worker; activity = .download; event = .preparing
+        let stage: URL
+        if let downloadStage { stage = downloadStage }
+        else { stage = try storage.makeStaging(); downloadStage = stage }
+        let token = UUID(); downloadToken = token
+        defer { downloadToken = nil }
+        do {
+            let source = try await worker.download(binary: component, account: account, password: password, id: item.id, staging: stage, keepAlive: true) { [weak self] event in
+                Task { @MainActor in
+                    guard let self, self.process === worker, self.downloadToken == token, self.activity == .download else { return }
+                    self.event = event
+                }
             }
+            try Task.checkCancellation()
+            activity = .importing
+            let storage = self.storage
+            let importer = Task.detached(priority: .utility) { try storage.importProject(from: source, item: item, consumeStagedFiles: true) }
+            let imported = try await withTaskCancellationHandler(operation: { try await importer.value }, onCancel: { importer.cancel() })
+            // Publish complete imports even when cancellation arrives just after the atomic rename.
+            await onImported(storage.library)
+            return imported
+        } catch {
+            await worker.closeSession()
+            try? FileManager.default.removeItem(at: stage)
+            downloadStage = nil
+            throw error
         }
-        try Task.checkCancellation()
-        activity = .importing
-        let storage = self.storage
-        let importer = Task.detached(priority: .utility) { try storage.importProject(from: source, item: item, consumeStagedFiles: true) }
-        let imported = try await withTaskCancellationHandler(operation: { try await importer.value }, onCancel: { importer.cancel() })
-        // Publish complete imports even when cancellation arrives just after the atomic rename.
-        await onImported(storage.library)
-        return imported
     }
 
     func submitGuard(_ code: String) -> Bool {
@@ -273,7 +286,12 @@ import Combine
         guard busy else { return }
         cancelling = true; process?.cancel(); job?.cancel()
     }
-    func shutdown() async { cancel(); await job?.value }
+    func shutdown() async {
+        cancel(); await job?.value
+        await downloadWorker.closeSession()
+        if let downloadStage { try? FileManager.default.removeItem(at: downloadStage) }
+        downloadStage = nil
+    }
     private func finish() { activity = .idle; cancelling = false; job = nil }
     private func record(_ failure: Error) {
         guard !(failure is CancellationError), !Task.isCancelled else { return }
