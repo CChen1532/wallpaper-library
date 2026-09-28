@@ -5,7 +5,7 @@ import Combine
     enum Activity { case idle, lookup, component, download, importing, search, subscriptions }
     @Published var link = ""
     @Published var account: String {
-        didSet { defaults.set(account, forKey: "workshopAccount") }
+        didSet { defaults.set(account, forKey: "workshopAccount"); if oldValue != account { connectionReady = false; connectionError = nil } }
     }
     @Published private(set) var item: WorkshopItem?
     @Published private(set) var activity = Activity.idle
@@ -28,6 +28,12 @@ import Combine
     @Published private(set) var syncPosition = 0
     @Published private(set) var syncTotal = 0
     @Published private(set) var downloadTitle = ""
+    @Published private(set) var connecting = false
+    @Published private(set) var connectionReady = false
+    @Published private(set) var connectionEvent = WorkshopSteamEvent.preparing
+    @Published private(set) var connectionError: String?
+    private var connectionJob: Task<Void, Never>?
+    private var connectionToken: UUID?
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
     private var process: WorkshopSteamProcess?
@@ -41,7 +47,53 @@ import Combine
     private let metadata: ([String]) async throws -> [WorkshopItem]
     private let browse: (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page
     var busy: Bool { activity != .idle }
-    var waitingForGuard: Bool { event == .guardCode && activity == .download && !cancelling }
+    var waitingForGuard: Bool {
+        (connecting && connectionEvent == .guardCode) || (event == .guardCode && activity == .download && !cancelling)
+    }
+    var steamBusy: Bool { connecting || activity == .download || activity == .importing || activity == .component }
+
+    /// Connection work has its own task so search, filters and cards remain usable.
+    func preconnect(password: String = "", automatic: Bool = true) {
+        guard !steamBusy else { return }
+        guard let component else { return }
+        let account = account.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard WorkshopSteamProcess.validCredentials(account: account, password: password) else {
+            if !automatic { connectionError = WorkshopFailure.invalidAccount.localizedDescription }
+            return
+        }
+        connecting = true; connectionReady = false; connectionError = nil; connectionEvent = .preparing
+        let token = UUID(); connectionToken = token
+        connectionJob = Task {
+            defer { connecting = false; connectionJob = nil; connectionToken = nil }
+            do {
+                let stage = try sessionStaging()
+                try await downloadWorker.connect(binary: component, account: account, password: password, staging: stage) { [weak self] event in
+                    Task { @MainActor in
+                        guard let self, self.connecting, self.connectionToken == token else { return }
+                        self.connectionEvent = event
+                    }
+                }
+                try Task.checkCancellation()
+                connectionReady = true
+            } catch {
+                await discardSession()
+                if !(error is CancellationError), !Task.isCancelled {
+                    connectionError = (error as? WorkshopFailure)?.localizedDescription ?? WorkshopFailure.launchFailed.localizedDescription
+                }
+            }
+        }
+    }
+    func cancelConnection() { connectionJob?.cancel(); connectionReady = false }
+    private func sessionStaging() throws -> URL {
+        if let downloadStage { return downloadStage }
+        let stage = try storage.makeStaging(); downloadStage = stage
+        return stage
+    }
+    private func discardSession() async {
+        await downloadWorker.closeSession()
+        if let downloadStage { try? FileManager.default.removeItem(at: downloadStage) }
+        downloadStage = nil; connectionReady = false
+    }
 
     init(storage: WorkshopStorage = WorkshopStorage(), defaults: UserDefaults = .standard,
          findExisting: @escaping (String) -> URL? = { _ in nil }, libraryBusy: @escaping () -> Bool = { false },
@@ -152,7 +204,7 @@ import Combine
         }
     }
     func syncSubscriptions(password: String) {
-        guard !busy, !libraryBusy(), subscriptionReadAt != nil else { return }
+        guard !busy, !connecting, !libraryBusy(), subscriptionReadAt != nil else { return }
         guard let component else { error = WorkshopFailure.componentMissing.localizedDescription; return }
         let account = account.trimmingCharacters(in: .whitespacesAndNewlines)
         guard WorkshopSteamProcess.validCredentials(account: account, password: password) else { error = WorkshopFailure.invalidAccount.localizedDescription; return }
@@ -183,14 +235,16 @@ import Combine
         }
     }
     func refreshComponent() {
-        guard !busy else { return }
+        guard !busy, !connecting else { return }
+        let previous = component
         component = WorkshopComponent.locate(storage: storage, custom: defaults.string(forKey: "workshopSteamCMD"))
+        if previous != component { connectionReady = false }
     }
     func selectComponent(_ url: URL) {
-        guard !busy else { return }
+        guard !busy, !connecting else { return }
         let binary = url.resolvingSymlinksInPath()
         guard WorkshopComponent.validBinary(binary) else { error = WorkshopFailure.componentInvalid.localizedDescription; return }
-        defaults.set(binary.path, forKey: "workshopSteamCMD"); component = binary; error = nil
+        defaults.set(binary.path, forKey: "workshopSteamCMD"); component = binary; error = nil; connectionReady = false
     }
 
     func lookup() {
@@ -215,7 +269,7 @@ import Combine
     }
 
     func installComponent() {
-        guard !busy else { return }
+        guard !busy, !connecting else { return }
         activity = .component; error = nil
         job = Task {
             defer { finish() }
@@ -229,7 +283,7 @@ import Combine
     }
 
     func download(password: String) {
-        guard !busy, !libraryBusy(), let item, importedURL == nil else { return }
+        guard !busy, !connecting, !libraryBusy(), let item, importedURL == nil else { return }
         guard WorkshopFilters.supportsPlayback(tags: item.tags) else { error = WorkshopFailure.unsupportedProject.localizedDescription; return }
         if let existing = findExisting(item.id) { importedURL = existing; return }
         guard let component else { error = WorkshopFailure.componentMissing.localizedDescription; return }
@@ -249,9 +303,7 @@ import Combine
 
     private func downloadOne(_ item: WorkshopItem, component: URL, account: String, password: String) async throws -> URL {
         let worker = downloadWorker; process = worker; activity = .download; event = .preparing
-        let stage: URL
-        if let downloadStage { stage = downloadStage }
-        else { stage = try storage.makeStaging(); downloadStage = stage }
+        let stage = try sessionStaging()
         let token = UUID(); downloadToken = token
         defer { downloadToken = nil }
         do {
@@ -262,6 +314,7 @@ import Combine
                 }
             }
             try Task.checkCancellation()
+            connectionReady = true; connectionError = nil
             activity = .importing
             let storage = self.storage
             let importer = Task.detached(priority: .utility) { try storage.importProject(from: source, item: item, consumeStagedFiles: true) }
@@ -270,15 +323,17 @@ import Combine
             await onImported(storage.library)
             return imported
         } catch {
-            await worker.closeSession()
-            try? FileManager.default.removeItem(at: stage)
-            downloadStage = nil
+            await discardSession()
             throw error
         }
     }
 
     func submitGuard(_ code: String) -> Bool {
         guard waitingForGuard else { return false }
+        if connecting {
+            if downloadWorker.submitGuardCode(code) { connectionEvent = .signingIn; return true }
+            return false
+        }
         if process?.submitGuardCode(code) == true { event = .signingIn; return true }
         return false
     }
@@ -287,10 +342,9 @@ import Combine
         cancelling = true; process?.cancel(); job?.cancel()
     }
     func shutdown() async {
-        cancel(); await job?.value
-        await downloadWorker.closeSession()
-        if let downloadStage { try? FileManager.default.removeItem(at: downloadStage) }
-        downloadStage = nil
+        cancelConnection(); cancel()
+        await connectionJob?.value; await job?.value
+        await discardSession()
     }
     private func finish() { activity = .idle; cancelling = false; job = nil }
     private func record(_ failure: Error) {

@@ -606,3 +606,21 @@
 "下载" = "Download";
 
 "下载壁纸" = "Download wallpaper";
+
+"Steam 需要重新登录，请输入密码后连接。" = "Steam needs you to sign in again. Enter your password to connect.";
+
+"Steam 连接" = "Steam connection";
+
+"取消连接" = "Cancel connection";
+
+"连接 Steam" = "Connect to Steam";
+
+"Steam 需要验证码" = "Steam verification code required";
+
+"正在连接 Steam，可继续浏览…" = "Connecting to Steam. You can keep browsing…";
+
+"Steam 会话已就绪" = "Steam session ready";
+
+"Steam 尚未连接，点此处理登录" = "Steam is not connected. Open connection settings to sign in.";
+
+"进入工坊后自动连接 Steam" = "Steam connects automatically when you open Workshop";

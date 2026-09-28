@@ -105,7 +105,20 @@ final class WorkshopSteamProcess: @unchecked Sendable {
 
     func download(binary: URL, account: String, password: String, id: String, staging: URL,
                   timeout: TimeInterval = 3600, keepAlive: Bool = false, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
-        guard Self.validCredentials(account: account, password: password), case .ok = WorkshopURLParser.parse(id) else { throw WorkshopFailure.invalidAccount }
+        guard case .ok = WorkshopURLParser.parse(id) else { throw WorkshopFailure.invalidAccount }
+        return try await execute(binary: binary, account: account, password: password, id: id, staging: staging,
+                                 timeout: timeout, keepAlive: keepAlive, onEvent: onEvent)
+    }
+
+    func connect(binary: URL, account: String, password: String = "", staging: URL,
+                 timeout: TimeInterval = 120, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws {
+        _ = try await execute(binary: binary, account: account, password: password, id: nil, staging: staging,
+                              timeout: timeout, keepAlive: true, onEvent: onEvent)
+    }
+
+    private func execute(binary: URL, account: String, password: String, id: String?, staging: URL,
+                         timeout: TimeInterval, keepAlive: Bool, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
+        guard Self.validCredentials(account: account, password: password) else { throw WorkshopFailure.invalidAccount }
         let available = lock.withLock { if started { return false }; started = true; cancelled = false; pendingCode = nil; return true }
         guard available else { throw WorkshopFailure.busy }
         defer { lock.withLock { started = false } }
@@ -127,12 +140,13 @@ final class WorkshopSteamProcess: @unchecked Sendable {
         }, onCancel: { self.cancel() })
     }
 
-    static func arguments(account: String, id: String, staging: URL, keepAlive: Bool = false) -> [String] {
-        ["+force_install_dir", staging.path, "+login", account,
-         "+workshop_download_item", "431960", id] + (keepAlive ? [] : ["+quit"])
+    static func arguments(account: String, id: String?, staging: URL, keepAlive: Bool = false) -> [String] {
+        ["+force_install_dir", staging.path, "+login", account]
+            + (id.map { ["+workshop_download_item", "431960", $0] } ?? [])
+            + (keepAlive ? [] : ["+quit"])
     }
 
-    private func run(binary: URL, account: String, password: String, id: String, staging: URL,
+    private func run(binary: URL, account: String, password: String, id: String?, staging: URL,
                      timeout: TimeInterval, keepAlive: Bool, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) throws -> URL {
         if lock.withLock({ cancelled }) { throw CancellationError() }
         if let current = session, !keepAlive || !current.process.isRunning || current.account != account || current.binary != binary || current.staging != staging {
@@ -189,7 +203,10 @@ final class WorkshopSteamProcess: @unchecked Sendable {
             }
         }
         var transcript = "", sentPassword = reused, waitingGuard = false, success = false
-        if reused { try send("workshop_download_item 431960 " + id) }
+        if reused {
+            if let id { try send("workshop_download_item 431960 " + id) }
+            else { reusable = true; return staging }
+        }
         let deadline = Date().addingTimeInterval(timeout)
         var lastOutput = Date()
         publish(reused ? .downloading(nil) : .preparing)
@@ -214,7 +231,16 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 if lower.contains("error! download item") || lower.contains("failed to download item") {
                     throw WorkshopFailure.downloadFailed
                 }
-                if let marker = lower.range(of: "success. downloaded item \(id) to ") {
+                if id == nil {
+                    if lower.contains("failed") || lower.contains("error!") { throw WorkshopFailure.loginFailed }
+                    if let marker = lower.range(of: #"waiting for user info\.\.\.\s*ok"#, options: .regularExpression),
+                       lower[marker.upperBound...].contains("steam>") {
+                        guard process.isRunning else { throw WorkshopFailure.loginFailed }
+                        reusable = true
+                        return staging
+                    }
+                }
+                if let id, let marker = lower.range(of: "success. downloaded item \(id) to ") {
                     success = true
                     // Only a prompt after this item's success is a command boundary.
                     if keepAlive && lower[marker.upperBound...].contains("steam>") {
@@ -223,7 +249,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                     }
                 }
                 if !sentPassword && (lower.contains("password:") || lower.contains("password: ")) {
-                    guard !password.isEmpty else { throw WorkshopFailure.loginFailed }
+                    guard !password.isEmpty else { throw WorkshopFailure.passwordRequired }
                     sentPassword = true; try send(password); transcript = ""; publish(.signingIn)
                 } else if lower.contains("steam guard code:") || lower.contains("two-factor code:") || lower.contains("authenticator code:") || lower.contains("enter the current code") || lower.contains("enter the code") {
                     waitingGuard = true; transcript = ""; publish(.guardCode)
@@ -237,6 +263,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
         process.waitUntilExit()
         if lock.withLock({ cancelled }) { throw CancellationError() }
         if process.terminationStatus == 42 { throw Bootstrap.restart }
+        guard let id else { throw WorkshopFailure.loginFailed }
         guard process.terminationStatus == 0, success else { throw WorkshopFailure.downloadFailed }
         return staging.appendingPathComponent("steamapps/workshop/content/431960/" + id, isDirectory: true)
     }

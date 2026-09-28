@@ -11,6 +11,7 @@ struct WorkshopView: View {
     @State private var tab = 0
     @State private var showSubscriptions = false
     @State private var showDownloadDetails = false
+    @State private var showConnectionDetails = false
     @State private var showFilterInfo = false
     @State private var showComponentDetails = false
     @StateObject private var subscriptionBrowser = WorkshopSubscriptionBrowser()
@@ -126,6 +127,30 @@ struct WorkshopView: View {
                 }.padding(12).background(.bar)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { connectionBar }
+        .sheet(isPresented: $showConnectionDetails, onDismiss: { password = ""; guardCode = "" }) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Steam 连接").font(.headline)
+                    Spacer()
+                    Button("完成") { showConnectionDetails = false }.keyboardShortcut(.cancelAction)
+                }
+                accountForm
+                HStack {
+                    if workshop.connecting {
+                        Button("取消连接") { workshop.cancelConnection() }
+                    } else {
+                        Button("连接 Steam") { workshop.preconnect(password: password, automatic: false); password = "" }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(workshop.steamBusy || workshop.component == nil || workshop.account.isEmpty)
+                            .accessibilityIdentifier("workshop.connect")
+                    }
+                    Spacer()
+                }
+                componentSection
+            }.padding(24).frame(width: 550)
+                .environment(\.locale, locale)
+        }
         .sheet(isPresented: $showDownloadDetails, onDismiss: { password = ""; guardCode = "" }) {
             VStack(spacing: 0) {
                 HStack {
@@ -161,12 +186,37 @@ struct WorkshopView: View {
         .sheet(isPresented: $showSubscriptions) {
             WorkshopSubscriptionSheet(browser: subscriptionBrowser) { workshop.receiveSubscriptions($0) }
         }
-        .onAppear { workshop.refreshComponent() }
+        .onAppear { workshop.refreshComponent(); workshop.preconnect() }
+        .onChange(of: workshop.component) { _, _ in workshop.preconnect() }
         .onDisappear { password = ""; guardCode = "" }
         .onChange(of: workshop.waitingForGuard) { _, waiting in
             invalidGuard = false; guardCode = ""; guardFocused = waiting
         }
-        .onChange(of: workshop.busy) { _, busy in if !busy { password = ""; guardCode = "" } }
+    }
+
+    private var connectionBar: some View {
+        HStack(spacing: 10) {
+            if workshop.connecting { ProgressView().controlSize(.small) }
+            else { Image(systemName: workshop.connectionReady ? "checkmark.circle.fill" : "network") }
+            Text(AppStrings.text(connectionLabel, locale: locale)).font(.callout)
+                .accessibilityIdentifier("workshop.connectionStatus")
+            Spacer()
+            Button("Steam 连接") { showConnectionDetails = true }
+                .disabled(workshop.activity == .download || workshop.activity == .importing)
+                .accessibilityIdentifier("workshop.connectionDetails")
+        }.padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
+    }
+    private var connectionLabel: String {
+        if workshop.connecting {
+            switch workshop.connectionEvent {
+            case .guardCode: return "Steam 需要验证码"
+            case .mobileApproval: return "请在手机 Steam 中确认登录。"
+            default: return "正在连接 Steam，可继续浏览…"
+            }
+        }
+        if workshop.connectionReady { return "Steam 会话已就绪" }
+        if workshop.connectionError != nil { return "Steam 尚未连接，点此处理登录" }
+        return "进入工坊后自动连接 Steam"
     }
 
     private func openDownloadDetails(_ item: WorkshopItem) {
@@ -294,7 +344,7 @@ struct WorkshopView: View {
                     Button("下载并加入资料库") {
                         workshop.download(password: password); password = ""
                     }.buttonStyle(.borderedProminent)
-                        .disabled(workshop.busy || model.isWorking || workshop.component == nil || workshop.account.isEmpty)
+                        .disabled(workshop.busy || workshop.connecting || model.isWorking || workshop.component == nil || workshop.account.isEmpty)
                         .accessibilityIdentifier("workshop.download")
                 }
             }
@@ -312,7 +362,7 @@ struct WorkshopView: View {
                             .accessibilityIdentifier("workshop.account")
                         SecureField("密码（已登录时可留空）", text: $password).textContentType(.password)
                             .accessibilityIdentifier("workshop.password")
-                    }.textFieldStyle(.roundedBorder).disabled(workshop.busy)
+                    }.textFieldStyle(.roundedBorder).disabled(workshop.steamBusy)
                     if workshop.waitingForGuard {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("输入 Steam Guard 邮件或验证器中的代码。")
@@ -326,6 +376,13 @@ struct WorkshopView: View {
                         }
                     }
                     downloadStatus
+                    if let error = workshop.connectionError {
+                        Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if workshop.connectionReady {
+                        Label("Steam 会话已就绪", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
         }
     }
 
@@ -359,7 +416,7 @@ struct WorkshopView: View {
                 }
                 Button("同步缺少的壁纸") { workshop.syncSubscriptions(password: password); password = "" }
                     .buttonStyle(.borderedProminent)
-                    .disabled(workshop.busy || model.isWorking || workshop.component == nil || workshop.account.isEmpty || workshop.subscriptions.isEmpty)
+                    .disabled(workshop.busy || workshop.connecting || model.isWorking || workshop.component == nil || workshop.account.isEmpty || workshop.subscriptions.isEmpty)
                     .accessibilityIdentifier("workshop.syncSubscriptions")
                 LazyVStack(spacing: 0) {
                     ForEach(workshop.subscriptions) { item in
@@ -377,8 +434,8 @@ struct WorkshopView: View {
 
     @ViewBuilder private var downloadStatus: some View {
         if workshop.activity == .importing { ProgressView("正在校验并加入资料库…").controlSize(.small) }
-        else if workshop.activity == .download {
-            switch workshop.event {
+        else if workshop.activity == .download || workshop.connecting {
+            switch workshop.connecting ? workshop.connectionEvent : workshop.event {
             case .preparing: ProgressView("正在启动下载组件…").controlSize(.small)
             case .signingIn: ProgressView("正在登录 Steam…").controlSize(.small)
             case .guardCode: EmptyView()
@@ -398,7 +455,7 @@ struct WorkshopView: View {
                 DisclosureGroup(isExpanded: $showComponentDetails) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(component.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy)
+                        Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy || workshop.connecting)
                     }.padding(.top, 8)
                 } label: {
                     HStack {
@@ -414,9 +471,9 @@ struct WorkshopView: View {
                     Text("首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("准备下载组件") { workshop.installComponent() }.disabled(workshop.busy)
+                        Button("准备下载组件") { workshop.installComponent() }.disabled(workshop.busy || workshop.connecting)
                             .accessibilityIdentifier("workshop.install")
-                        Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy)
+                        Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy || workshop.connecting)
                         if workshop.activity == .component { ProgressView("正在准备…").controlSize(.small) }
                     }
                 }

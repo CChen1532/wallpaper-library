@@ -177,6 +177,41 @@ final class WorkshopEventLog: @unchecked Sendable {
         check(try sharedPID() != cancelPID, "worker can recover after cancellation")
         await shared.closeSession()
 
+        let warm = WorkshopSteamProcess(), warmStage = try storage.makeStaging()
+        try await warm.connect(binary: executable, account: "cached_user", staging: warmStage) { _ in }
+        let warmPID = Int32(try String(contentsOf: warmStage.appendingPathComponent("child.pid"), encoding: .utf8))!
+        check(!fm.fileExists(atPath: warmStage.appendingPathComponent("steamapps").path), "preconnect authenticates without downloading any material")
+        try await warm.connect(binary: executable, account: "cached_user", staging: warmStage) { _ in }
+        let warmResult = try await warm.download(binary: executable, account: "cached_user", password: "", id: "301", staging: warmStage, keepAlive: true) { _ in }
+        try storage.validateProject(warmResult)
+        check(try String(contentsOf: warmStage.appendingPathComponent("launches"), encoding: .utf8).split(separator: "\n").count == 1,
+              "repeated preconnect and first download share one authenticated process")
+        await warm.closeSession()
+        check(kill(warmPID, 0) == -1, "closing preconnected session reaps child")
+        for account in ["test_user", "prompt_user", "failed_user"] {
+            let cold = WorkshopSteamProcess(), stage = try storage.makeStaging()
+            do {
+                try await cold.connect(binary: executable, account: account, staging: stage, timeout: 0.5) { _ in }
+                fatalError("unauthenticated connection accepted")
+            } catch {
+                if account == "test_user" { check(error as? WorkshopFailure == .passwordRequired, "expired cached login requests password without retaining it") }
+                else { check(true, "bare prompt or failed user info never reports authenticated") }
+            }
+            let pid = Int32(try String(contentsOf: stage.appendingPathComponent("child.pid"), encoding: .utf8))!
+            check(kill(pid, 0) == -1, "failed preconnect closes child")
+        }
+        let guarded = WorkshopSteamProcess(), guardStage = try storage.makeStaging(), guardEvents = WorkshopEventLog()
+        try await guarded.connect(binary: executable, account: "guard_user", password: password, staging: guardStage) { event in
+            guardEvents.append(event)
+            if event == .guardCode { _ = guarded.submitGuardCode("ABCDE") }
+        }
+        check(guardEvents.contains(.guardCode), "preconnect supports interactive Steam Guard")
+        await guarded.closeSession()
+        let mobile = WorkshopSteamProcess(), mobileStage = try storage.makeStaging(), mobileEvents = WorkshopEventLog()
+        try await mobile.connect(binary: executable, account: "mobile_user", password: password, staging: mobileStage) { mobileEvents.append($0) }
+        check(mobileEvents.contains(.mobileApproval), "preconnect exposes phone confirmation")
+        await mobile.closeSession()
+
         if CommandLine.arguments.contains("--live") {
             let live = try await WorkshopMetadata.fetch(id: "1000000001")
             check(live.id == "1000000001" && !live.title.isEmpty, "real Steam public metadata request")

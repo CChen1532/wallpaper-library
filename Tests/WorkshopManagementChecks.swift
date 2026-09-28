@@ -140,6 +140,35 @@ import Foundation
         await model.shutdown()
         check(try fm.contentsOfDirectory(atPath: root.appendingPathComponent("App/Staging").path).isEmpty, "session staging removed on shutdown after success and failure")
 
+        model.account = "cached_user"
+        model.preconnect(); model.preconnect()
+        check(model.connecting && !model.busy, "preconnect does not lock browsing activity")
+        model.receiveSubscriptions(["401"])
+        try await idle()
+        let warmDeadline = Date().addingTimeInterval(4)
+        while model.connecting && Date() < warmDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        check(model.connectionReady && !model.connecting && model.connectionError == nil, "cached account preconnect becomes ready")
+        model.select(.init(id: "401", title: "Preconnected", previewURL: nil, bytes: 1, tags: ["Video"]))
+        try await idle()
+        model.download(password: "")
+        try await idle()
+        check(storage.installed("401"), "first download consumes preconnected session without a password")
+        await model.shutdown()
+        check(!model.connectionReady && !model.connecting, "shutdown clears connection state")
+        model.account = "slow_user"
+        model.preconnect()
+        try await Task.sleep(for: .milliseconds(200))
+        model.cancelConnection()
+        await model.shutdown()
+        check(!model.connecting && !model.connectionReady && model.connectionError == nil, "cancel preconnect cleans task without presenting an error")
+        model.account = "test_user"
+        model.preconnect()
+        let authDeadline = Date().addingTimeInterval(4)
+        while model.connecting && Date() < authDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        check(!model.connectionReady && model.connectionError == WorkshopFailure.passwordRequired.localizedDescription, "automatic auth failure asks user to sign in")
+        await model.shutdown()
+        check(try fm.contentsOfDirectory(atPath: root.appendingPathComponent("App/Staging").path).isEmpty, "preconnect shutdown removes temporary staging")
+
         if CommandLine.arguments.contains("--live") {
             let first = try await WorkshopBrowse.fetch(query: "mountain", page: 1)
             let second = try await WorkshopBrowse.fetch(query: "mountain", page: 2)

@@ -3,7 +3,7 @@ import Foundation
 enum WorkshopFailure: Error, LocalizedError {
     case invalidLink, unavailable, wrongApp, network, responseTooLarge, unsupportedProject
     case invalidProject, unsafeFiles, componentMissing, componentInvalid, componentChanged
-    case invalidAccount, loginFailed, downloadFailed, timedOut, launchFailed, busy
+    case invalidAccount, passwordRequired, loginFailed, downloadFailed, timedOut, launchFailed, busy
     case pageChanged, subscriptionLogin, subscriptionLimit
     var errorDescription: String? {
         switch self {
@@ -19,6 +19,7 @@ enum WorkshopFailure: Error, LocalizedError {
         case .componentInvalid: return "无法使用所选组件，请选择官方 SteamCMD 可执行文件。"
         case .componentChanged: return "下载组件校验失败，未安装。请稍后重试。"
         case .invalidAccount: return "请输入 Steam 登录账号；密码不能包含换行或控制字符。"
+        case .passwordRequired: return "Steam 需要重新登录，请输入密码后连接。"
         case .loginFailed: return "Steam 登录失败，请检查账号、密码或 Steam Guard 验证。"
         case .downloadFailed: return "下载未完成。请确认账号拥有 Wallpaper Engine，并检查网络和项目访问权限。"
         case .timedOut: return "Steam 长时间没有响应，已停止任务，可以重试。"
