@@ -345,10 +345,7 @@ struct SceneLaunchConfiguration: Sendable {
                 }
             } catch is CancellationError { }
             catch let mismatch as SpaceBackdropCompatibilityFailure {
-                await MainActor.run {
-                    UserDefaults.standard.set(false, forKey: SceneBackdropConfiguration.preferenceKey)
-                }
-                failure = "已自动关闭场景过渡底图：" + mismatch.localizedDescription
+                failure = "场景过渡底图未就绪：" + mismatch.localizedDescription
             }
             catch { failure = error.localizedDescription }
             do { try backdrop?.finish() }

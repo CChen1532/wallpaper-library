@@ -16,8 +16,9 @@ import WebKit
 
     override init() {
         let configuration = WKWebViewConfiguration()
-        // Dedicated, temporary website session; never inspect passwords or copy cookies into app settings.
-        configuration.websiteDataStore = .nonPersistent()
+        // WebKit owns the persistent Steam session under the stable app bundle
+        // identifier. Never copy cookies or passwords into app settings.
+        configuration.websiteDataStore = .default()
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self

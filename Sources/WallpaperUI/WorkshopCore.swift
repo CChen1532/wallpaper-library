@@ -31,7 +31,7 @@ enum WorkshopFailure: Error, LocalizedError {
     }
 }
 
-struct WorkshopItem: Identifiable, Equatable, Sendable {
+struct WorkshopItem: Identifiable, Equatable, Codable, Sendable {
     let id: String
     let title: String
     let previewURL: URL?
@@ -39,6 +39,32 @@ struct WorkshopItem: Identifiable, Equatable, Sendable {
     let tags: [String]
     var summary: String = ""
     var communityURL: URL { URL(string: "https://steamcommunity.com/sharedfiles/filedetails/?id=" + id)! }
+}
+
+/// Only public Workshop metadata is cached. WebKit keeps the login cookies in
+/// its own persistent store; SteamCMD credentials are never written here.
+struct WorkshopSubscriptionSnapshot: Codable, Sendable {
+    let version: Int
+    let total: Int
+    let readAt: Date
+    let items: [WorkshopItem]
+
+    init(total: Int, readAt: Date, items: [WorkshopItem]) {
+        self.version = 1
+        self.total = total
+        self.readAt = readAt
+        self.items = items
+    }
+
+    var isValid: Bool {
+        version == 1 && total >= items.count && total <= 30_000 &&
+        readAt <= Date().addingTimeInterval(300) &&
+        Set(items.map(\.id)).count == items.count &&
+        items.allSatisfy { item in
+            if case .ok = WorkshopURLParser.parse(item.id) { return true }
+            return false
+        }
+    }
 }
 
 enum WorkshopMetadata {
@@ -140,7 +166,27 @@ struct WorkshopStorage: Sendable {
     }
     var library: URL { root.appendingPathComponent("Library", isDirectory: true) }
     var component: URL { root.appendingPathComponent("SteamCMD/steamcmd") }
+    var subscriptionsFile: URL { root.appendingPathComponent("Subscriptions-v1.json") }
     func destination(_ id: String) -> URL { library.appendingPathComponent(id, isDirectory: true) }
+
+    func loadSubscriptions() -> WorkshopSubscriptionSnapshot? {
+        guard let size = try? subscriptionsFile.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= 16 * 1024 * 1024,
+              let data = try? Data(contentsOf: subscriptionsFile),
+              let snapshot = try? JSONDecoder().decode(WorkshopSubscriptionSnapshot.self, from: data),
+              snapshot.isValid else { return nil }
+        return snapshot
+    }
+
+    func saveSubscriptions(_ snapshot: WorkshopSubscriptionSnapshot) throws {
+        guard snapshot.isValid else { throw WorkshopFailure.pageChanged }
+        let data = try JSONEncoder().encode(snapshot)
+        guard data.count <= 16 * 1024 * 1024 else { throw WorkshopFailure.responseTooLarge }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        try data.write(to: subscriptionsFile, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: subscriptionsFile.path)
+    }
 
     func makeStaging() throws -> URL {
         let url = root.appendingPathComponent("Staging/" + UUID().uuidString, isDirectory: true)

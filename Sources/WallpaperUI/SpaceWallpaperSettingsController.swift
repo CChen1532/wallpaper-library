@@ -178,6 +178,7 @@ enum SpaceWallpaperSettingsController {
     }
 
     private static func registrationMatches(_ imageURL: URL) -> Bool {
+        if systemStateMatches(imageURL) { return true }
         guard let document = wallpaperDocument(),
               let spaces = document["Spaces"] as? [String: Any], !spaces.isEmpty,
               let all = document["AllSpacesAndDisplays"] as? [String: Any],

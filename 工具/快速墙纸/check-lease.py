@@ -154,9 +154,57 @@ with (root/'crash.log').open('wb') as output:
     evidence = plistlib.loads((state / 'compatibility.plist').read_bytes())
     assert evidence['macOS'] == m.SUPPORTED_MACOS[0]
     assert evidence['wallpaperSchemaSHA256'] == m.SUPPORTED_SCHEMA
+    tool.restore()
+    assert restored() and plistlib.loads(store.read_bytes()) == original
+
+    shared_original = copy.deepcopy(original)
+    shared_original['Spaces'] = {}
+    shared_original['Displays'] = {}
+    shared_original['AllSpacesAndDisplays']['Type'] = 'individual'
+    shared_original['AllSpacesAndDisplays']['Desktop'] = {'original': 'shared-wallpaper'}
+    assert m.schema_fingerprint(shared_original) == m.SUPPORTED_SHARED_SCHEMA
+    store.write_bytes(m.encoded(shared_original))
+    tool.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    tool.restore()
+    assert plistlib.loads(store.read_bytes()) == shared_original
+    print('PASS: an existing all-Spaces wallpaper can be replaced and restored exactly')
+
+    tool.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    registered = plistlib.loads(store.read_bytes())
+    scene = registered['AllSpacesAndDisplays']['Desktop']
+    registered['AllSpacesAndDisplays'].pop('Desktop')
+    registered['AllSpacesAndDisplays']['Type'] = 'idle'
+    native_node = {'Type': 'individual', 'Desktop': copy.deepcopy(scene),
+                   'Idle': copy.deepcopy(shared_original['SystemDefault']['Idle'])}
+    registered['Spaces'] = {'a': {'Default': copy.deepcopy(native_node),
+                                 'Displays': {'display': copy.deepcopy(native_node)}}}
+    registered['Displays'] = {'display': copy.deepcopy(native_node)}
+    foreign = copy.deepcopy(registered)
+    foreign['Spaces']['foreign'] = copy.deepcopy(foreign['Spaces']['a'])
+    store.write_bytes(m.encoded(foreign))
+    try:
+        tool.restore()
+        raise AssertionError('uninventoried Space removed')
+    except ValueError:
+        assert plistlib.loads(store.read_bytes()) == foreign
+    foreign = copy.deepcopy(registered)
+    foreign['Spaces']['a']['Default']['Desktop'] = {'user': 'changed'}
+    store.write_bytes(m.encoded(foreign))
+    try:
+        tool.restore()
+        raise AssertionError('foreign shared-baseline edit overwritten')
+    except ValueError:
+        assert plistlib.loads(store.read_bytes()) == foreign
+    store.write_bytes(m.encoded(registered))
+    tool.restore()
+    assert plistlib.loads(store.read_bytes()) == shared_original
+    print('PASS: interrupted native registration restores shared baseline; foreign edits stay protected')
+
+    store.write_bytes(m.encoded(original))
+    tool.apply(image, inv, inv['spaces'], all_spaces_visible=True)
     m.SUPPORTED_SCHEMA = 'unknown-after-system-upgrade'
     tool.restore()
     assert restored() and plistlib.loads(store.read_bytes()) == original
     print('PASS: restoration remains available after compatibility changes')
 
-print('7 offline lease checks passed; no system wallpaper settings accessed.')
+print('9 offline lease checks passed; no system wallpaper settings accessed.')

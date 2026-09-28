@@ -4,7 +4,9 @@ import Combine
 @MainActor final class WorkshopModel: ObservableObject {
     enum Activity { case idle, lookup, component, download, importing, search, subscriptions }
     @Published var link = ""
-    @Published var account: String
+    @Published var account: String {
+        didSet { defaults.set(account, forKey: "workshopAccount") }
+    }
     @Published private(set) var item: WorkshopItem?
     @Published private(set) var activity = Activity.idle
     @Published private(set) var event = WorkshopSteamEvent.preparing
@@ -20,6 +22,7 @@ import Combine
     @Published private(set) var subscriptions: [WorkshopItem] = []
     @Published private(set) var subscriptionCount = 0
     @Published private(set) var subscriptionReadAt: Date?
+    @Published private(set) var subscriptionCacheLoaded = false
     @Published private(set) var syncResults: [String: String] = [:]
     @Published private(set) var syncing = false
     @Published private(set) var syncPosition = 0
@@ -50,6 +53,14 @@ import Combine
         filters = defaults.data(forKey: "workshopBrowseFilters").flatMap { try? JSONDecoder().decode(WorkshopFilters.self, from: $0) } ?? .init()
         account = defaults.string(forKey: "workshopAccount") ?? ""
         self.component = component ?? WorkshopComponent.locate(storage: storage, custom: defaults.string(forKey: "workshopSteamCMD"))
+        Task { [weak self] in
+            let cached = await Task.detached(priority: .utility) { storage.loadSubscriptions() }.value
+            guard let self, let cached, self.subscriptionReadAt == nil, !self.busy else { return }
+            self.subscriptions = cached.items
+            self.subscriptionCount = cached.total
+            self.subscriptionReadAt = cached.readAt
+            self.subscriptionCacheLoaded = true
+        }
     }
 
     func setFilters(_ value: WorkshopFilters, searchImmediately: Bool = true) {
@@ -128,7 +139,12 @@ import Combine
                 var statuses: [String: String] = [:]
                 for item in items { if await existing(item.id) != nil { statuses[item.id] = "已在资料库" } }
                 try Task.checkCancellation()
+                let snapshot = WorkshopSubscriptionSnapshot(total: ids.count, readAt: Date(), items: items)
+                let storage = self.storage
+                try await Task.detached(priority: .utility) { try storage.saveSubscriptions(snapshot) }.value
+                try Task.checkCancellation()
                 subscriptions = items; subscriptionCount = ids.count; subscriptionReadAt = Date(); syncResults = statuses
+                subscriptionCacheLoaded = false
             } catch { record(error) }
         }
     }

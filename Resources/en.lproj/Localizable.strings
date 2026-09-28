@@ -110,6 +110,9 @@
 "已授权" = "Granted";
 "已自动关闭场景过渡底图：" = "Scene transition backdrop was turned off automatically: ";
 "已自动关闭此视频的过渡底图：" = "This video's transition backdrop was turned off automatically: ";
+"场景过渡底图未就绪：" = "Scene transition backdrop is not ready: ";
+"此视频的过渡底图未就绪：" = "This video's transition backdrop is not ready: ";
+"已恢复上次保存的订阅；请重新读取以确认当前 Steam 账号。" = "Saved subscriptions were restored. Read them again to confirm the current Steam account.";
 "已选择" = "Selected";
 "帧率" = "Frame Rate";
 "帧率上限" = "Frame Rate Limit";

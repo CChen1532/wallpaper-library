@@ -180,9 +180,8 @@ import Combine
                 try await SpaceBackdropCompatibility.check(backdrop, displayID: configuration.displayID)
                 backdropCompatibilityIssue = nil
             } catch let mismatch as SpaceBackdropCompatibilityFailure {
-                UserDefaults.standard.set(false, forKey: SceneBackdropConfiguration.preferenceKey)
-                backdropCompatibilityIssue = "已自动关闭场景过渡底图：" + mismatch.localizedDescription
-                configuration.backdrop = nil
+                backdropCompatibilityIssue = "场景过渡底图未就绪：" + mismatch.localizedDescription
+                throw BackendError.message(backdropCompatibilityIssue!)
             }
         }
         guard !shuttingDown, request == sceneRequestRevision else { return }
@@ -325,10 +324,8 @@ import Combine
         } catch is CancellationError { return }
         catch let mismatch as SpaceBackdropCompatibilityFailure {
             guard revision == stateRevision, !shuttingDown else { return }
-            preferences.enabled = false
-            videoBackdropPreferences.save(preferences, for: video)
-            backdropCompatibilityIssue = "已自动关闭此视频的过渡底图：" + mismatch.localizedDescription
-            videoBackdropIssue = nil
+            backdropCompatibilityIssue = "此视频的过渡底图未就绪：" + mismatch.localizedDescription
+            videoBackdropIssue = backdropCompatibilityIssue
         } catch {
             guard revision == stateRevision, !shuttingDown else { return }
             videoBackdropIssue = "视频 Space 过渡底图未匹配：" + error.localizedDescription

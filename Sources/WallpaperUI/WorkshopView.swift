@@ -295,6 +295,10 @@ struct WorkshopView: View {
                 if workshop.activity == .subscriptions { ProgressView("正在读取项目…").controlSize(.small) }
             }
             if workshop.subscriptionReadAt != nil {
+                if workshop.subscriptionCacheLoaded {
+                    Label("已恢复上次保存的订阅；请重新读取以确认当前 Steam 账号。", systemImage: "clock.arrow.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Text(String(format: AppStrings.text("订阅 %d 项，可读取 %d 项", locale: locale), workshop.subscriptionCount, workshop.subscriptions.count)).font(.caption).foregroundStyle(.secondary)
                 Text("已移除或不公开的项目可能无法读取。手动删除的壁纸会跳过；重新下载前可恢复同步。")
                     .font(.caption).foregroundStyle(.secondary)

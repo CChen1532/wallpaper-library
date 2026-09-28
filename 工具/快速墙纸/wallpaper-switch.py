@@ -28,6 +28,7 @@ SUPPORTED_MACOS = ('15.8', '24H23')
 # Schema observed on the supported macOS build. UUIDs, Space counts, image
 # choices and timestamps are excluded; structural keys and node types are not.
 SUPPORTED_SCHEMA = '8c5d6761ee52272e7952fbfdd0ff3d2782d90cd051d0e78f0bdc983a3db2d53d'
+SUPPORTED_SHARED_SCHEMA = '433decfbfbc5c4c064f764512dd89a19089fd7c52fd9be406185ed2b074b64c6'
 
 
 class CompatibilityMismatch(ValueError):
@@ -69,10 +70,11 @@ def schema_fingerprint(document):
         raise CompatibilityMismatch('系统墙纸配置结构未知，已停止自动过渡底图') from error
 
 
-def check_compatibility(state, document, release=None, expected_schema=SUPPORTED_SCHEMA):
+def check_compatibility(state, document, release=None, expected_schema=None):
     release = release or macos_release()
     fingerprint = schema_fingerprint(document)
-    if release != SUPPORTED_MACOS or fingerprint != expected_schema:
+    accepted = {expected_schema} if expected_schema else {SUPPORTED_SCHEMA, SUPPORTED_SHARED_SCHEMA}
+    if release != SUPPORTED_MACOS or fingerprint not in accepted:
         raise CompatibilityMismatch('此 macOS 版本或墙纸配置结构未经验证，已停止自动过渡底图')
     # Diagnostic evidence only. The bundled constants, not this writable file,
     # authorize future writes. Restoration never depends on this check.
@@ -169,6 +171,12 @@ def validate_all_spaces(document, display_uuid, space_uuids):
     value is journalled, so preserve those missing entries on restoration.
     """
     shared = document.get('AllSpacesAndDisplays')
+    # The native all-Spaces switch clears both maps. This is another known
+    # baseline, not an incompatible OS upgrade. Preserve its shared selection.
+    if (isinstance(shared, dict) and shared.get('Type') == 'individual' and
+            isinstance(shared.get('Desktop'), dict) and
+            document.get('Spaces') == {} and document.get('Displays') == {}):
+        return
     if not isinstance(shared, dict) or shared.get('Type') != 'idle' or 'Desktop' in shared:
         raise CompatibilityMismatch('全空间墙纸配置不是已验证的 idle 形式，拒绝改动')
     spaces, displays = document.get('Spaces'), document.get('Displays')
@@ -187,7 +195,7 @@ def validate_all_spaces(document, display_uuid, space_uuids):
 
 def prepare(document, display_uuid, space_uuids, image, all_spaces_visible=False):
     global_entry = document.get('AllSpacesAndDisplays', {})
-    if isinstance(global_entry, dict) and 'Desktop' in global_entry:
+    if not all_spaces_visible and isinstance(global_entry, dict) and 'Desktop' in global_entry:
         raise ValueError('当前启用了全空间壁纸，不能安全地只改选定桌面')
     after = {'present': True, 'value': image_desktop(image)}
     if all_spaces_visible:
@@ -202,6 +210,10 @@ def prepare(document, display_uuid, space_uuids, image, all_spaces_visible=False
              'after': {'present': True, 'value': {}}},
             {'path': ['SystemDefault'], 'before': selected(system), 'after': copy.deepcopy(after)},
         ]
+        if not displays:
+            patches.append({'path': [], 'field': 'Displays',
+                            'before': selected(document, 'Displays'),
+                            'after': selected(document, 'Displays')})
         # macOS can retain records for an inactive historical display even
         # when NSScreen reports one active screen. Preserve each known record.
         for uuid in sorted(displays):
@@ -312,8 +324,55 @@ def removed_display_from_all_spaces(document, original, patches):
     return result
 
 
-def merge(document, patches, restore=False, original=None):
+def normalize_shared_registration(document, original, patches, known_spaces, display):
+    """Undo only native materialization of an originally shared selection.
+
+    Registration can create per-Space nodes before the all-Spaces switch is
+    pressed. Accept only inventoried scopes containing our exact image and
+    unchanged screen-saver selectors; foreign edits remain recovery conflicts.
+    """
+    if not original or original.get('Spaces') != {} or original.get('Displays') != {}:
+        return document
+    shared = original.get('AllSpacesAndDisplays', {})
+    current = document.get('AllSpacesAndDisplays', {})
+    if shared.get('Type') != 'individual' or current.get('Type') != 'idle':
+        return document
+    idle = copy.deepcopy(shared)
+    idle.pop('Desktop', None)
+    idle['Type'] = 'idle'
+    if semantic(current) != semantic(idle):
+        return document
+    scene = next((p['after'] for p in patches if p['path'] == ['AllSpacesAndDisplays']
+                  and p.get('field', 'Desktop') == 'Desktop'), None)
+    spaces, displays = document.get('Spaces'), document.get('Displays')
+    if (scene is None or not isinstance(spaces, dict) or not spaces or
+            not set(spaces).issubset(known_spaces) or not isinstance(displays, dict) or
+            not set(displays).issubset({display})):
+        return document
+    idle_options = [selected(shared, 'Idle'), selected(original.get('SystemDefault', {}), 'Idle')]
+    def owned(node):
+        return (isinstance(node, dict) and set(node) == {'Type', 'Desktop', 'Idle'} and
+                node['Type'] == 'individual' and same_image(selected(node), scene) and
+                any(semantic(selected(node, 'Idle')) == semantic(value) for value in idle_options))
+    for space in spaces.values():
+        if (not isinstance(space, dict) or set(space) != {'Default', 'Displays'} or
+                not owned(space['Default']) or not isinstance(space['Displays'], dict) or
+                not set(space['Displays']).issubset({display}) or
+                not all(owned(node) for node in space['Displays'].values())):
+            return document
+    if not all(owned(node) for node in displays.values()):
+        return document
+    result = copy.deepcopy(document)
+    result['Spaces'] = {}
+    result['Displays'] = {}
+    result['AllSpacesAndDisplays'] = copy.deepcopy(shared)
+    put(result['AllSpacesAndDisplays'], scene)
+    return result
+
+
+def merge(document, patches, restore=False, original=None, known_spaces=(), display=None):
     if restore:
+        document = normalize_shared_registration(document, original, patches, known_spaces, display)
         document = removed_display_from_all_spaces(document, original, patches)
     result = copy.deepcopy(document)
     targets = []
@@ -443,7 +502,9 @@ class Switcher:
             raise ValueError('原始备份校验失败，拒绝复原')
         raw, document = load_store(self.store)
         restored = merge(document, session['patches'], restore=True,
-                         original=plistlib.loads(backup))
+                         original=plistlib.loads(backup),
+                         known_spaces={row['uuid'] for row in session['spaces']},
+                         display=session['display'])
         session['state'] = 'pending_restore'
         self.save(session)
         commit_store(self.store, raw, restored)

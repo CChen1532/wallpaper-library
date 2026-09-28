@@ -231,6 +231,13 @@ import UniformTypeIdentifiers
         } catch is SpaceBackdropCompatibilityFailure {
             check(true, "不兼容墙纸格式作为可自动停用的独立错误返回")
         }
+        let mismatchPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
+        let mismatchModel = LibraryModel(backend: SceneTestBackend(), scenePlayer: mismatchPlayer)
+        var mismatchConfig = configuration("blocked-backdrop")
+        mismatchConfig.backdrop = incompatibleSettings
+        await mismatchModel.playPreparedScene(mismatchConfig)
+        check(!mismatchPlayer.isActive && !hasLivePID("blocked-backdrop") && mismatchModel.error != nil,
+              "已请求匹配底图却不兼容时拒绝启动场景，不静默露出旧壁纸")
         let backend = SceneTestBackend()
         let model = LibraryModel(backend: backend, scenePlayer: coordinated,
                                  sceneRuntimeURL: root.appendingPathComponent("missing-runtime"))

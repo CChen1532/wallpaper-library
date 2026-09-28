@@ -101,6 +101,17 @@ import Foundation
         model.receiveSubscriptions(["101", "103", "107", "110"])
         try await idle()
         check(model.subscriptionCount == 4, "fresh subscription list published")
+        let restored = WorkshopModel(storage: storage, defaults: defaults, component: executable,
+                                     metadata: { _ in throw WorkshopFailure.network })
+        let restoreDeadline = Date().addingTimeInterval(3)
+        while !restored.subscriptionCacheLoaded && Date() < restoreDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        check(restored.subscriptionCacheLoaded && restored.subscriptionCount == 4 &&
+              restored.subscriptions.map(\.id) == ["101", "103", "107", "110"],
+              "saved subscriptions return after a model restart without network access")
+        check(defaults.string(forKey: "workshopAccount") == "test_user",
+              "Steam account name survives a model restart")
         failMetadata = true; model.receiveSubscriptions(["999"]); try await idle()
         check(model.subscriptions.map(\.id) == ["101", "103", "107", "110"], "failed list refresh preserves earlier subscriptions")
         model.recordRemoval(storage.destination("103"))
