@@ -21,7 +21,8 @@ if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ||
         mirage_root="$PWD/dist/MirageFocusFollowSource"
         target='dist/MirageFocusFollowRuntime'
         patch="$PWD/patches/mirage-focus-follow.patch"
-        expected_files=$'SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+        solar_patch="$PWD/patches/mirage-solar-scene-load.patch"
+        expected_files=$'SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cppm\nSceneRenderer/Sources/SceneRenderer/Domain/Scene/World.cpp\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp\nSceneRenderer/Tests/ScriptCompatibilityRegression.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
     elif [[ "$mode" == '--managed-transition' ]]; then
         mirage_root="$PWD/dist/MirageSpaceTransitionSource"
         target='dist/MirageSpaceTransitionRuntime'
@@ -39,6 +40,11 @@ if [[ "$mode" == '--single-space' || "$mode" == '--focus-follow' ||
     git -C "$mirage_root" apply --reverse --check "$patch" || {
         printf 'Isolated patch is not applied\n' >&2; exit 2;
     }
+    if [[ "$mode" == '--focus-follow' ]]; then
+        git -C "$mirage_root" apply --reverse --check "$solar_patch" || {
+            printf 'Solar scene patch is not applied\n' >&2; exit 2;
+        }
+    fi
     [[ "$(git -C "$mirage_root" diff --name-only)" == "$expected_files" ]] || {
         printf 'Isolated source has unexpected tracked changes\n' >&2; exit 2;
     }

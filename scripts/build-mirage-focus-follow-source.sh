@@ -24,10 +24,14 @@ elif [[ "$variant" == '--desktop-layer' ]]; then
 else
     isolated="$project_root/dist/MirageFocusFollowSource"
     patch="$project_root/patches/mirage-focus-follow.patch"
+    solar_patch="$project_root/patches/mirage-solar-scene-load.patch"
 fi
 revision='d639939b925f08cfa0e5227ed9bea79529348fd6'
 ffmpeg_root="$upstream/Mirage/build/ffmpeg/arm64"
 expected_files=$'SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+if [[ "$variant" == 'default' ]]; then
+    expected_files=$'SceneRenderer/Sources/SceneRenderer/AppRuntime/Controller/WallpaperEngineRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cpp\nSceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cppm\nSceneRenderer/Sources/SceneRenderer/Domain/Scene/World.cpp\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.h\nSceneRenderer/Sources/SceneRenderer/Host/macOS/MacDesktopHost.mm\nSceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp\nSceneRenderer/Tests/ScriptCompatibilityRegression.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.cpp\nSceneRenderer/Tools/SceneWallpaper/ControlChannel.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.h\nSceneRenderer/Tools/SceneWallpaper/SceneSnapshot.mm\nSceneRenderer/Tools/SceneWallpaper/WallpaperApp.cpp'
+fi
 
 die() { printf 'Mirage focus-follow source: %s\n' "$*" >&2; exit 2; }
 [[ -d "$upstream/SceneRenderer" && -f "$patch" ]] || die 'pinned source or patch is missing'
@@ -39,10 +43,15 @@ if [[ ! -e "$isolated" ]]; then
     mkdir -p "$project_root/dist"
     git clone --local --no-hardlinks --single-branch --branch v1.1.4 "$upstream" "$isolated"
     git -C "$isolated" apply "$patch"
+    if [[ "$variant" == 'default' ]]; then git -C "$isolated" apply "$solar_patch"; fi
 fi
 
 [[ "$(git -C "$isolated" rev-parse HEAD)" == "$revision" ]] || die 'isolated revision changed'
 git -C "$isolated" apply --reverse --check "$patch" || die 'focus-follow patch missing or changed'
+if [[ "$variant" == 'default' ]]; then
+    git -C "$isolated" apply --reverse --check "$solar_patch" ||
+        die 'solar scene patch missing or changed'
+fi
 [[ "$(git -C "$isolated" diff --name-only)" == "$expected_files" ]] || die 'unexpected tracked changes'
 [[ -f "$ffmpeg_root/lib/pkgconfig/libavcodec.pc" ]] || die 'pinned FFmpeg build is missing'
 

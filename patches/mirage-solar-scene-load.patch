@@ -1,0 +1,179 @@
+diff --git a/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cpp b/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cpp
+index a56dcf8..c14e848 100644
+--- a/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cpp
++++ b/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cpp
+@@ -702,6 +702,7 @@ struct FieldScript::Impl {
+     bool             update_takes_arg { false };
+     bool             init_done { false };
+     std::uint64_t    initialization_order { 0 };
++    std::optional<NodeTransformTarget> live_transform_input;
+     JSValue          current_value {
+         JS_UNDEFINED
+     }; // last `value` returned, kept as JSValue for the (value)-arg form
+@@ -4503,6 +4504,10 @@ void JsRuntime::SetInitializationOrder(FieldScript& script, std::uint64_t order)
+     script.m_impl->initialization_order = order;
+ }
+ 
++void JsRuntime::SetLiveTransformInput(FieldScript& script, NodeTransformTarget target) {
++    script.m_impl->live_transform_input = target;
++}
++
+ void JsRuntime::SetImplicitAnimation(
+     FieldScript& script, std::shared_ptr<sr::SceneAnimationPlayback> playback) {
+     if (! script.m_impl || script.m_impl->rt != m_impl.get()) return;
+@@ -4651,6 +4656,22 @@ void JsRuntime::TickAll() {
+         // unbound, restore the original stub captured at bootstrap.
+         BindScriptSelf(ctx, fs.get(), m_impl->host.default_layer);
+         m_impl->host.active_field_script = fs.get();
++        // A different script can set this layer's transform earlier in the
++        // frame. The field's saved return value is stale in that case and
++        // would otherwise overwrite the newer transform after TickAll.
++        if (I->update_takes_arg && I->node && I->live_transform_input) {
++            Eigen::Vector3f value;
++            switch (*I->live_transform_input) {
++                case NodeTransformTarget::Translate: value = I->node->Translate(); break;
++                case NodeTransformTarget::Scale: value = I->node->Scale(); break;
++                case NodeTransformTarget::Rotation:
++                    value = I->node->Rotation() * static_cast<float>(kRadToDeg);
++                    break;
++            }
++            JSValue current = MakeVec3(ctx, value.x(), value.y(), value.z());
++            JS_FreeValue(ctx, I->current_value);
++            I->current_value = current;
++        }
+         JSValue ret;
+         if (I->update_takes_arg) {
+             JSValue args[1] = { JS_DupValue(ctx, I->current_value) };
+diff --git a/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cppm b/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cppm
+index 6efbb1e..091db4e 100644
+--- a/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cppm
++++ b/SceneRenderer/Sources/SceneRenderer/AppRuntime/Scripting/ScriptRuntime.cppm
+@@ -170,6 +170,15 @@ struct PropDescriptor {
+ 
+ class FieldScript;
+ 
++// Transform field scripts receive the current local node value before each
++// update. Other scripts may have changed that node earlier in the same tick.
++enum class NodeTransformTarget
++{
++    Translate,
++    Scale,
++    Rotation,
++};
++
+ struct LayerAssetReference {
+     std::string_view               path;
+     std::optional<std::string_view> workshop_id;
+@@ -197,6 +206,7 @@ public:
+     // Pending initializers run in authored layer order once the complete scene
+     // graph is available.
+     void SetInitializationOrder(FieldScript& script, std::uint64_t order);
++    void SetLiveTransformInput(FieldScript& script, NodeTransformTarget target);
+     void SetImplicitAnimation(FieldScript& script,
+                               std::shared_ptr<sr::SceneAnimationPlayback> playback);
+ 
+@@ -332,15 +342,6 @@ public:
+ 
+ // --- per-Scene script runtime + actuators -----------------------------------
+ 
+-// Where on a SceneNode the transform-style script value should be written.
+-// Used by MakeNodeTransformApply to manufacture the corresponding closure.
+-enum class NodeTransformTarget
+-{
+-    Translate, // Vec3 → SceneNode m_translate (origin field)
+-    Scale,     // Vec3 → SceneNode m_scale (scale field)
+-    Rotation,  // Vec3 → SceneNode m_rotation (angles field)
+-};
+-
+ // One write-back binding from script.last_value() to whatever subsystem
+ // owns the bound field. The closure does the type coercion + write; the
+ // generic ScriptScene::Tick has no idea what 'apply' does.
+diff --git a/SceneRenderer/Sources/SceneRenderer/Domain/Scene/World.cpp b/SceneRenderer/Sources/SceneRenderer/Domain/Scene/World.cpp
+index 07bf3c8..ba4d5ef 100644
+--- a/SceneRenderer/Sources/SceneRenderer/Domain/Scene/World.cpp
++++ b/SceneRenderer/Sources/SceneRenderer/Domain/Scene/World.cpp
+@@ -1670,10 +1670,11 @@ std::string Scene::EnsureLinkRenderTarget(WallpaperLayerId source_layer,
+     if (renderTargets.count(link_key) == 0) {
+         auto sz                 = source_node.Size();
+         renderTargets[link_key] = {
+-            .width      = sz.x() > 0 ? static_cast<i32>(sz.x()) : ortho[0],
+-            .height     = sz.y() > 0 ? static_cast<i32>(sz.y()) : ortho[1],
+-            .allowReuse = false,
+-            .hdr_format = hdr_render_targets,
++            .width                = sz.x() > 0 ? static_cast<i32>(sz.x()) : ortho[0],
++            .height               = sz.y() > 0 ? static_cast<i32>(sz.y()) : ortho[1],
++            .allowReuse           = false,
++            .clear_on_first_write = true,
++            .hdr_format           = hdr_render_targets,
+         };
+     }
+     return link_key;
+diff --git a/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp b/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp
+index 3f63155..7811a25 100644
+--- a/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp
++++ b/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp
+@@ -1166,6 +1166,8 @@ void WireFieldScripts(ParseContext& context, const rstd::sync::Arc<SceneNode>& n
+         auto* fs =
+             rt.MakeFieldScript(sb.source, sha, kind, props, initial_value, node, std::move(clones));
+         if (! fs) continue;
++        if (field == "origin" || field == "scale" || field == "angles")
++            rt.SetLiveTransformInput(*fs, tgt);
+         RegisterFieldScriptMetadata(context, node, fs);
+         if (is_visible && ! is_container && node != nullptr && node->ID() >= 0 &&
+             fs->HasUpdate()) {
+diff --git a/SceneRenderer/Tests/ScriptCompatibilityRegression.cpp b/SceneRenderer/Tests/ScriptCompatibilityRegression.cpp
+index 5810114..bf18c9b 100644
+--- a/SceneRenderer/Tests/ScriptCompatibilityRegression.cpp
++++ b/SceneRenderer/Tests/ScriptCompatibilityRegression.cpp
+@@ -1579,6 +1579,43 @@ void TestFieldScriptUpdateDetection() {
+           "a toggling visible binding exports update");
+ }
+ 
++void TestTransformFieldReadsLiveNodeValue() {
++    sr::Scene scene;
++    auto body = rstd::sync::Arc<sr::SceneNode>::make(
++        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "body");
++    scene.sceneGraph->AppendChild(body.clone());
++
++    sr::script::JsRuntime runtime;
++    auto* driver = runtime.MakeFieldScript(
++        R"JS(
++            let size = 0.25;
++            export function update() {
++                thisScene.getLayer('body').scale = {x: size, y: size, z: size};
++                size += 0.25;
++                return true;
++            }
++        )JS",
++        "test/transform_driver", sr::script::FieldKind::Bool,
++        Parse("{}"), Parse("true"), scene.sceneGraph.as_ptr());
++    auto* mirror = runtime.MakeFieldScript(
++        "export function update(value) { return value; }",
++        "test/transform_mirror", sr::script::FieldKind::Vec3,
++        Parse("{}"), Parse("\"1 1 1\""), body.as_ptr());
++    Check(driver != nullptr && mirror != nullptr, "transform driver and mirror compile");
++    if (!driver || !mirror) return;
++    runtime.SetLiveTransformInput(*mirror, sr::script::NodeTransformTarget::Scale);
++    runtime.SetSceneRoot(scene.sceneGraph.as_ptr());
++
++    runtime.TickAll();
++    const auto* first = std::get_if<sr::script::Vec3Value>(&mirror->last_value());
++    Check(first && std::abs(first->x - 0.25) < 0.001,
++          "mirror reads a scale written earlier in the same tick");
++    runtime.TickAll();
++    const auto* second = std::get_if<sr::script::Vec3Value>(&mirror->last_value());
++    Check(second && std::abs(second->x - 0.5) < 0.001,
++          "mirror does not reuse its previous return value");
++}
++
+ void TestUserShortcutOpening() {
+     sr::SceneNode node({ 960.0f, 540.0f, 0.0f },
+                        { 1.0f, 1.0f, 1.0f },
+@@ -1680,6 +1717,7 @@ int main() {
+     TestMixedAudioBufferResolutions();
+     TestSceneLayerEnumeration();
+     TestFieldScriptUpdateDetection();
++    TestTransformFieldReadsLiveNodeValue();
+     TestUserShortcutOpening();
+     if (g_failures == 0) std::cout << "ScriptCompatibilityRegression: ok\n";
+     return g_failures == 0 ? 0 : 1;
