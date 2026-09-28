@@ -94,6 +94,17 @@ struct SceneInspectorSettings: View {
                        set: { value.wrappedValue = .number($0) })
     }
 
+    // SwiftUI's Slider(step:) asks AppKit to draw a tick for every increment.
+    // Some author sliders have thousands of increments, which makes scrolling
+    // spend most of its main-thread time in NSSliderTickMarks.drawRect.
+    // Keep the saved step semantics without creating those visual tick marks.
+    private func snappedSliderValue(_ value: Binding<Double>, in range: ClosedRange<Double>, step: Double) -> Binding<Double> {
+        Binding(get: { value.wrappedValue }, set: { raw in
+            let snapped = range.lowerBound + ((raw - range.lowerBound) / step).rounded() * step
+            value.wrappedValue = min(range.upperBound, max(range.lowerBound, snapped))
+        })
+    }
+
     private func stringBinding(_ property: ScenePropertyDefinition, values: [String: ScenePropertyValue]) -> Binding<String> {
         let value = propertyBinding(property, values: values)
         return Binding(get: { if case .string(let string) = value.wrappedValue { return string }; return "" },
@@ -138,7 +149,8 @@ struct SceneInspectorSettings: View {
                     Text(numberBinding(property, values: values).wrappedValue.formatted()).foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
-                Slider(value: numberBinding(property, values: values), in: minimum...maximum, step: step)
+                Slider(value: snappedSliderValue(numberBinding(property, values: values),
+                                                 in: minimum...maximum, step: step), in: minimum...maximum)
                     .accessibilityLabel(AppStrings.text(property.label, locale: locale))
             }.padding(10).modifier(HoverHighlight())
         case .choice(let choices):
@@ -212,7 +224,8 @@ struct SceneInspectorSettings: View {
     private func slider(_ label: String, _ path: WritableKeyPath<ScenePreferences, Double>, range: ClosedRange<Double>, step: Double) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack { Text(LocalizedStringKey(label)); Spacer(); Text(value(path).wrappedValue.formatted(.number.precision(.fractionLength(0...2)))).monospacedDigit().foregroundStyle(.secondary) }
-            Slider(value: value(path), in: range, step: step).accessibilityLabel(AppStrings.text(label, locale: locale))
+            Slider(value: snappedSliderValue(value(path), in: range, step: step), in: range)
+                .accessibilityLabel(AppStrings.text(label, locale: locale))
         }.padding(10)
     }
 
