@@ -280,7 +280,9 @@ struct SceneInspectorSettings: View {
             if catalogLoading { ProgressView("正在读取场景效果…").font(.caption) }
             if !catalog.properties.isEmpty {
                 Text("场景效果").font(.headline)
-                VStack(spacing: 0) {
+                // Large scenes can expose 100+ native controls. Only build rows near
+                // the inspector's visible scroll region to keep selection responsive.
+                LazyVStack(spacing: 0) {
                     ForEach(Array(catalog.properties.enumerated()), id: \.element.id) { index, property in
                         if index > 0 { Divider().padding(.horizontal, 10) }
                         propertyRow(property, values: values)
