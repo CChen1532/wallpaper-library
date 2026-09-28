@@ -191,7 +191,8 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
     }
 
     static func recover(_ configuration: SceneBackdropConfiguration) throws {
-        guard configuration.recoveryPending else { return }
+        // A legacy journal may say restored while its generated image remains
+        // selected. The helper also checks that case using verified ancestry.
         let session = SceneBackdropLease(configuration: configuration)
         try session.launch(["restore"])
         try session.finish()

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlparse, unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 STORE = Path.home() / 'Library/Application Support/com.apple.wallpaper/Store/Index.plist'
@@ -439,10 +440,26 @@ def resolve_spaces(inv, spec):
     return selected_rows
 
 
+def verify_restoration(store, expected, patches, clock=time.monotonic, sleep=time.sleep):
+    """Observe the affected fields after the agent reload, not just our write."""
+    started = clock()
+    while True:
+        _, current = load_store(store)
+        for patch in patches:
+            field = patch.get('field', 'Desktop')
+            if semantic(selected(entry(current, patch['path']), field)) != semantic(
+                    selected(entry(expected, patch['path']), field)):
+                raise ValueError('系统在恢复后再次改变墙纸配置，恢复记录仍保留')
+        if clock() - started >= 3:
+            return
+        sleep(.2)
+
+
 class Switcher:
-    def __init__(self, store=STORE, state=STATE, refresh=reload_agent):
+    def __init__(self, store=STORE, state=STATE, refresh=reload_agent, verify=verify_restoration):
         self.store, self.state, self.refresh = store, state, refresh
         self.session = state / 'session.plist'
+        self.verify = verify
 
     def read_session(self):
         if not self.session.exists():
@@ -454,11 +471,68 @@ class Switcher:
 
     def save(self, session):
         atomic(self.session, encoded(session))
+        # Keep each lease's own journal, independently of the next lease.
+        backup = Path(session['backup'])
+        if backup.parent.parent.resolve() == self.state.resolve() and backup.is_file():
+            atomic(backup.parent / 'session.plist', encoded(session))
+
+    def stale_shared_image(self, document):
+        shared = document.get('AllSpacesAndDisplays', {})
+        if not isinstance(shared, dict) or 'Desktop' not in shared:
+            return None
+        try:
+            choices = shared['Desktop']['Content']['Choices']
+            if len(choices) != 1 or choices[0]['Provider'] != 'com.apple.wallpaper.choice.image':
+                return None
+            files = choices[0]['Files']
+            if len(files) != 1:
+                return None
+            url = urlparse(files[0]['relative'])
+            image = Path(unquote(url.path))
+            if url.scheme == 'file' and not url.netloc and image.parent.parent.resolve() == self.state.resolve():
+                return image
+        except (KeyError, TypeError, IndexError):
+            pass
+        return None
+
+    def ancestor(self, image):
+        candidates = {}
+        paths = [self.session] + list(self.state.glob('*/session.plist')) + list(self.state.glob('*/previous-session.plist'))
+        for path in paths:
+            try:
+                record = plistlib.loads(path.read_bytes())
+                if record.get('image') != str(image):
+                    continue
+                if record.get('schema') != 1 or record.get('store') != str(self.store.resolve()):
+                    continue
+                backup = Path(record['backup'])
+                if backup != image.parent / 'original.plist' or backup.is_symlink() or image.parent.is_symlink():
+                    continue
+                raw = backup.read_bytes()
+                if digest(raw) != record['backup_sha256']:
+                    continue
+                original = plistlib.loads(raw)
+                # Regenerate the allowed patch set: checksums alone do not
+                # authorize arbitrary fields from an old journal.
+                expected = prepare(original, record['display'], [r['uuid'] for r in record['spaces']],
+                                   image, all_spaces_visible=True)
+                if semantic(expected) != semantic(record['patches']):
+                    continue
+                key = digest(encoded({'backup': record['backup_sha256'], 'patches': semantic(expected)}))
+                candidates[key] = record
+            except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+                continue
+        if len(candidates) != 1:
+            raise ValueError('遗留临时底图的原始备份缺失或不唯一，未将它当作原壁纸；恢复记录保留')
+        return next(iter(candidates.values()))
 
     def apply(self, image, inv, rows, all_spaces_visible=False):
         old = self.read_session()
         if old and old['state'] != 'restored':
             raise ValueError('已有待恢复壁纸；先执行 restore，避免覆盖原始备份')
+        # Resolve inherited temporary pictures BEFORE accepting a new baseline.
+        self.restore()
+        old = self.read_session()
         image = image.expanduser().resolve(strict=True)
         if not image.is_file() or image.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.heic', '.heif'):
             raise ValueError('请选择 PNG、JPEG 或 HEIC 普通图片文件')
@@ -491,12 +565,31 @@ class Switcher:
 
     def restore(self):
         session = self.read_session()
-        if not session:
-            print('没有待恢复记录；未改动系统。')
-            return
-        if session['state'] == 'restored':
-            print('此记录已复原；未重复改动系统。')
-            return
+        if session and session['state'] != 'restored':
+            self.restore_record(session)
+        seen = set()
+        for _ in range(16):
+            _, document = load_store(self.store)
+            image = self.stale_shared_image(document)
+            if image is None:
+                return
+            if str(image) in seen:
+                raise ValueError('临时底图恢复链存在循环，未接受它作为原壁纸')
+            seen.add(str(image))
+            ancestor = self.ancestor(image)
+            # Preflight the merge before replacing the current recovery pointer.
+            raw = Path(ancestor['backup']).read_bytes()
+            merge(document, ancestor['patches'], restore=True, original=plistlib.loads(raw),
+                  known_spaces={r['uuid'] for r in ancestor['spaces']}, display=ancestor['display'])
+            current = self.read_session()
+            if current:
+                atomic(self.state / ('recovery-before-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.plist'), encoded(current))
+            ancestor['state'] = 'pending_restore'
+            self.save(ancestor)
+            self.restore_record(ancestor)
+        raise ValueError('临时底图恢复链过长，恢复记录保留')
+
+    def restore_record(self, session):
         backup = Path(session['backup']).read_bytes()
         if digest(backup) != session['backup_sha256']:
             raise ValueError('原始备份校验失败，拒绝复原')
@@ -509,9 +602,10 @@ class Switcher:
         self.save(session)
         commit_store(self.store, raw, restored)
         self.refresh()
+        self.verify(self.store, restored, session['patches'])
         session['state'] = 'restored'
         self.save(session)
-        print('原壁纸配置已复原并请求刷新（包括原航拍选择）；未改动屏保。', flush=True)
+        print('原壁纸配置已复原并稳定确认（包括原航拍选择）；未改动屏保。', flush=True)
 
 
 def lease(switcher, image, inv, rows, wait):

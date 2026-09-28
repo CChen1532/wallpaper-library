@@ -33,7 +33,7 @@
 - 已安装 /Applications/WallpaperUI.app 0.2.61；构建副本 dist/WallpaperUI.app。
 - 回退包：dist/.WallpaperUIPrevious/Installed-0.2.59-before-0.2.61.app.backup。
 - 已在应用设置重新开启场景自动底图。测试场景B实际启动后，UI 显示桌面播放，账本 applied，全空间静帧路径与租约一致；稳定确认 3.53 秒、1 次开关操作，16/17 个样本匹配。
-- 停止后账本 restored，系统配置排除 LastSet/LastUse 时间戳后与本次启动前备份完全一致；随后恢复当前庭院场景播放。
+- 当轮停止后账本 restored，配置与最近启动前备份一致；后续发现该备份本身已继承残留临时图，因此这不证明最初系统壁纸恢复。问题和补救见[阶段2DN](UI-阶段2DN-原壁纸恢复链修复.md)。
 - 离线检查和配置匹配不等于逐帧 Space 动画验收；Steam 真实账号跨更新登录保留还需真实登录会话，未代替用户登录。
 
 ## 只读研究
