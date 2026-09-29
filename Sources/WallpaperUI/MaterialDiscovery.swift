@@ -1,6 +1,22 @@
 import Foundation
 
 enum MaterialRemoval {
+    struct Request: Identifiable {
+        let payload: URL
+        let target: URL
+        let stamp: String
+        let title: String
+        var id: String { target.path }
+        init(payload: URL, title: String, roots: [URL]) throws {
+            self.payload = payload; self.title = title
+            target = try MaterialRemoval.target(for: payload, roots: roots)
+            stamp = try MaterialDiscovery.stamp(payload)
+        }
+    }
+    struct BatchResult {
+        var removed: [URL] = []
+        var failures: [String] = []
+    }
     static func contains(_ parent: URL, _ child: URL) -> Bool {
         let a = parent.standardizedFileURL.resolvingSymlinksInPath().path
         let b = child.standardizedFileURL.resolvingSymlinksInPath().path

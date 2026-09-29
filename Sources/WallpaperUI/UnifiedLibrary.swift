@@ -70,9 +70,15 @@ struct SceneCatalogPayload: Decodable {
         await refresh()
     }
     func didTrash(_ target: URL) async {
-        cached = cached.filter { !MaterialRemoval.contains(target, URL(fileURLWithPath: $0.key)) }
-        scenes.removeAll { MaterialRemoval.contains(target, URL(fileURLWithPath: $0.packagePath)) }
-        if roots.contains(where: { $0.path == target.path }) { MaterialDiscovery.setIncluded(false, folder: target, defaults: defaults); updateRoots() }
+        await didTrash([target])
+    }
+    func didTrash(_ targets: [URL]) async {
+        cached = cached.filter { key, _ in !targets.contains { MaterialRemoval.contains($0, URL(fileURLWithPath: key)) } }
+        scenes.removeAll { scene in targets.contains { MaterialRemoval.contains($0, URL(fileURLWithPath: scene.packagePath)) } }
+        for target in targets where roots.contains(where: { $0.path == target.path }) {
+            MaterialDiscovery.setIncluded(false, folder: target, defaults: defaults)
+        }
+        updateRoots()
         await refresh()
     }
     func start() {

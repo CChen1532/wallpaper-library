@@ -13,7 +13,16 @@ struct NativeLibraryView: View {
     @AppStorage("libraryPage") private var page = LibraryPage.library
     @EnvironmentObject private var catalog: UnifiedLibrary
     @EnvironmentObject private var workshop: WorkshopModel
+    @EnvironmentObject private var collection: LibraryCollectionStore
     @State private var search = ""
+    @State private var showHidden = false
+    @State private var isSelecting = false
+    @State private var batchSelection = GalleryBatchSelection()
+    @State private var visibilityUndo: (ids: Set<String>, hidden: Bool)?
+    @State private var batchMessage: String?
+    @State private var batchTrashPreview: BatchTrashPreview?
+    @State private var rotationUsesSelection = false
+    @State private var selectionRotationDraft = RotationDraft()
     @State private var rotationDraft = RotationDraft()
     @State private var confirmTrash = false
     @State private var trashPayload: URL?
@@ -39,14 +48,16 @@ struct NativeLibraryView: View {
     private var query: String { GalleryNavigation.normalizedQuery(search) }
     private var filtered: [Wallpaper] { model.items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) } }
     private var selectedVideo: Wallpaper? {
-        guard selectedSceneName == nil else { return nil }
+        guard !isSelecting, selectedSceneName == nil else { return nil }
+        guard galleryEntries.contains(where: { $0.id == model.selected }) else { return nil }
         return filtered.first { $0.id == model.selected }
     }
     private var filteredScenes: [SceneCatalogPayload.Entry] {
         sceneEntries.filter { query.isEmpty || ($0.title ?? $0.name).localizedCaseInsensitiveContains(query) || $0.name.localizedCaseInsensitiveContains(query) }
     }
     private var selectedScene: SceneCatalogPayload.Entry? {
-        filteredScenes.first { $0.id == selectedSceneName }
+        guard !isSelecting, galleryEntries.contains(where: { $0.id == selectedSceneName }) else { return nil }
+        return filteredScenes.first { $0.id == selectedSceneName }
     }
     private var selectedSceneLimitations: [String] {
         guard let selectedSceneName else { return [] }
@@ -64,7 +75,7 @@ struct NativeLibraryView: View {
             List(selection: Binding<LibraryPage?>(get: { page }, set: { if let value = $0 { page = value } })) {
                 Section("资料库") {
                     SidebarNavigationLabel(title: "全部壁纸", symbol: "photo.on.rectangle", selected: page == .library)
-                        .badge(sceneEntries.count + model.items.count).tag(LibraryPage.library)
+                        .badge(galleryIndex.matching("").filter { !collection.hiddenIDs.contains($0.visibilityID) }.count).tag(LibraryPage.library)
                     SidebarNavigationLabel(title: "创意工坊", symbol: "square.and.arrow.down", selected: page == .workshop)
                         .tag(LibraryPage.workshop)
                 }
@@ -125,6 +136,7 @@ struct NativeLibraryView: View {
             if page == .scenes || page == .videos { page = .library }
             catalog.start()
             syncRotationFields()
+            rotationUsesSelection = !collection.rotationItems.isEmpty
         }
         .onReceive(catalog.$scenes.combineLatest(model.$items)) { scenes, videos in
             galleryIndex = GalleryIndex(
@@ -135,7 +147,12 @@ struct NativeLibraryView: View {
             if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
         .onChange(of: page) { _, newValue in
+            if newValue != .library { isSelecting = false; batchSelection.clear() }
             if newValue == .rotation && !rotationDraft.isEdited { syncRotationFields() }
+        }
+        .onChange(of: galleryEntries.map(\.id)) { _, ids in batchSelection.retain(ids) }
+        .onChange(of: showHidden) { _, _ in
+            batchSelection.clear(); selectedSceneName = nil; model.selected = nil; focusedWallpaper = nil
         }
         .onChange(of: model.state) { _, state in
             if !rotationDraft.isEdited || rotationDraft.matches(interval: state.interval, mode: state.mode) {
@@ -159,6 +176,11 @@ struct NativeLibraryView: View {
         .sheet(isPresented: $showDiagnostics) { diagnosticsSheet }
         .sheet(isPresented: $showSceneLimitations) { sceneLimitationsSheet }
         .sheet(isPresented: $showScenePreview) { scenePreviewSheet }
+        .sheet(item: $batchTrashPreview) { preview in
+            BatchTrashSheet(requests: preview.requests, skipped: preview.skipped,
+                            cancel: { batchTrashPreview = nil },
+                            confirm: { executeBatchTrash(preview.requests) })
+        }
     }
     // Fill each row within a bounded card size; wider windows still add columns.
     private let galleryCardWidth: CGFloat = 192
@@ -171,15 +193,40 @@ struct NativeLibraryView: View {
         let title: String
         let scene: SceneCatalogPayload.Entry?
         let video: Wallpaper?
+        let visibilityID: String
+        init(id: String, title: String, scene: SceneCatalogPayload.Entry?, video: Wallpaper?) {
+            self.id = id; self.title = title; self.scene = scene; self.video = video
+            visibilityID = LibraryCollectionStore.identity(URL(fileURLWithPath: id))
+        }
         var searchTerms: [String] { [title, scene?.name ?? title] }
+        var rotationWallpaper: RotationWallpaper? {
+            if let scene, scene.error == nil, scene.packageBytes > 0 {
+                return .init(url: URL(fileURLWithPath: id), title: title, kind: .scene, expectedBytes: scene.packageBytes)
+            }
+            if let video, video.playable { return .init(url: video.url, title: title, kind: .video) }
+            return nil
+        }
     }
     private var galleryEntries: [GalleryEntry] {
-        galleryIndex.matching(query)
+        galleryIndex.matching(query).filter { collection.hiddenIDs.contains($0.visibilityID) == showHidden }
     }
+    private var batchEntries: [GalleryEntry] { galleryEntries.filter { batchSelection.ids.contains($0.id) } }
     private var unifiedLibrary: some View {
         let entries = galleryEntries
         return HStack(spacing: 0) {
             VStack(spacing: 0) {
+                HStack {
+                    Picker("壁纸显示", selection: $showHidden) {
+                        Text("可见壁纸").tag(false)
+                        Text("已隐藏").tag(true)
+                    }.pickerStyle(.segmented).frame(width: 220).labelsHidden()
+                        .accessibilityIdentifier("library.visibilityFilter")
+                    Spacer()
+                    Button(LocalizedStringKey(isSelecting ? "完成选择" : "批量管理")) {
+                        isSelecting.toggle(); batchSelection.clear()
+                        selectedSceneName = nil; model.selected = nil
+                    }.accessibilityIdentifier("library.batchMode")
+                }.padding(.horizontal, 24).padding(.top, 14)
                 HStack {
                     Text("\(entries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary)
                     if !query.isEmpty {
@@ -188,21 +235,48 @@ struct NativeLibraryView: View {
                     }
                     Spacer()
                     if catalog.scanning { ProgressView("正在检查素材…").controlSize(.small) }
-                    else if selectedScene == nil && selectedVideo == nil && !entries.isEmpty {
+                    else if !isSelecting && selectedScene == nil && selectedVideo == nil && !entries.isEmpty {
                         Text("选择壁纸，查看详情与播放设置").font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.horizontal, 24).padding(.vertical, 14)
+                if isSelecting {
+                    LibraryBatchBar(selectedCount: batchEntries.count, hidden: showHidden,
+                        canDelete: batchEntries.contains { !MaterialRemoval.isBundled(URL(fileURLWithPath: $0.id)) },
+                        canRotate: batchEntries.contains { $0.rotationWallpaper != nil } && !showHidden,
+                        busy: model.isWorking || workshop.busy,
+                        selectAll: { batchSelection.selectAll(entries.map(\.id)) }, clear: { batchSelection.clear() },
+                        changeVisibility: { updateVisibility(batchEntries, hidden: !showHidden) },
+                        remove: prepareBatchTrash, rotate: { addToRotation(batchEntries) })
+                }
+                if let batchMessage {
+                    HStack {
+                        Text(AppStrings.text(batchMessage, locale: locale)).font(.callout).textSelection(.enabled)
+                        Spacer()
+                        if let undo = visibilityUndo {
+                            Button("撤销") {
+                                collection.setHidden(undo.hidden, ids: undo.ids)
+                                visibilityUndo = nil; self.batchMessage = nil
+                            }.buttonStyle(.link).accessibilityIdentifier("library.undoVisibility")
+                        }
+                        Button("关闭提示", systemImage: "xmark") { self.batchMessage = nil; visibilityUndo = nil }
+                            .labelStyle(.iconOnly).buttonStyle(.plain)
+                    }.padding(.horizontal, 24).padding(.bottom, 12)
+                }
+                if showHidden {
+                    Text("隐藏只影响图库显示；文件保留，所选轮播会跳过隐藏项。")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.bottom, 12)
+                }
                 if let sceneError { issueBanner(AppStrings.text(sceneError, locale: locale)) }
                 if entries.isEmpty && !catalog.scanning {
                     ContentUnavailableView {
-                        Label(LocalizedStringKey(query.isEmpty ? "还没有壁纸" : "没有匹配的壁纸"), systemImage: "photo.on.rectangle")
+                        Label(LocalizedStringKey(!query.isEmpty ? "没有匹配的壁纸" : showHidden ? "没有隐藏的壁纸" : "还没有壁纸"), systemImage: "photo.on.rectangle")
                     } description: {
-                        Text(LocalizedStringKey(query.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词，或清除搜索查看全部壁纸。"))
+                        Text(LocalizedStringKey(!query.isEmpty ? "试试其他关键词，或清除搜索查看全部壁纸。" : showHidden ? "在卡片右键菜单或批量管理中隐藏壁纸，可在这里恢复。" : "添加素材文件夹，自动识别场景和 MP4 视频。"))
                     } actions: {
-                        if query.isEmpty {
+                        if query.isEmpty && !showHidden {
                             Button("添加素材文件夹", action: chooseSceneDirectory).buttonStyle(.borderedProminent)
                             Button("浏览创意工坊") { page = .workshop }
-                        } else {
+                        } else if !query.isEmpty {
                             Button("清除搜索") { search = "" }
                         }
                     }
@@ -221,15 +295,20 @@ struct NativeLibraryView: View {
                                         Group {
                                             if let scene = entry.scene { sceneCard(scene) }
                                             else if let video = entry.video {
-                                                VideoCard(item: video, selected: selectedSceneName == nil && model.selected == video.id,
-                                                    playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id) {
-                                                    keyboardScrollTarget = nil
-                                                    selectedSceneName = nil; model.selected = video.id; focusedWallpaper = video.id
+                                                VideoCard(item: video, selected: isSelecting ? batchSelection.ids.contains(video.id) : selectedSceneName == nil && model.selected == video.id,
+                                                    playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id, selecting: isSelecting) {
+                                                    selectGalleryItem(id: video.id, isScene: false)
                                                 }
                                             }
                                         }.id(entry.id).focused($focusedWallpaper, equals: entry.id)
                                             .onMoveCommand { moveWallpaperSelection($0, columns: columnCount) }
                                             .contextMenu {
+                                                Button(LocalizedStringKey(showHidden ? "恢复显示" : "隐藏壁纸"), systemImage: showHidden ? "eye" : "eye.slash") {
+                                                    updateVisibility([entry], hidden: !showHidden)
+                                                }
+                                                Button("加入轮播", systemImage: "arrow.triangle.2.circlepath") { addToRotation([entry]) }
+                                                    .disabled(showHidden || entry.rotationWallpaper == nil || model.isWorking)
+                                                Divider()
                                                 Button("在访达中显示", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: entry.id)]) }
                                                 Button("移入废纸篓", systemImage: "trash", role: .destructive) { requestTrash(URL(fileURLWithPath: entry.id)) }
                                                     .disabled(model.isWorking || workshop.busy || MaterialRemoval.isBundled(URL(fileURLWithPath: entry.id)))
@@ -260,6 +339,63 @@ struct NativeLibraryView: View {
             }
         }
     }
+    private func selectGalleryItem(id: String, isScene: Bool) {
+        keyboardScrollTarget = nil
+        if isSelecting || NSEvent.modifierFlags.contains(.command) {
+            if !isSelecting {
+                isSelecting = true
+                if let previous = selectedSceneName ?? model.selected {
+                    batchSelection.toggle(previous, visible: galleryEntries.map(\.id))
+                }
+                selectedSceneName = nil; model.selected = nil
+            }
+            batchSelection.toggle(id, visible: galleryEntries.map(\.id), extend: NSEvent.modifierFlags.contains(.shift))
+        } else {
+            selectedSceneName = isScene ? id : nil
+            model.selected = isScene ? nil : id
+        }
+        focusedWallpaper = id
+    }
+    private func updateVisibility(_ entries: [GalleryEntry], hidden: Bool) {
+        let ids = Set(entries.map(\.visibilityID))
+        guard !ids.isEmpty else { return }
+        collection.setHidden(hidden, ids: ids)
+        visibilityUndo = (ids, !hidden)
+        batchMessage = String(format: AppStrings.text(hidden ? "已隐藏 %d 项，可在“已隐藏”中恢复。" : "已恢复显示 %d 项。", locale: locale), ids.count)
+        batchSelection.clear(); selectedSceneName = nil; model.selected = nil; focusedWallpaper = nil
+    }
+    private func addToRotation(_ entries: [GalleryEntry]) {
+        let items = entries.compactMap(\.rotationWallpaper)
+        guard !items.isEmpty else { return }
+        collection.addToRotation(items)
+        rotationUsesSelection = true
+        page = .rotation
+    }
+    private func prepareBatchTrash() {
+        var seen = Set<String>()
+        var requests: [MaterialRemoval.Request] = []
+        let entries = batchEntries
+        for entry in entries {
+            if let request = try? MaterialRemoval.Request(payload: URL(fileURLWithPath: entry.id), title: entry.title, roots: catalog.roots),
+               seen.insert(request.id).inserted { requests.append(request) }
+        }
+        guard !requests.isEmpty else { model.error = "所选壁纸均不可删除，内置素材会保留。"; return }
+        batchTrashPreview = BatchTrashPreview(requests: requests, skipped: entries.count - requests.count)
+    }
+    private func executeBatchTrash(_ requests: [MaterialRemoval.Request]) {
+        let roots = catalog.roots
+        batchTrashPreview = nil
+        Task {
+            guard !workshop.busy else { return }
+            let result = await model.trashWallpapers(requests, roots: roots)
+            for target in result.removed { workshop.recordRemoval(target) }
+            if !result.removed.isEmpty { await catalog.didTrash(result.removed) }
+            visibilityUndo = nil
+            batchMessage = String(format: AppStrings.text("已移入废纸篓 %d 个项目，失败 %d 个。", locale: locale), result.removed.count, result.failures.count)
+            if !result.failures.isEmpty { model.error = result.failures.joined(separator: "\n") }
+            batchSelection.retain(galleryEntries.map(\.id))
+        }
+    }
     private func moveWallpaperSelection(_ direction: MoveCommandDirection, columns: Int) {
         let entries = galleryEntries
         guard !entries.isEmpty else { return }
@@ -269,7 +405,8 @@ struct NativeLibraryView: View {
         switch direction { case .left: move = .left; case .right: move = .right; case .up: move = .up; case .down: move = .down; default: return }
         guard let target = GalleryNavigation.targetIndex(from: index, count: entries.count, columns: columns, direction: move) else { return }
         let entry = entries[target]
-        selectedSceneName = entry.scene?.id; model.selected = entry.video?.id; focusedWallpaper = entry.id
+        if !isSelecting { selectedSceneName = entry.scene?.id; model.selected = entry.video?.id }
+        focusedWallpaper = entry.id
         keyboardScrollTarget = entry.id
     }
 
@@ -278,12 +415,11 @@ struct NativeLibraryView: View {
         let title = item.title ?? item.name
         return GalleryCard(title: title,
                            subtitle: ByteCountFormatter.string(fromByteCount: item.packageBytes, countStyle: .file),
-                           badge: "场景", selected: selectedSceneName == item.id,
+                           badge: "场景", selected: isSelecting ? batchSelection.ids.contains(item.id) : selectedSceneName == item.id,
                            playing: playing, warning: item.error != nil || item.capability?.resourceInspectionAvailable == false,
                            accessibilityKind: "场景壁纸",
-                           playbackStatus: playing ? scenePlayer.statusText : nil) {
-            keyboardScrollTarget = nil
-            selectedSceneName = item.id; model.selected = nil; focusedWallpaper = item.id
+                           playbackStatus: playing ? scenePlayer.statusText : nil, selecting: isSelecting) {
+            selectGalleryItem(id: item.id, isScene: true)
         } cover: {
             SceneCover(folder: item.folder)
         }
@@ -545,12 +681,26 @@ struct NativeLibraryView: View {
         } catch { model.error = error.localizedDescription }
     }
     private var rotationSettings: some View {
+        VStack(spacing: 0) {
+            Picker("轮播来源", selection: $rotationUsesSelection) {
+                Text("所选壁纸").tag(true)
+                Text("默认视频文件夹").tag(false)
+            }.pickerStyle(.segmented).frame(maxWidth: 480).padding(16)
+                .accessibilityIdentifier("rotation.source")
+            if rotationUsesSelection {
+                SelectionRotationView(collection: collection, draft: $selectionRotationDraft) {
+                    showHidden = false; page = .library; isSelecting = true; batchSelection.clear()
+                }
+            } else { defaultRotationSettings }
+        }
+    }
+    private var defaultRotationSettings: some View {
         let applied = model.stateIssue == nil && model.state.rotating
             && rotationDraft.matches(interval: model.state.interval, mode: model.state.mode)
         return Form {
             Section {
                 LabeledContent("当前状态", value: AppStrings.text(model.rotationStatusText, locale: locale))
-                if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: AppStrings.text(model.rotationIntervalText, locale: locale)) }
+                if model.isRotating || model.stateIssue != nil { LabeledContent("当前间隔", value: AppStrings.text(model.rotationIntervalText, locale: locale)) }
             } header: { Text("状态") }
             Section {
                 if let directory = model.capabilities.libraryDirectory {
@@ -598,7 +748,7 @@ struct NativeLibraryView: View {
                         .disabled(rotationDraft.minutes == nil || applied || model.capabilities.rotationModes.isEmpty)
                         .accessibilityIdentifier("rotation.apply")
                     Button("关闭轮播") { Task { await model.perform(.stopRotation) } }
-                        .disabled(!model.state.rotating && model.stateIssue == nil)
+                        .disabled(!model.isRotating && model.stateIssue == nil)
                     if rotationDraft.isEdited {
                         Button("还原当前设置", action: syncRotationFields).buttonStyle(.link)
                     }
@@ -618,12 +768,13 @@ struct NativeLibraryView: View {
                 Text(LocalizedStringKey(scenePlayer.applyingEffects ? "正在应用场景效果…" : model.busy ? "正在切换壁纸…" : scenePlayer.isActive || scenePlayer.phase == .failed ? scenePlayer.statusText : model.stateIssue != nil ? "状态未知" : model.state.running ? "桌面视频播放中" : "桌面待机"))
                     .font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text(LocalizedStringKey(playbackSubtitle)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                if model.selectionRotation.active { Text("所选壁纸轮播中").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading)
-            if selectedSceneName == nil {
+            if selectedSceneName == nil || model.selectionRotation.active {
                 HStack(spacing: 3) {
-                    control("backward.end.fill", "上一段视频", .previous)
-                    control("shuffle", "随机视频", .random)
-                    control("forward.end.fill", "下一段视频", .next)
+                    control("backward.end.fill", model.selectionRotation.active ? "上一张壁纸" : "上一段视频", .previous)
+                    control("shuffle", model.selectionRotation.active ? "随机壁纸" : "随机视频", .random)
+                    control("forward.end.fill", model.selectionRotation.active ? "下一张壁纸" : "下一段视频", .next)
                 }
                 Divider().frame(height: 22)
             }
@@ -635,10 +786,10 @@ struct NativeLibraryView: View {
             Button { Task { await model.perform(.stop) } } label: {
                 Label("停止", systemImage: "stop.fill").font(.system(size: 11, weight: .medium))
             }.help("停止场景或视频，保留视频轮播设置").accessibilityLabel("停止桌面播放")
-                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
+                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.selectionRotation.active && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
             Button("全部关闭") { Task { await model.perform(.off) } }
                 .font(.system(size: 11, weight: .medium)).help("停止场景和视频，并关闭轮播")
-                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.state.rotating && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
+                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.isRotating && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
         }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 14)
             .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -655,7 +806,7 @@ struct NativeLibraryView: View {
         Button { Task { await model.perform(action) } } label: {
             Image(systemName: icon).font(.system(size: 12)).frame(width: 27, height: 27).contentShape(Rectangle())
         }.buttonStyle(.borderless).help(AppStrings.text(title, locale: locale))
-            .accessibilityLabel(AppStrings.text(title, locale: locale)).disabled(model.items.isEmpty || model.isWorking)
+            .accessibilityLabel(AppStrings.text(title, locale: locale)).disabled((!model.selectionRotation.active && model.items.isEmpty) || model.isWorking)
     }
     private func issueBanner(_ text: String) -> some View { Label(text, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading).padding(12) }
     private func importVideos() {
@@ -691,12 +842,14 @@ private struct VideoCard: View {
     let item: Wallpaper
     let selected: Bool
     let playing: Bool
+    let selecting: Bool
     let action: () -> Void
     var body: some View {
         GalleryCard(title: item.title, subtitle: "\(item.width) × \(item.height)",
                     badge: String(format: AppStrings.text("%.0f 秒", locale: locale), item.duration), selected: selected,
                     playing: playing, warning: item.warning != nil || item.decodeWarning,
                     accessibilityKind: "视频壁纸", playbackStatus: playing ? "正在桌面播放" : nil,
+                    selecting: selecting,
                     action: action) {
             VideoCover(item: item)
         }
@@ -713,6 +866,7 @@ private struct GalleryCard<Cover: View>: View {
     let warning: Bool
     let accessibilityKind: String
     let playbackStatus: String?
+    var selecting = false
     let action: () -> Void
     @ViewBuilder let cover: () -> Cover
     @State private var hovered = false
@@ -771,6 +925,9 @@ private struct GalleryCard<Cover: View>: View {
                         .background(Color.accentColor, in: Circle())
                         .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1.5)).padding(10)
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.78)))
+                } else if selecting {
+                    Circle().fill(.black.opacity(0.25)).frame(width: 23, height: 23)
+                        .overlay(Circle().stroke(.white.opacity(0.85), lineWidth: 1.5)).padding(10)
                 }
             }
     }

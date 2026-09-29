@@ -22,6 +22,16 @@ import Combine
     let scenePreparation: ScenePreparationCache
     let videoBackdropPreferences: VideoBackdropPreferencesStore
     let videoBackdrop: VideoBackdropController
+    let collection: LibraryCollectionStore
+    private var rotationObserver: AnyCancellable?
+    lazy var selectionRotation: SelectionRotation = {
+        let rotation = SelectionRotation(items: { [weak self] in self?.collection.rotationCandidates ?? [] },
+            ready: { [weak self] in self.map { !$0.isWorking && !$0.shuttingDown } ?? false },
+            play: { [weak self] item in await self?.playRotationItem(item) ?? false },
+            failure: { [weak self] in self?.error })
+        rotationObserver = rotation.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        return rotation
+    }()
     private let trashItem: (URL) throws -> Void
     private let backdropConfiguration: @MainActor () throws -> SceneBackdropConfiguration?
     private var shuttingDown = false
@@ -32,10 +42,12 @@ import Combine
     var capabilities: BackendCapabilities { backend.capabilities }
     var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || videoBackdrop.transitioning || shuttingDown }
     var selectedWallpaper: Wallpaper? { items.first { $0.id == selected } }
-    var rotationStatusText: String { stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
+    var isRotating: Bool { selectionRotation.active || state.rotating }
+    var rotationStatusText: String { selectionRotation.active ? "所选壁纸轮播中" : stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
     var rotationIntervalText: String {
-        guard stateIssue == nil else { return "未知" }
-        return state.interval.map { $0 % 60 == 0 ? "\($0 / 60) 分钟" : "\($0) 秒" } ?? "未知"
+        guard selectionRotation.active || stateIssue == nil else { return "未知" }
+        let interval = selectionRotation.active ? collection.interval : state.interval
+        return interval.map { $0 % 60 == 0 ? "\($0 / 60) 分钟" : "\($0) 秒" } ?? "未知"
     }
     func selectNextVideo(in visibleIDs: [String], forward: Bool) {
         guard !visibleIDs.isEmpty else { selected = nil; return }
@@ -51,6 +63,7 @@ import Combine
          scenePreparation: ScenePreparationCache? = nil,
          videoBackdropPreferences: VideoBackdropPreferencesStore? = nil,
          videoBackdrop: VideoBackdropController? = nil,
+         collection: LibraryCollectionStore? = nil,
          trashItem: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
          backdropConfiguration: @escaping @MainActor () throws -> SceneBackdropConfiguration? = {
              guard SceneBackdropConfiguration.isEnabled() else { return nil }
@@ -64,6 +77,7 @@ import Combine
         self.scenePreparation = scenePreparation ?? ScenePreparationCache()
         self.videoBackdropPreferences = videoBackdropPreferences ?? VideoBackdropPreferencesStore()
         self.videoBackdrop = videoBackdrop ?? VideoBackdropController()
+        self.collection = collection ?? LibraryCollectionStore()
         self.scenePlayer = scenePlayer ?? ScenePlayer()
         self.sceneRuntimeURL = sceneRuntimeURL ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
             .appendingPathComponent("SceneRuntime", isDirectory: true)
@@ -75,8 +89,9 @@ import Combine
     }
 
     func playScene(root: URL, name: String, title: String, expectedBytes: Int64,
-                   updatingEffects: Bool = false) async {
+                   updatingEffects: Bool = false, fromSelectionRotation: Bool = false) async {
         guard beginOperation() else { return }
+        if !fromSelectionRotation && !updatingEffects { selectionRotation.stop() }
         sceneRequestRevision += 1
         let request = sceneRequestRevision
         defer { busy = false }
@@ -148,6 +163,7 @@ import Combine
 
     func playPreparedScene(_ configuration: SceneLaunchConfiguration) async {
         guard beginOperation() else { return }
+        selectionRotation.stop()
         sceneRequestRevision += 1
         let request = sceneRequestRevision
         defer { busy = false }
@@ -189,14 +205,27 @@ import Combine
     }
 
     func stopScene() async {
+        selectionRotation.stop()
         sceneRequestRevision += 1
         await scenePlayer.stop()
     }
 
+    func suspendForSystem() async {
+        let wasSelectedRotation = selectionRotation.active || selectionRotation.switching
+        selectionRotation.stop()
+        sceneRequestRevision += 1
+        await selectionRotation.finishPendingSwitch()
+        if wasSelectedRotation { await perform(.off) }
+        else { await stopScene() }
+    }
+
     func shutdownScene() async {
+        let wasSelectedRotation = selectionRotation.active || selectionRotation.switching
         shuttingDown = true
+        selectionRotation.stop()
+        await selectionRotation.finishPendingSwitch()
         await stopScene()
-        if videoBackdrop.hasSession {
+        if videoBackdrop.hasSession || wasSelectedRotation {
             do { try await backend.perform(.off) }
             catch { self.error = "退出时停止视频失败：" + error.localizedDescription }
         }
@@ -273,6 +302,14 @@ import Combine
             // status should not invalidate every gallery card and inspector control.
             if state != value { state = value }
             if stateIssue != nil { stateIssue = nil }
+            if selectionRotation.active, !selectionRotation.switching, !scenePlayer.isTransitioning,
+               let id = selectionRotation.currentID {
+                let activeScene = scenePlayer.package.map { LibraryCollectionStore.identity($0) == id } == true && scenePlayer.isActive
+                let activeVideo = value.currentPath.map { LibraryCollectionStore.identity(URL(fileURLWithPath: $0)) == id } == true
+                if value.rotating || (!activeScene && !activeVideo) {
+                    selectionRotation.halt("播放已从外部停止或切换，所选壁纸轮播已暂停。")
+                }
+            }
             await syncVideoBackdrop(for: value, force: forceVideoBackdrop, revision: revision)
         } catch is CancellationError { return }
         catch {
@@ -338,7 +375,15 @@ import Combine
         stateRevision += 1 // Invalidate an already-running poll before the mutation.
         return true
     }
-    func perform(_ action: Action) async {
+    func perform(_ action: Action, fromSelectionRotation: Bool = false) async {
+        if !fromSelectionRotation, selectionRotation.active {
+            switch action {
+            case .next: selectionRotation.advance(.next); return
+            case .previous: selectionRotation.advance(.previous); return
+            case .random: selectionRotation.advance(.random); return
+            default: break
+            }
+        }
         // Stop remains available while the scene is preparing its first frame.
         switch action {
         case .stop, .off:
@@ -347,8 +392,10 @@ import Combine
         default:
             guard beginOperation() else { return }
         }
+        if !fromSelectionRotation { selectionRotation.stop() }
         defer { busy = false }
         do {
+            if fromSelectionRotation { try await backend.perform(.stopRotation) }
             switch action {
             case .play, .next, .previous, .random, .rotation, .stop, .off:
                 await scenePlayer.stop()
@@ -391,6 +438,9 @@ import Combine
     }
     /// Stop only playback affected by a removal, and require successful backdrop restoration.
     private func stopForMaterialRemoval(_ target: URL) async throws {
+        if collection.rotationItems.contains(where: { MaterialRemoval.contains(target, $0.url) }) {
+            selectionRotation.stop()
+        }
         if let package = scenePlayer.package, MaterialRemoval.contains(target, package) {
             await scenePlayer.stop()
             try scenePlayer.requireRestoredBackdrop()
@@ -421,9 +471,62 @@ import Combine
             guard try MaterialRemoval.target(for: payload, roots: roots) == confirmedTarget,
                   try MaterialDiscovery.stamp(payload) == confirmedStamp else { throw BackendError.message("文件已改变，请重新选择后再删除。") }
             try trashItem(confirmedTarget)
+            collection.forgetRemovedTargets([confirmedTarget])
             await readLibrary(); await readState()
             return true
         } catch { self.error = error.localizedDescription; return false }
+    }
+
+    func startSelectedRotation(interval: Int, mode: String) {
+        guard !isWorking, !selectionRotation.switching, collection.rotationCandidates.count >= 2,
+              (60...86400).contains(interval), ["rand", "next"].contains(mode) else { return }
+        collection.configureRotation(interval: interval, mode: mode)
+        error = nil
+        selectionRotation.start(interval: Double(interval), mode: mode)
+    }
+
+    func trashWallpapers(_ requests: [MaterialRemoval.Request], roots: [URL]) async -> MaterialRemoval.BatchResult {
+        var result = MaterialRemoval.BatchResult()
+        guard beginOperation() else { result.failures = ["当前操作尚未完成，请稍后重试。"]; return result }
+        defer { busy = false }
+        var processed = Set<String>()
+        for request in requests {
+            guard processed.insert(request.id).inserted else { continue }
+            do {
+                func validate() throws {
+                    guard try MaterialRemoval.target(for: request.payload, roots: roots) == request.target,
+                          try MaterialDiscovery.stamp(request.payload) == request.stamp else {
+                        throw BackendError.message("文件已改变，请重新选择后再删除。")
+                    }
+                }
+                try validate()
+                try await stopForMaterialRemoval(request.target)
+                try validate()
+                guard !shuttingDown else { throw CancellationError() }
+                try trashItem(request.target)
+                result.removed.append(request.target)
+            } catch {
+                result.failures.append(request.title + ": " + error.localizedDescription)
+            }
+        }
+        if !result.removed.isEmpty { collection.forgetRemovedTargets(result.removed) }
+        await readLibrary(); await readState()
+        return result
+    }
+
+    private func playRotationItem(_ item: RotationWallpaper) async -> Bool {
+        guard !isWorking, !shuttingDown, !collection.hiddenIDs.contains(item.id) else { return false }
+        error = nil
+        switch item.kind {
+        case .scene:
+            let folder = item.url.deletingLastPathComponent()
+            await playScene(root: folder.deletingLastPathComponent(), name: folder.lastPathComponent,
+                            title: item.title, expectedBytes: item.expectedBytes, fromSelectionRotation: true)
+            return error == nil && isActiveScene(item.url)
+        case .video:
+            await perform(.play(item.url.path), fromSelectionRotation: true)
+            return error == nil && state.currentPath.map { LibraryCollectionStore.identity(URL(fileURLWithPath: $0)) == item.id } == true
+        }
     }
     func refreshDiagnostics() async {
         guard !loadingDiagnostics, !isWorking else { return }

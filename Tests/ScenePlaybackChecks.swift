@@ -617,6 +617,7 @@ import UniformTypeIdentifiers
         let settingsPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
         let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer,
             sceneRuntimeURL: runtimeRoot, scenePreferences: store, sceneUserProperties: playbackProperties,
+            collection: LibraryCollectionStore(defaults: perItemDefaults),
             backdropConfiguration: { nil })
         await settingsModel.applyScenePreferences(for: packageA)
         check(await settingsBackend.actions.isEmpty, "未播放时应用设置不会启动壁纸")
@@ -667,6 +668,24 @@ import UniformTypeIdentifiers
               playbackProperties.value(for: playbackWatermark, package: packageA) == .boolean(true),
               "切换到B后自动读取B的效果且不串改A")
         await settingsModel.stopScene()
+        // Selected rotation reuses the same engine coordinator for a mixed list.
+        await settingsBackend.setOffDelay(false)
+        let rotationScene = RotationWallpaper(url: packageA, title: "fixture scene", kind: .scene, expectedBytes: 3)
+        let rotationVideo = RotationWallpaper(url: root.appendingPathComponent("rotation.mp4"), title: "fixture video", kind: .video)
+        settingsModel.collection.addToRotation([rotationScene, rotationVideo])
+        settingsModel.startSelectedRotation(interval: 60, mode: "next")
+        try await wait { settingsPlayer.phase == .playing && settingsModel.selectionRotation.currentID == rotationScene.id }
+        check(settingsModel.selectionRotation.active, "所选轮播可通过既有协调器启动场景")
+        await settingsModel.perform(.next)
+        try await wait { settingsModel.selectionRotation.currentID == rotationVideo.id }
+        check(!settingsPlayer.isActive && settingsModel.state.currentPath == rotationVideo.url.path,
+              "混合轮播切换到视频前完整停止场景")
+        await settingsModel.perform(.previous)
+        try await wait { settingsPlayer.phase == .playing && settingsModel.selectionRotation.currentID == rotationScene.id }
+        check(!settingsModel.state.running, "混合轮播返回场景前关闭视频引擎")
+        await settingsModel.perform(.off)
+        check(!settingsModel.selectionRotation.active && !settingsPlayer.isActive && !settingsModel.state.running,
+              "全部关闭同时停止所选轮播与当前引擎")
         // Automatic backdrop lifecycle uses an isolated fixture, never macOS settings.
         var backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
         let backdrop = BackdropFixture()

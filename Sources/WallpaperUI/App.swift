@@ -41,11 +41,11 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
-                Task { @MainActor in await AppServices.model.stopScene() }
+                Task { @MainActor in await AppServices.model.suspendForSystem() }
             }
         lockObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { _ in
-                Task { @MainActor in await AppServices.model.stopScene() }
+                Task { @MainActor in await AppServices.model.suspendForSystem() }
             }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -76,6 +76,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     var body: some Scene {
         Window(AppStrings.text("壁纸", language: language), id: "library") {
             NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog).environmentObject(AppServices.workshop)
+                .environmentObject(model.collection)
                 .environment(\.locale, language.locale)
                 .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
         }.defaultSize(width: 1200, height: 800)
