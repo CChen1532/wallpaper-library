@@ -652,3 +652,57 @@
 "重试下载" = "Retry download";
 
 "未完成的下载" = "Unfinished downloads";
+
+"设置分类" = "Settings category";
+
+"常规" = "General";
+
+"素材" = "Library";
+
+"播放与权限" = "Playback & Access";
+
+"外观和语言会立即保存。每张壁纸的画质、声音与交互可在图库右侧详情中调整。" = "Appearance and language are saved immediately. Adjust quality, sound, and interaction for each wallpaper in its library details.";
+
+"辅助功能权限" = "Accessibility permission";
+
+"自动切换 Space 过渡底图时需要此权限。可在系统设置中管理授权。" = "This permission is needed to change the background used during Space transitions. Manage access in System Settings.";
+
+"打开辅助功能设置" = "Open Accessibility Settings";
+
+"故障排查" = "Troubleshooting";
+
+"正在检查素材…" = "Checking library…";
+
+"选择壁纸，查看详情与播放设置" = "Select a wallpaper to view details and playback settings";
+
+"浏览创意工坊" = "Browse Workshop";
+
+"会立即更换桌面壁纸" = "This changes your desktop wallpaper immediately";
+
+"视频文件夹" = "Video folder";
+
+"仅轮播此文件夹中的视频，场景壁纸不参与轮播。" = "Rotation uses videos in this folder only. Scene wallpapers are not included.";
+
+"切换间隔" = "Switch interval";
+
+"切换间隔（分钟）" = "Switch interval (minutes)";
+
+"常用间隔" = "Quick intervals";
+
+"请输入 1-1440 之间的整数分钟。" = "Enter a whole number of minutes from 1 to 1440.";
+
+"当前设置已生效" = "These settings are active";
+
+"修改不会自动生效，点击下方按钮后开始或更新轮播。" = "Changes are not applied automatically. Use the button below to start or update rotation.";
+
+"应用更改" = "Apply Changes";
+
+"开启轮播" = "Start Rotation";
+
+"还原当前设置" = "Revert to Current Settings";
+
+"清除关键词并按当前筛选浏览" = "Clear the search and browse with the current filters";
+
+"点击封面查看详情；点击下载直接加入队列。" = "Click a cover for details, or Download to add it to the queue.";
+
+"重新加载" = "Reload";

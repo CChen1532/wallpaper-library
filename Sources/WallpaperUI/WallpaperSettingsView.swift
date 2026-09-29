@@ -11,6 +11,8 @@ struct WallpaperSettingsView: View {
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     @AppStorage("appLanguage") private var language = AppLanguage.chinese
     @AppStorage("sceneAutomaticBackdrop") private var automaticBackdrop = false
+    private enum Category: String { case general, folders, playback, about }
+    @AppStorage("settingsCategory") private var category = Category.general
     @State private var accessibilityTrusted = false
     @State private var copiedVersionInfo = false
     @State private var removedFolder: URL?
@@ -19,7 +21,16 @@ struct WallpaperSettingsView: View {
     let showDiagnostics: () -> Void
 
     var body: some View {
-        Form {
+        VStack(spacing: 0) {
+            Picker("设置分类", selection: $category) {
+                Text("常规").tag(Category.general)
+                Text("素材").tag(Category.folders)
+                Text("播放与权限").tag(Category.playback)
+                Text("关于").tag(Category.about)
+            }.pickerStyle(.segmented).padding(.horizontal, 20).padding(.vertical, 16)
+                .accessibilityIdentifier("settings.category")
+            Form {
+            if category == .general {
             Section("外观") {
                 Picker("应用外观", selection: $appearance) {
                     ForEach(AppAppearance.allCases) { Text(LocalizedStringKey($0.label)).tag($0) }
@@ -31,6 +42,12 @@ struct WallpaperSettingsView: View {
                     Text("English").tag(AppLanguage.english)
                 }
             }
+            Section {
+                Text("外观和语言会立即保存。每张壁纸的画质、声音与交互可在图库右侧详情中调整。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            }
+            if category == .folders {
             Section("素材文件夹") {
                 Text("每分钟自动检查新素材。")
                     .font(.callout).foregroundStyle(.secondary)
@@ -41,6 +58,8 @@ struct WallpaperSettingsView: View {
                             Text(root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                         Spacer()
+                        Button("在访达中显示", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([root]) }
+                            .labelStyle(.iconOnly).help("在访达中显示")
                         if MaterialRemoval.isBundled(root) { Text("内置").font(.caption).foregroundStyle(.secondary) }
                         else {
                             Button("移除", systemImage: "minus.circle", role: .destructive) { removedFolder = root; confirmRemoveFolder = true }
@@ -58,6 +77,21 @@ struct WallpaperSettingsView: View {
                 ForEach(catalog.issues, id: \.self) { issue in
                     Label(AppStrings.text(issue, locale: locale), systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                }
+            }
+            }
+            if category == .playback {
+            Section("辅助功能权限") {
+                Label(LocalizedStringKey(accessibilityTrusted ? "已授权" : "未授权"),
+                      systemImage: accessibilityTrusted ? "checkmark.circle.fill" : "lock.circle")
+                    .foregroundStyle(accessibilityTrusted ? Color.green : Color.secondary)
+                Text("自动切换 Space 过渡底图时需要此权限。可在系统设置中管理授权。")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Button("打开辅助功能设置") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") { NSWorkspace.shared.open(url) }
+                    }
+                    Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
                 }
             }
             Section {
@@ -101,14 +135,19 @@ struct WallpaperSettingsView: View {
             } footer: {
                 Text("首次自动切换需要辅助功能权限。视频底图可在各视频详情中设置。")
             }
+            Section("故障排查") {
+                Button("显示器与运行状态", action: showDiagnostics)
+            }
+            }
+            if category == .about {
             Section("关于") {
                 LabeledContent("版本", value: versionText)
-                DisclosureGroup("更多信息") {
+                Group {
                     LabeledContent("构建", value: buildText)
                     LabeledContent("版权", value: "© 2026 Cheng (CChen1532)")
                     Text("本应用源码采用 MIT 许可；内置的 Mirage 场景运行时采用 GPL-3.0。")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Button("打开项目主页") { openProjectHomepage() }
                         Button("在访达中显示许可文件") { revealLicenseFiles() }
                         Button("复制版本信息") { copyVersionInfo() }
@@ -116,16 +155,25 @@ struct WallpaperSettingsView: View {
                     if copiedVersionInfo {
                         Text("已复制版本信息").font(.callout).foregroundStyle(.secondary)
                     }
-                    LabeledContent("辅助功能授权") { Text(LocalizedStringKey(accessibilityTrusted ? "已授权" : "未授权")) }
-                    Button("刷新授权状态") { accessibilityTrusted = AXIsProcessTrusted() }
-                    Button("显示器与运行状态", action: showDiagnostics)
                 }
+            }
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden)
-        .frame(maxWidth: 640)
+        .id(category)
+        }
+        .frame(maxWidth: 680)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { accessibilityTrusted = AXIsProcessTrusted() }
+        .onAppear {
+            accessibilityTrusted = AXIsProcessTrusted()
+            if scenePlayer.restorationPending || model.videoBackdrop.restorationPending { category = .playback }
+        }
+        .onChange(of: scenePlayer.restorationPending || model.videoBackdrop.restorationPending) { _, pending in
+            if pending { category = .playback }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            accessibilityTrusted = AXIsProcessTrusted()
+        }
         .confirmationDialog("从资料库移除此文件夹？", isPresented: $confirmRemoveFolder, titleVisibility: .visible) {
             Button("移除", role: .destructive) {
                 guard let folder = removedFolder else { return }

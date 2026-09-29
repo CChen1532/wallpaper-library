@@ -33,10 +33,16 @@ struct WorkshopView: View {
                         TextField("搜索标题与描述", text: $workshop.searchText).textFieldStyle(.roundedBorder)
                             .onSubmit { workshop.search() }.disabled(workshop.busy)
                             .accessibilityIdentifier("workshop.searchText")
+                        if !workshop.searchText.isEmpty {
+                            Button("清除搜索") { workshop.searchText = ""; workshop.search() }
+                                .disabled(workshop.busy).help("清除关键词并按当前筛选浏览")
+                        }
                         Button("搜索") { workshop.search() }.disabled(workshop.busy || !workshop.filters.validDates)
                             .accessibilityIdentifier("workshop.search")
                     }
                     browseFilters
+                    Text("点击封面查看详情；点击下载直接加入队列。")
+                        .font(.caption).foregroundStyle(.secondary)
                     if workshop.activity == .search { ProgressView("正在搜索…").controlSize(.small) }
                 } else if tab == 1 {
                     HStack(spacing: 10) {
@@ -82,11 +88,6 @@ struct WorkshopView: View {
                         }
                     }
                 }
-                if let error = workshop.error {
-                    Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("workshop.error")
-                }
                 componentSection
             }.padding(24).frame(maxWidth: tab == 0 ? .infinity : 900, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -102,8 +103,15 @@ struct WorkshopView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !showDownloadDetails, !showConnectionDetails, let error = workshop.error {
+                HStack {
                 Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.bar)
+                    .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                    Spacer()
+                    if workshop.searchPage == nil && tab == 0 {
+                        Button("重新加载") { workshop.search() }.disabled(workshop.busy)
+                    }
+                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.bar)
+                    .accessibilityIdentifier("workshop.error")
             }
             if !workshop.downloadQueue.isEmpty || workshop.activeDownloadID != nil || !workshop.failedDownloads.isEmpty {
                 HStack {
@@ -197,7 +205,10 @@ struct WorkshopView: View {
         .sheet(isPresented: $showSubscriptions) {
             WorkshopSubscriptionSheet(browser: subscriptionBrowser) { workshop.receiveSubscriptions($0) }
         }
-        .onAppear { workshop.refreshComponent(); workshop.preconnect(); workshop.refreshDownloadedStatus() }
+        .onAppear {
+            workshop.refreshComponent(); workshop.preconnect(); workshop.refreshDownloadedStatus()
+            if workshop.searchPage == nil && !workshop.busy && workshop.error == nil { workshop.search() }
+        }
         .onChange(of: workshop.authenticationRequired) { _, required in
             if required && !showDownloadDetails { showConnectionDetails = true }
             else if !required { showConnectionDetails = false }

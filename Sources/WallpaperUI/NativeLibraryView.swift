@@ -14,8 +14,7 @@ struct NativeLibraryView: View {
     @EnvironmentObject private var catalog: UnifiedLibrary
     @EnvironmentObject private var workshop: WorkshopModel
     @State private var search = ""
-    @State private var minutes = 60
-    @State private var mode = "rand"
+    @State private var rotationDraft = RotationDraft()
     @State private var confirmTrash = false
     @State private var trashPayload: URL?
     @State private var trashTarget: URL?
@@ -136,8 +135,12 @@ struct NativeLibraryView: View {
             if let selectedSceneName, !ids.contains(selectedSceneName) { self.selectedSceneName = nil }
         }
         .onChange(of: page) { _, newValue in
-            search = ""
-            if newValue == .rotation { syncRotationFields() }
+            if newValue == .rotation && !rotationDraft.isEdited { syncRotationFields() }
+        }
+        .onChange(of: model.state) { _, state in
+            if !rotationDraft.isEdited || rotationDraft.matches(interval: state.interval, mode: state.mode) {
+                syncRotationFields()
+            }
         }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(AppStrings.text(model.error ?? "", locale: locale)) }
         .confirmationDialog("将此壁纸移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
@@ -179,8 +182,15 @@ struct NativeLibraryView: View {
             VStack(spacing: 0) {
                 HStack {
                     Text("\(entries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary)
+                    if !query.isEmpty {
+                        Button("清除搜索") { search = "" }.buttonStyle(.link)
+                            .accessibilityIdentifier("library.clearSearch")
+                    }
                     Spacer()
-                    if catalog.scanning { ProgressView().controlSize(.small) }
+                    if catalog.scanning { ProgressView("正在检查素材…").controlSize(.small) }
+                    else if selectedScene == nil && selectedVideo == nil && !entries.isEmpty {
+                        Text("选择壁纸，查看详情与播放设置").font(.caption).foregroundStyle(.secondary)
+                    }
                 }.padding(.horizontal, 24).padding(.vertical, 14)
                 if let sceneError { issueBanner(AppStrings.text(sceneError, locale: locale)) }
                 if entries.isEmpty && !catalog.scanning {
@@ -190,7 +200,8 @@ struct NativeLibraryView: View {
                         Text(LocalizedStringKey(query.isEmpty ? "添加素材文件夹，自动识别场景和 MP4 视频。" : "试试其他关键词，或清除搜索查看全部壁纸。"))
                     } actions: {
                         if query.isEmpty {
-                            Button("添加素材文件夹", action: chooseSceneDirectory)
+                            Button("添加素材文件夹", action: chooseSceneDirectory).buttonStyle(.borderedProminent)
+                            Button("浏览创意工坊") { page = .workshop }
                         } else {
                             Button("清除搜索") { search = "" }
                         }
@@ -285,7 +296,7 @@ struct NativeLibraryView: View {
             Button(action: close) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 .frame(width: 24, height: 24).contentShape(Rectangle()).modifier(HoverHighlight())
-                .help("关闭详情").accessibilityLabel("关闭详情")
+                .help("关闭详情").accessibilityLabel("关闭详情").keyboardShortcut(.cancelAction)
         }
     }
 
@@ -293,7 +304,6 @@ struct NativeLibraryView: View {
         let sceneRoot: URL? = item.root
         return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                inspectorHeading("场景详情") { selectedSceneName = nil; focusedWallpaper = nil }
                 SceneCover(folder: item.folder, size: .inspector)
                     .modifier(ArtworkCrossfade(identity: (sceneRoot?.path ?? "") + "/" + item.name))
                     .aspectRatio(16 / 9, contentMode: .fit)
@@ -311,14 +321,7 @@ struct NativeLibraryView: View {
                     Label("大型场景包已通过文件索引检查；为避免界面卡顿，跳过受限静态分析。仍可尝试动态播放。", systemImage: "info.circle")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                Button {
-                    guard let sceneRoot else { return }
-                    Task { await model.playScene(root: sceneRoot, name: item.name, title: item.title ?? item.name,
-                                                  expectedBytes: item.packageBytes) }
-                } label: { Label("设为场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
-                    .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0)
+
                 if item.capability?.limitationCodes.contains("nativeGravityScene") == true {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("自动播放 · 无交互", systemImage: "sparkles").font(.headline)
@@ -369,6 +372,23 @@ struct NativeLibraryView: View {
                     .disabled(model.isWorking || workshop.busy || MaterialRemoval.isBundled(item.folder))
             }.padding(20)
         }.scrollIndicators(.visible)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                inspectorHeading("场景详情") { selectedSceneName = nil; focusedWallpaper = nil }
+                    .padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    guard let sceneRoot else { return }
+                    Task { await model.playScene(root: sceneRoot, name: item.name, title: item.title ?? item.name,
+                                                  expectedBytes: item.packageBytes) }
+                } label: { Label("设为场景壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
+                    .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0)
+                    Text("会立即更换桌面壁纸").font(.caption).foregroundStyle(.secondary)
+                }.padding(16).frame(maxWidth: .infinity).background(.bar)
+            }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             .task(id: (sceneRoot?.path ?? "") + "/" + item.name) {
                 guard let sceneRoot, item.error == nil, item.packageBytes > 0 else { return }
@@ -467,7 +487,6 @@ struct NativeLibraryView: View {
     private func videoDetails(_ item: Wallpaper) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                inspectorHeading("视频详情") { model.selected = nil; focusedWallpaper = nil }
                 VideoCover(item: item, size: .inspector).modifier(ArtworkCrossfade(identity: item.id)).aspectRatio(4 / 3, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { coverLabel("视频封面").padding(10) }
@@ -476,10 +495,7 @@ struct NativeLibraryView: View {
                         .contentTransition(.opacity).animation(LibraryMotion.selection(reduceMotion), value: item.id)
                     Label("动态视频", systemImage: "play.rectangle").font(.caption).foregroundStyle(.secondary)
                 }
-                Button { Task { await model.perform(.play(item.id)) } } label: {
-                    Label("设为动态壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
-                }.buttonStyle(.borderedProminent).controlSize(.large)
-                    .keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
+
                 if model.stateIssue == nil && model.state.running && model.state.currentPath == item.id {
                     Label("正在桌面播放", systemImage: "waveform").font(.caption).foregroundStyle(.tint)
                 }
@@ -505,6 +521,19 @@ struct NativeLibraryView: View {
                     .buttonStyle(.borderless).font(.callout).disabled(model.isWorking || workshop.busy || !model.capabilities.canTrash)
             }.padding(20)
         }.scrollIndicators(.visible)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                inspectorHeading("视频详情") { model.selected = nil; focusedWallpaper = nil }
+                    .padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                Button { Task { await model.perform(.play(item.id)) } } label: {
+                    Label("设为动态壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
+                }.buttonStyle(.borderedProminent).controlSize(.large)
+                    .keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
+                    Text("会立即更换桌面壁纸").font(.caption).foregroundStyle(.secondary)
+                }.padding(16).frame(maxWidth: .infinity).background(.bar)
+            }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
     private func requestTrash(_ payload: URL) {
@@ -516,28 +545,67 @@ struct NativeLibraryView: View {
         } catch { model.error = error.localizedDescription }
     }
     private var rotationSettings: some View {
-        Form {
+        let applied = model.stateIssue == nil && model.state.rotating
+            && rotationDraft.matches(interval: model.state.interval, mode: model.state.mode)
+        return Form {
             Section {
                 LabeledContent("当前状态", value: AppStrings.text(model.rotationStatusText, locale: locale))
                 if model.state.rotating || model.stateIssue != nil { LabeledContent("当前间隔", value: AppStrings.text(model.rotationIntervalText, locale: locale)) }
             } header: { Text("状态") }
             Section {
                 if let directory = model.capabilities.libraryDirectory {
-                    Text(directory.path).font(.caption).textSelection(.enabled)
+                    LabeledContent("视频文件夹", value: directory.lastPathComponent)
+                    Text(directory.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Button("在访达中显示", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([directory]) }
                 }
-            } header: { Text("轮播范围") } footer: { Text("仅轮播此文件夹中的视频。") }
+                Text("仅轮播此文件夹中的视频，场景壁纸不参与轮播。")
+                    .font(.callout).foregroundStyle(.secondary)
+            } header: { Text("轮播范围") }
             Section("切换设置") {
-                Picker("切换方式", selection: $mode) {
+                Picker("切换方式", selection: $rotationDraft.mode) {
                     ForEach(model.capabilities.rotationModes, id: \.self) { value in Text(LocalizedStringKey(value == "rand" ? "随机" : value == "next" ? "顺序" : "倒序")).tag(value) }
                 }
-                Stepper(value: $minutes, in: 1...1440) { LabeledContent("间隔", value: "\(minutes) " + AppStrings.text("分钟", locale: locale)) }
                 HStack {
-                    Button("应用并开启") { Task { await model.perform(.rotation(minutes * 60, mode)) } }.buttonStyle(.borderedProminent)
+                    Text("切换间隔")
+                    Spacer()
+                    TextField("", text: $rotationDraft.minutesText)
+                        .labelsHidden().textFieldStyle(.roundedBorder)
+                        .frame(width: 72).multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("rotation.minutes").accessibilityLabel("切换间隔（分钟）")
+                    Text("分钟")
+                }.accessibilityElement(children: .contain)
+                HStack {
+                    Text("常用间隔").foregroundStyle(.secondary)
+                    Spacer()
+                    ForEach([15, 30, 60, 120], id: \.self) { value in
+                        Button(String(format: AppStrings.text("%.0f 分钟", locale: locale), Double(value))) { rotationDraft.minutesText = String(value) }
+                            .accessibilityIdentifier("rotation.preset.\(value)")
+                    }
+                }
+                if rotationDraft.minutes == nil {
+                    Label("请输入 1-1440 之间的整数分钟。", systemImage: "exclamationmark.circle")
+                        .font(.callout).foregroundStyle(.orange)
+                } else {
+                    Label(LocalizedStringKey(applied ? "当前设置已生效" : "修改不会自动生效，点击下方按钮后开始或更新轮播。"),
+                          systemImage: applied ? "checkmark.circle" : "info.circle")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button(LocalizedStringKey(model.state.rotating ? "应用更改" : "开启轮播")) {
+                        guard let minutes = rotationDraft.minutes else { return }
+                        Task { await model.perform(.rotation(minutes * 60, rotationDraft.mode)) }
+                    }.buttonStyle(.borderedProminent)
+                        .disabled(rotationDraft.minutes == nil || applied || model.capabilities.rotationModes.isEmpty)
+                        .accessibilityIdentifier("rotation.apply")
                     Button("关闭轮播") { Task { await model.perform(.stopRotation) } }
+                        .disabled(!model.state.rotating && model.stateIssue == nil)
+                    if rotationDraft.isEdited {
+                        Button("还原当前设置", action: syncRotationFields).buttonStyle(.link)
+                    }
                 }
                 if let notice = model.state.notice { Text(LocalizedStringKey(notice)).foregroundStyle(.orange) }
             }.disabled(model.isWorking)
-        }.formStyle(.grouped)
+        }.formStyle(.grouped).frame(maxWidth: 680).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private var desktopControls: some View {
         HStack(spacing: 12) {
@@ -567,10 +635,10 @@ struct NativeLibraryView: View {
             Button { Task { await model.perform(.stop) } } label: {
                 Label("停止", systemImage: "stop.fill").font(.system(size: 11, weight: .medium))
             }.help("停止场景或视频，保留视频轮播设置").accessibilityLabel("停止桌面播放")
-                .disabled(model.busy || scenePlayer.phase == .stopping)
+                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
             Button("全部关闭") { Task { await model.perform(.off) } }
                 .font(.system(size: 11, weight: .medium)).help("停止场景和视频，并关闭轮播")
-                .disabled(model.busy || scenePlayer.phase == .stopping)
+                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.state.rotating && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
         }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 14)
             .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -595,8 +663,7 @@ struct NativeLibraryView: View {
         if panel.runModal() == .OK { Task { await model.importFiles(panel.urls) } }
     }
     private func syncRotationFields() {
-        minutes = min(1440, max(1, (model.state.interval ?? 3600) / 60))
-        mode = model.capabilities.rotationModes.first(where: { $0 == model.state.mode }) ?? model.capabilities.rotationModes.first ?? "rand"
+        rotationDraft.sync(interval: model.state.interval, mode: model.state.mode, supportedModes: model.capabilities.rotationModes)
     }
     private var diagnosticsSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
