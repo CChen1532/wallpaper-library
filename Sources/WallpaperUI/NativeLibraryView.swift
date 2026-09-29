@@ -232,7 +232,7 @@ struct NativeLibraryView: View {
                                 .animation(LibraryMotion.reflow(reduceMotion), value: columnCount)
                                 .animation(nil, value: reduceMotion)
                                     .padding(.horizontal, galleryInset).padding(.bottom, 20).padding(.top, 3)
-                            }.scrollIndicators(.visible)
+                            }.scrollIndicators(.visible).modifier(CoverScrollPerformance())
                             .onChange(of: keyboardScrollTarget) { _, id in
                                 if let id { withAnimation(LibraryMotion.expansion(reduceMotion)) { proxy.scrollTo(id) } }
                             }

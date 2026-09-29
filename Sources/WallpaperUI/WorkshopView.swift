@@ -91,6 +91,7 @@ struct WorkshopView: View {
             }.padding(24).frame(maxWidth: tab == 0 ? .infinity : 900, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .top)
         }
+        .modifier(CoverScrollPerformance())
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if tab == 0, let page = workshop.searchPage, page.pages > 1 {
                 floatingPagination(page)
