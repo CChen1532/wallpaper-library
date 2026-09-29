@@ -252,12 +252,14 @@ def same_image(current, expected):
         return False
 
 
-def registered_spaces(current, original, scene):
+def registered_spaces(current, original, scene, original_displays=None):
     """Recover surviving Spaces after setDesktopImageURL normalizes the store.
 
     macOS can prune an old Space or inactive display while registering the
     scene. Restore only selectors on surviving, known nodes; never recreate a
-    deleted Space or display, and never erase a newly created one.
+    deleted Space or display. WallpaperAgent may materialize a missing display
+    under an old Space; retain it only when it exactly matches that display's
+    checksummed original selection.
     """
     if not current['present'] or not original['present']:
         return None
@@ -270,11 +272,19 @@ def registered_spaces(current, original, scene):
         try:
             old_displays = before[uuid]['Displays']
             new_displays = space['Displays']
-            if (not isinstance(old_displays, dict) or not isinstance(new_displays, dict) or
-                    not set(new_displays).issubset(old_displays)):
+            if not isinstance(old_displays, dict) or not isinstance(new_displays, dict):
                 return None
-            target[uuid]['Displays'] = {key: copy.deepcopy(old_displays[key]) for key in new_displays}
-            paths = [['Default']] + [['Displays', display] for display in new_displays]
+            added = set(new_displays) - set(old_displays)
+            if added and (not isinstance(original_displays, dict) or
+                          any(display not in original_displays or
+                              semantic(new_displays[display]) != semantic(original_displays[display])
+                              for display in added)):
+                return None
+            target[uuid]['Displays'] = {
+                key: copy.deepcopy(old_displays[key] if key in old_displays else new_displays[key])
+                for key in new_displays
+            }
+            paths = [['Default']] + [['Displays', display] for display in new_displays if display in old_displays]
             for path in paths:
                 old_node = entry(target[uuid], path)
                 new_node = entry(normalized[uuid], path)
@@ -389,7 +399,8 @@ def merge(document, patches, restore=False, original=None, known_spaces=(), disp
             if field == 'Spaces' and patch['path'] == []:
                 scene = next((p['after'] for p in patches if
                               p['path'] == ['AllSpacesAndDisplays'] and p.get('field', 'Desktop') == 'Desktop'), None)
-                recovered = registered_spaces(current, target, scene) if scene is not None else None
+                displays = original.get('Displays') if isinstance(original, dict) else None
+                recovered = registered_spaces(current, target, scene, displays) if scene is not None else None
                 if recovered is not None:
                     allowed = True
                     target = recovered
@@ -563,16 +574,18 @@ class Switcher:
         self.save(session)
         print('已写入选定桌面的底图并请求刷新；恢复记录：' + str(self.session), flush=True)
 
-    def restore(self):
+    def restore(self, only_if_already_restored=False):
         session = self.read_session()
         if session and session['state'] != 'restored':
-            self.restore_record(session)
+            self.restore_record(session, only_if_already_restored=only_if_already_restored)
         seen = set()
         for _ in range(16):
             _, document = load_store(self.store)
             image = self.stale_shared_image(document)
             if image is None:
                 return
+            if only_if_already_restored:
+                raise ValueError('系统仍引用临时底图，不能只结清恢复记录')
             if str(image) in seen:
                 raise ValueError('临时底图恢复链存在循环，未接受它作为原壁纸')
             seen.add(str(image))
@@ -589,7 +602,7 @@ class Switcher:
             self.restore_record(ancestor)
         raise ValueError('临时底图恢复链过长，恢复记录保留')
 
-    def restore_record(self, session):
+    def restore_record(self, session, only_if_already_restored=False):
         backup = Path(session['backup']).read_bytes()
         if digest(backup) != session['backup_sha256']:
             raise ValueError('原始备份校验失败，拒绝复原')
@@ -598,10 +611,17 @@ class Switcher:
                          original=plistlib.loads(backup),
                          known_spaces={row['uuid'] for row in session['spaces']},
                          display=session['display'])
+        needs_write = semantic(restored) != semantic(document)
+        if needs_write and only_if_already_restored:
+            raise ValueError('系统壁纸仍需恢复，未改写配置或结清记录')
         session['state'] = 'pending_restore'
         self.save(session)
-        commit_store(self.store, raw, restored)
-        self.refresh()
+        # The agent may already have restored every affected selection while
+        # filling sparse historical Space records. Do not rewrite an already
+        # equivalent system configuration just to close the journal.
+        if needs_write:
+            commit_store(self.store, raw, restored)
+            self.refresh()
         self.verify(self.store, restored, session['patches'])
         session['state'] = 'restored'
         self.save(session)
@@ -641,7 +661,9 @@ def main():
         p.add_argument('--display', type=int, help='CGDirectDisplayID，默认主屏')
         if verb == 'timed':
             p.add_argument('--seconds', type=float, default=60)
-    subs.add_parser('restore')
+    restore_command = subs.add_parser('restore')
+    restore_command.add_argument('--only-if-already-restored', action='store_true',
+                                 help='只在系统配置已匹配原壁纸时结清恢复记录，不改写系统壁纸')
     subs.add_parser('status')
     subs.add_parser('check-compatibility').add_argument('--display', type=int)
     args = parser.parse_args()
@@ -660,7 +682,7 @@ def main():
             print(json.dumps({'session': session['state'] if session else 'none',
                               'recovery_file': str(switcher.session), 'current': inventory(binary=args.inventory)}, ensure_ascii=False, indent=2))
         elif args.command == 'restore':
-            switcher.restore()
+            switcher.restore(only_if_already_restored=args.only_if_already_restored)
         elif args.command == 'check-compatibility':
             inv = inventory(args.display, args.inventory)
             _, document = load_store(switcher.store)
