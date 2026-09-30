@@ -67,3 +67,5 @@ bash scripts/check.sh --live --media
 `bash scripts/scene-probe.sh still /path/scene.pkg /tmp/scene.png` 可尝试导出受限静态基础图及同名诊断 JSON。
 没有可合成静态层时只写诊断、退出 3；静态图不能代替动态 scene 桌面播放。视频后端保持原有实现。
 `bash scripts/scene-probe.sh frame /path/scene.pkg materials/name.tex 1 /tmp/scene-t1.png` 可离线查看指定视频纹理在 1 秒的基础合成帧；这同样不是连续播放或视觉等效验收。
+
+目录整理：历史阶段报告集中在 [阶段报告索引](文档/历史/阶段报告索引.md)；清理范围、保留文件与清单见 [2026-10-01 整理说明](文档/整理/2026-10-01-整理说明.md)。
