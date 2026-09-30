@@ -136,7 +136,7 @@ index b1a6b2c..f96edf0 100644
      bool IsLinkedSource(std::int32_t id) const { return linked_source_ids.contains(id); }
  };
 diff --git a/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp b/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp
-index 3f63155..5d2b318 100644
+index 3f63155..4d45e27 100644
 --- a/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp
 +++ b/SceneRenderer/Sources/SceneRenderer/Wallpaper/Compiler/SceneCompiler.cpp
 @@ -165,6 +165,32 @@ bool SceneHasScripts(std::span<const SceneObjectVar> scene_objs) {
@@ -216,26 +216,38 @@ index 3f63155..5d2b318 100644
      context.node_id_map[light_obj.id] = { light_obj.parent, rstd::Some(node.clone()) };
  }
  
-@@ -4857,6 +4906,18 @@ void ParseModelObj(ParseContext& context, wpscene::ModelObject& model_obj) {
+@@ -4857,6 +4906,30 @@ void ParseModelObj(ParseContext& context, wpscene::ModelObject& model_obj) {
  
          auto wpmat = WPMdlParser::ParseMaterial(material_ref, vfs);
          if (! wpmat) continue;
 +        if (context.solar_lighting_compatibility && wpmat->shader == "generic4") {
 +            int mode = 0;
-+            if (model_obj.name == "p4") mode = 2; // Mars needs stronger highlight compression.
++            if (model_obj.name == "p4" || model_obj.name == "128qtmoon")
++                mode = 2; // Mars and the Moon need stronger highlight compression.
 +            else if (model_obj.name == "p1" || model_obj.name == "p2" ||
 +                     model_obj.name == "p5" || model_obj.name == "p6n" ||
 +                     model_obj.name == "p7" || model_obj.name == "p8" ||
 +                     model_obj.name == "ceres" || model_obj.name == "dp2" ||
 +                     model_obj.name == "dp3" || model_obj.name == "dp4m" ||
-+                     model_obj.name == "dp5")
++                     model_obj.name == "dp5" ||
++                     model_obj.name == "phobos" || model_obj.name == "deimos.fbx" ||
++                     model_obj.name == "p5s1" || model_obj.name == "p5s2" ||
++                     model_obj.name == "p5s3" || model_obj.name == "p5s4" ||
++                     model_obj.name == "mimas" || model_obj.name == "p6s2" ||
++                     model_obj.name == "p6s3" || model_obj.name == "p6s4" ||
++                     model_obj.name == "p6s5" || model_obj.name == "p6s6a" ||
++                     model_obj.name == "p6s8" || model_obj.name == "p7s1" ||
++                     model_obj.name == "p7s2" || model_obj.name == "p7s3" ||
++                     model_obj.name == "p7s4" || model_obj.name == "p7s5" ||
++                     model_obj.name == "p8s1" || model_obj.name == "p8s8" ||
++                     model_obj.name == "dp2s1")
 +                mode = 1;
 +            if (mode != 0) wpmat->combos["SOLAR_LIGHTING_COMPAT"] = mode;
 +        }
          if (mdl.puppet && ! mdl.puppet->bones.empty()) WPMdlParser::AddPuppetMatInfo(*wpmat, mdl);
  
          SceneMaterial scene_mat;
-@@ -7135,6 +7196,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view              scene_
+@@ -7135,6 +7208,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view              scene_
      context.scene_has_scripts       = SceneHasScripts(json, scene_objs);
      context.scene_accesses_effects  = SceneAccessesEffects(json, scene_objs);
      context.scene_layer_text_writes = SceneWritesLayerText(json, scene_objs);
@@ -300,10 +312,17 @@ index 5810114..bf18c9b 100644
      if (g_failures == 0) std::cout << "ScriptCompatibilityRegression: ok\n";
      return g_failures == 0 ? 0 : 1;
 diff --git a/assets/shaders/generic4.frag b/assets/shaders/generic4.frag
-index ebe0ed2..0371fd4 100755
+index ebe0ed2..dad3ad7 100755
 --- a/assets/shaders/generic4.frag
 +++ b/assets/shaders/generic4.frag
-@@ -121,4 +121,8 @@ void main() {
+@@ -113,2 +113,5 @@ void main() {
+-	normal = mul(normal, tangentSpace);
++	normal = mul(normal, tangentSpace);
++#if SOLAR_LIGHTING_COMPAT
++	normal = normalize(normal);
++#endif
+ #else
+@@ -121,4 +124,8 @@ void main() {
  #if LIGHTING
 -	light = PerformLighting_V1(v_WorldPos, albedo.rgb, normal, normalizedViewVector, CAST3(1.0), f0, roughness, metallic);
 -	vec3 ambient = v_LightAmbientColor * albedo.rgb;
@@ -314,7 +333,7 @@ index ebe0ed2..0371fd4 100755
 +	vec3 ambient = v_LightAmbientColor * albedo.rgb;
 +#endif
  #else
-@@ -131,4 +135,10 @@ void main() {
+@@ -131,4 +138,10 @@ void main() {
  
 -	albedo.rgb = CombineLighting(light, ambient);
 +#if SOLAR_LIGHTING_COMPAT == 1
