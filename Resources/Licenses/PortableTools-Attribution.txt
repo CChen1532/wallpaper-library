@@ -1,0 +1,4 @@
+Video engine: https://github.com/museslabs/phonto (GPL-3.0)
+FFmpeg and ffprobe: https://ffmpeg.org/ (GPL-3.0-or-later; use ffmpeg -version for build configuration)
+CPython standalone runtime: https://github.com/astral-sh/python-build-standalone ; Python license included as CPython.txt.
+phonto-winwait and display-name are local display coordination helpers.

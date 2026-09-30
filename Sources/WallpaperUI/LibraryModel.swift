@@ -14,6 +14,23 @@ import Combine
     @Published var loadingDiagnostics = false
     @Published var videoBackdropIssue: String?
     @Published var backdropCompatibilityIssue: String?
+    let targetDisplayUUID: String?
+    var playbackBlocker: () -> String? = { nil }
+    var otherDisplayBusy: () -> Bool = { false }
+    var inventoryOnly = false
+    var beforeMaterialRemoval: ((URL) async throws -> Void)?
+    var displayConnected: Bool {
+        targetDisplayUUID.map { uuid in scenePlayer.connectedDisplays.contains { $0.uuid == uuid } } ?? true
+    }
+    func playbackPreferences(for package: URL) -> ScenePreferences {
+        var value = scenePreferences.preferences(for: package)
+        if let targetDisplayUUID {
+            value.followsDisplay = false
+            value.displayUUID = targetDisplayUUID
+            value.displayName = scenePlayer.connectedDisplays.first { $0.uuid == targetDisplayUUID }?.name
+        }
+        return value
+    }
     let backend: any WallpaperBackend
     let scenePlayer: ScenePlayer
     let sceneRuntimeURL: URL
@@ -40,7 +57,7 @@ import Combine
     private var lastVideoBackdropAttempt: String?
     private var backdropsReady = false
     var capabilities: BackendCapabilities { backend.capabilities }
-    var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || videoBackdrop.transitioning || shuttingDown }
+    var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || videoBackdrop.transitioning || shuttingDown || otherDisplayBusy() || !displayConnected }
     var selectedWallpaper: Wallpaper? { items.first { $0.id == selected } }
     var isRotating: Bool { selectionRotation.active || state.rotating }
     var rotationStatusText: String { selectionRotation.active ? "所选壁纸轮播中" : stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
@@ -58,6 +75,7 @@ import Combine
     }
 
     init(backend: any WallpaperBackend = PhontoBackend(), scenePlayer: ScenePlayer? = nil,
+         targetDisplayUUID: String? = nil,
          sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil,
          sceneUserProperties: SceneUserPropertiesStore? = nil,
          scenePreparation: ScenePreparationCache? = nil,
@@ -70,6 +88,7 @@ import Combine
              return try SceneBackdropConfiguration.bundled()
          }) {
         self.backend = backend
+        self.targetDisplayUUID = targetDisplayUUID
         self.trashItem = trashItem
         self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
@@ -90,6 +109,7 @@ import Combine
 
     func playScene(root: URL, name: String, title: String, expectedBytes: Int64,
                    updatingEffects: Bool = false, fromSelectionRotation: Bool = false) async {
+        if let issue = playbackBlocker() { error = issue; return }
         guard beginOperation() else { return }
         if !fromSelectionRotation && !updatingEffects { selectionRotation.stop() }
         sceneRequestRevision += 1
@@ -97,7 +117,7 @@ import Combine
         defer { busy = false }
         do {
             let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
-            let preferences = scenePreferences.preferences(for: package)
+            let preferences = playbackPreferences(for: package)
             if updatingEffects {
                 let launch = try await sceneUserProperties.launchInBackground(for: package)
                 guard !shuttingDown, request == sceneRequestRevision else { return }
@@ -121,12 +141,13 @@ import Combine
             configuration.setUserProperties(try await sceneUserProperties.launchInBackground(for: configuration.package))
             if configuration.supportsLiveProperties {
                 let storagePackage = configuration.package
+                let storageDisplay = targetDisplayUUID
                 let storage = try await Task.detached(priority: .utility) {
-                    try SceneScriptStorage.prepare(package: storagePackage)
+                    try SceneScriptStorage.prepare(package: storagePackage, displayUUID: storageDisplay)
                 }.value
                 configuration.arguments.insert(contentsOf: ["--script-storage-dir", storage.path], at: configuration.arguments.count - 2)
             }
-            configuration.backdrop = try backdropConfiguration()
+            configuration.backdrop = scenePlayer.connectedDisplays.count > 1 ? nil : try backdropConfiguration()
             let sourcePackage = configuration.package
             configuration.backdrop?.sourcePackage = sourcePackage
             guard !shuttingDown, request == sceneRequestRevision else { return }
@@ -138,7 +159,7 @@ import Combine
 
     func preloadScene(root: URL, name: String, title: String, expectedBytes: Int64) async {
         let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
-        let preferences = scenePreferences.preferences(for: package)
+        let preferences = playbackPreferences(for: package)
         guard let displayID = scenePlayer.preferredDisplayID(preferences: preferences) else { return }
         _ = try? await scenePreparation.prepare(runtimeURL: sceneRuntimeURL, root: root, name: name,
                                                 title: title, expectedBytes: expectedBytes,
@@ -197,10 +218,12 @@ import Combine
                 backdropCompatibilityIssue = nil
             } catch let mismatch as SpaceBackdropCompatibilityFailure {
                 backdropCompatibilityIssue = "场景过渡底图未就绪：" + mismatch.localizedDescription
-                throw BackendError.message(backdropCompatibilityIssue!)
+                // Read-only preflight has made no system writes; playback remains available.
+                configuration.backdrop = nil
             }
         }
         guard !shuttingDown, request == sceneRequestRevision else { return }
+        guard displayConnected else { throw BackendError.message("目标显示器已断开，请重新选择显示器") }
         try scenePlayer.start(configuration)
     }
 
@@ -210,7 +233,16 @@ import Combine
         await scenePlayer.stop()
     }
 
+    func disconnectDisplay() async {
+        sceneRequestRevision += 1
+        selectionRotation.stop()
+        await selectionRotation.finishPendingSwitch()
+        while busy { try? await Task.sleep(for: .milliseconds(50)) }
+        await perform(.off)
+    }
+
     func suspendForSystem() async {
+        if targetDisplayUUID != nil { await disconnectDisplay(); return }
         let wasSelectedRotation = selectionRotation.active || selectionRotation.switching
         selectionRotation.stop()
         sceneRequestRevision += 1
@@ -222,16 +254,20 @@ import Combine
     func shutdownScene() async {
         let wasSelectedRotation = selectionRotation.active || selectionRotation.switching
         shuttingDown = true
+        sceneRequestRevision += 1
         selectionRotation.stop()
         await selectionRotation.finishPendingSwitch()
+        while busy { try? await Task.sleep(for: .milliseconds(50)) }
         await stopScene()
-        if videoBackdrop.hasSession || wasSelectedRotation {
+        if videoBackdrop.hasSession || wasSelectedRotation || targetDisplayUUID != nil {
             do { try await backend.perform(.off) }
             catch { self.error = "退出时停止视频失败：" + error.localizedDescription }
         }
         do { try await videoBackdrop.stop() }
         catch { self.error = "退出时恢复视频底图失败：" + error.localizedDescription }
     }
+
+    func finishDisplayStartup(recovered: Bool) { backdropsReady = recovered }
 
     func recoverBackdrops() async {
         await scenePlayer.recoverBackdrop()
@@ -321,7 +357,13 @@ import Combine
 
     private func syncVideoBackdrop(for value: PlaybackState, force: Bool, revision: Int) async {
         guard backdropsReady, revision == stateRevision, !shuttingDown else { return }
-        guard !scenePlayer.isActive else { return }
+        if targetDisplayUUID != nil && scenePlayer.connectedDisplays.count > 1 {
+            do { try await videoBackdrop.stop(); videoBackdropIssue = nil }
+            catch { videoBackdropIssue = error.localizedDescription }
+            lastVideoBackdropAttempt = nil
+            return
+        }
+        guard !scenePlayer.isActive, !otherDisplayBusy() else { return }
         guard let path = value.currentPath, !path.isEmpty else {
             lastVideoBackdropAttempt = nil
             if videoBackdrop.hasSession {
@@ -376,6 +418,11 @@ import Combine
         return true
     }
     func perform(_ action: Action, fromSelectionRotation: Bool = false) async {
+        switch action {
+        case .play, .next, .previous, .random, .rotation:
+            if let issue = playbackBlocker() { error = issue; return }
+        default: break
+        }
         if !fromSelectionRotation, selectionRotation.active {
             switch action {
             case .next: selectionRotation.advance(.next); return
@@ -406,7 +453,29 @@ import Combine
             case .play, .next, .previous, .random, .rotation: try scenePlayer.requireRestoredBackdrop()
             default: break
             }
-            try await backend.perform(action)
+            var routedAction = action
+            if targetDisplayUUID != nil {
+                switch action {
+                case .next, .previous, .random:
+                    let candidates = items.filter { $0.playable && !collection.hiddenIDs.contains(LibraryCollectionStore.identity($0.url)) }
+                    guard !candidates.isEmpty else { throw BackendError.message("没有可播放的视频") }
+                    let current = candidates.firstIndex { $0.id == state.currentPath }
+                    let index: Int
+                    switch action {
+                    case .random: index = candidates.indices.filter { $0 != current }.randomElement() ?? 0
+                    case .previous: index = current.map { ($0 + candidates.count - 1) % candidates.count } ?? candidates.count - 1
+                    default: index = current.map { ($0 + 1) % candidates.count } ?? 0
+                    }
+                    routedAction = .play(candidates[index].url.path)
+                default: break
+                }
+                switch routedAction {
+                case .play, .rotation:
+                    guard displayConnected else { throw BackendError.message("目标显示器已断开，请重新选择显示器") }
+                default: break
+                }
+            }
+            try await backend.perform(routedAction)
             switch action {
             case .stop, .off:
                 try await videoBackdrop.stop()
@@ -438,6 +507,12 @@ import Combine
     }
     /// Stop only playback affected by a removal, and require successful backdrop restoration.
     private func stopForMaterialRemoval(_ target: URL) async throws {
+        try await beforeMaterialRemoval?(target)
+        try await stopLocalPlaybackForRemoval(target)
+    }
+    func stopLocalPlaybackForRemoval(_ target: URL) async throws {
+        guard !inventoryOnly else { return }
+        stateRevision += 1
         if collection.rotationItems.contains(where: { MaterialRemoval.contains(target, $0.url) }) {
             selectionRotation.stop()
         }
@@ -452,6 +527,7 @@ import Combine
         if affectsRotation || actual.currentPath.map({ MaterialRemoval.contains(target, URL(fileURLWithPath: $0)) }) == true {
             try await backend.perform(.off)
             try await videoBackdrop.stop()
+            state = try await backend.state()
             lastVideoBackdropAttempt = nil
         }
     }

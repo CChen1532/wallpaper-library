@@ -14,11 +14,12 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
 @MainActor private enum AppServices {
     static let model = LibraryModel()
+    static let playback = DisplayPlayback(library: model)
     static let catalog = UnifiedLibrary(model: model)
     static let workshop = WorkshopModel(findExisting: { id in
         let candidates = catalog.scenes.map(\.folder) + model.items.map { $0.url.deletingLastPathComponent() }
         return candidates.first { $0.lastPathComponent == id && FileManager.default.fileExists(atPath: $0.appendingPathComponent("project.json").path) }
-    }, libraryBusy: { model.isWorking }, onImported: { folder in
+    }, libraryBusy: { playback.busy }, onImported: { folder in
         catalog.addFolder(folder)
         await catalog.refresh()
     })
@@ -27,25 +28,29 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 @MainActor final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     private var polling: Task<Void, Never>?
     private var sleepObserver: NSObjectProtocol?
+    private var displayObserver: NSObjectProtocol?
     private var lockObserver: NSObjectProtocol?
     private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppServices.catalog.start()
         polling = Task {
-            await AppServices.model.recoverBackdrops()
+            await AppServices.playback.start()
             while !Task.isCancelled {
-                await AppServices.model.refreshState()
+                await AppServices.playback.poll()
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
             }
         }
+        displayObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in await AppServices.playback.refreshDisplays() }
+        }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
-                Task { @MainActor in await AppServices.model.suspendForSystem() }
+                Task { @MainActor in await AppServices.playback.suspend() }
             }
         lockObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { _ in
-                Task { @MainActor in await AppServices.model.suspendForSystem() }
+                Task { @MainActor in await AppServices.playback.suspend() }
             }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -56,7 +61,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         Task {
             // Shutdown must see an in-flight video activation before polling
             // cancellation can erase it; the model owns cancellation/rollback.
-            await AppServices.model.shutdownScene()
+            await AppServices.playback.shutdown()
             await AppServices.workshop.shutdown()
             polling?.cancel()
             sender.reply(toApplicationShouldTerminate: true)
@@ -68,14 +73,15 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
 @main @MainActor struct WallpaperApp: App {
     @NSApplicationDelegateAdaptor(WallpaperAppDelegate.self) private var delegate
-    @StateObject private var model = AppServices.model
+    @StateObject private var playback = AppServices.playback
+    private var model: LibraryModel { playback.selected }
     @AppStorage("appAppearance") private var appearance = AppAppearance.system
     @AppStorage("appLanguage") private var language = AppLanguage.chinese
     @AppStorage("libraryPage") private var page = LibraryPage.library
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
         Window(AppStrings.text("壁纸", language: language), id: "library") {
-            NativeLibraryView().environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog).environmentObject(AppServices.workshop)
+            NativeLibraryView().environmentObject(playback).environmentObject(model).environmentObject(model.scenePlayer).environmentObject(AppServices.catalog).environmentObject(AppServices.workshop)
                 .environmentObject(model.collection)
                 .environment(\.locale, language.locale)
                 .preferredColorScheme(appearance.colorScheme).frame(minWidth: 980, minHeight: 680)
@@ -103,12 +109,12 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                     Divider()
                     Button(AppStrings.text(model.scenePlayer.manualPause ? "继续场景" : "暂停场景", language: language)) { model.scenePlayer.togglePause() }
                         .keyboardShortcut("p", modifiers: [.command, .option]).disabled(!model.scenePlayer.supportsControls)
-                    Button(AppStrings.text("停止所有壁纸", language: language)) { Task { await model.perform(.off) } }
+                    Button(AppStrings.text("停止所有壁纸", language: language)) { Task { await playback.stopAll() } }
                         .keyboardShortcut(".", modifiers: [.command, .option])
                 }
             }
         MenuBarExtra(AppStrings.text("壁纸", language: language), systemImage: "desktopcomputer") {
-            WallpaperMenu().environmentObject(model).environmentObject(model.scenePlayer)
+            WallpaperMenu().environmentObject(playback).environmentObject(model).environmentObject(model.scenePlayer)
                 .environment(\.locale, language.locale)
         }
     }
@@ -119,6 +125,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 private struct WallpaperMenu: View {
+    @EnvironmentObject var playback: DisplayPlayback
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
     @Environment(\.openWindow) private var openWindow
@@ -133,11 +140,11 @@ private struct WallpaperMenu: View {
         if scenePlayer.supportsControls {
             Button(LocalizedStringKey(scenePlayer.manualPause ? "继续场景" : "暂停场景")) { scenePlayer.togglePause() }
         }
-        Button("停止所有壁纸") { Task { await model.perform(.off) } }
+        Button("停止所有壁纸") { Task { await playback.stopAll() } }
             .disabled(model.busy || scenePlayer.phase == .stopping)
-        if scenePlayer.restorationPending {
-            Button("恢复原壁纸") { Task { await scenePlayer.recoverBackdrop() } }
-                .disabled(scenePlayer.isActive || scenePlayer.recoveringBackdrop)
+        if playback.needsRecovery {
+            Button("恢复原壁纸") { Task { await playback.recoverBackdrops() } }
+                .disabled(playback.busy || playback.hasPlayback)
         }
         if model.videoBackdrop.restorationPending {
             Button("恢复视频底图前的壁纸") { Task { await model.recoverVideoBackdrop() } }

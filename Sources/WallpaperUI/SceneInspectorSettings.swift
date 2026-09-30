@@ -22,7 +22,7 @@ struct SceneInspectorSettings: View {
     @State private var catalogLoading = true
     @State private var availableDisplays = SceneDisplay.connected()
 
-    private var preferences: ScenePreferences { store.preferences(for: package) }
+    private var preferences: ScenePreferences { model.playbackPreferences(for: package) }
     private var isPlaying: Bool { model.isActiveScene(package) }
     private var displaySelection: Binding<String> {
         let representedPackage = package
@@ -40,6 +40,15 @@ struct SceneInspectorSettings: View {
     }
 
     private var displayPicker: some View {
+        Group {
+        if model.targetDisplayUUID != nil {
+            LabeledContent("播放显示器", value: preferences.displayName ?? AppStrings.text("未连接", locale: locale))
+            Text("在图库顶部选择目标屏幕；更换壁纸不会影响其他屏幕。")
+                .font(.caption).foregroundStyle(.secondary)
+        } else { legacyDisplayPicker }
+        }
+    }
+    private var legacyDisplayPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("播放显示器")

@@ -141,11 +141,13 @@ struct SceneLaunchConfiguration: Sendable {
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private let focusProvider: @MainActor @Sendable () -> UInt32?
+    let pinnedDisplayUUID: String?
     private let displayProvider: @MainActor @Sendable () -> [SceneDisplay]
 
-    init(focusProvider: @escaping @MainActor @Sendable () -> UInt32? = { FocusDisplaySelector.currentDisplay() },
+    init(pinnedDisplayUUID: String? = nil, focusProvider: @escaping @MainActor @Sendable () -> UInt32? = { FocusDisplaySelector.currentDisplay() },
          displayProvider: @escaping @MainActor @Sendable () -> [SceneDisplay] = { SceneDisplay.connected() },
          backdropFactory: @escaping @Sendable (SceneBackdropConfiguration) -> any SceneBackdropControlling = { SceneBackdropLease(configuration: $0) }) {
+        self.pinnedDisplayUUID = pinnedDisplayUUID
         self.focusProvider = focusProvider
         self.displayProvider = displayProvider
         self.backdropFactory = backdropFactory
@@ -156,7 +158,8 @@ struct SceneLaunchConfiguration: Sendable {
     func togglePause() { if supportsControls { manualPause.toggle() } }
     var connectedDisplays: [SceneDisplay] { displayProvider() }
     func preferredDisplayID(preferences: ScenePreferences = .init()) -> UInt32? {
-        SceneDisplay.resolve(preferences, displays: displayProvider(), focus: focusProvider())
+        if let pinnedDisplayUUID { return displayProvider().first { $0.uuid == pinnedDisplayUUID }?.id }
+        return SceneDisplay.resolve(preferences, displays: displayProvider(), focus: focusProvider())
     }
     var isTransitioning: Bool { phase == .starting || phase == .stopping || recoveringBackdrop || applyingEffects || exporting }
     var statusText: String {
@@ -195,6 +198,11 @@ struct SceneLaunchConfiguration: Sendable {
     func start(_ configuration: SceneLaunchConfiguration) throws {
         guard worker == nil else { throw BackendError.message("上一个场景尚未停止，请稍候") }
         try requireRestoredBackdrop()
+        if let pinnedDisplayUUID {
+            guard displayProvider().contains(where: { $0.uuid == pinnedDisplayUUID && $0.id == configuration.displayID }) else {
+                throw BackendError.message("目标显示器已断开，请重新选择显示器")
+            }
+        }
         let token = UUID()
         generation = token
         phase = .starting
@@ -211,6 +219,7 @@ struct SceneLaunchConfiguration: Sendable {
         preparingBackdrop = configuration.backdrop != nil
         error = nil
         notice = nil
+        let pinnedDisplay = pinnedDisplayUUID
         let focus = focusProvider
         let displays = displayProvider
         let backdropFactory = backdropFactory
@@ -230,18 +239,30 @@ struct SceneLaunchConfiguration: Sendable {
                 try await Self.waitUntil(timeout: 60) { try child.eventReceived("scene-ready") }
                 try await Self.waitUntil(timeout: 15) { try child.eventReceived("first-frame-presented") }
                 try Task.checkCancellation()
-                if let backdrop {
+                if let pinnedDisplay, !(await displays()).contains(where: { $0.uuid == pinnedDisplay && $0.id == configuration.displayID }) {
+                    throw CancellationError()
+                }
+                if let lease = backdrop {
+                    do {
                     let opening = SceneBackdropFrameSampler.openingEnabled(
                         package: configuration.package, values: configuration.userPropertyValues)
-                    try backdrop.activate(displayID: configuration.displayID) { output in
+                    try lease.activate(displayID: configuration.displayID) { output in
                         try SceneBackdropFrameSampler.capture(to: output, openingEnabled: opening) {
                             try child.snapshot(to: $0)
                         }
                     }
-                    if let image = backdrop.registrationURL {
+                    if let image = lease.registrationURL {
                         try await SpaceWallpaperSettingsController.activate(displayID: configuration.displayID, imageURL: image)
                     }
-                    await self?.backdropActivated(token: token, image: backdrop.previewURL)
+                    await self?.backdropActivated(token: token, image: lease.previewURL)
+                    } catch {
+                        let reason = error.localizedDescription
+                        try lease.finish()
+                        guard !lease.recoveryPending else { throw BackendError.message("上一次底图恢复尚未完成") }
+                        try Task.checkCancellation()
+                        backdrop = nil
+                        await self?.backdropUnavailable(token: token, reason: reason)
+                    }
                 }
                 try Task.checkCancellation()
                 if configuration.supportsLiveProperties {
@@ -260,6 +281,10 @@ struct SceneLaunchConfiguration: Sendable {
                     // A successful activation is historical; still check liveness.
                     _ = try child.eventReceived("activated")
                     let available = await displays()
+                    if let pinnedDisplay, !available.contains(where: { $0.uuid == pinnedDisplay && $0.id == handoff.currentDisplayID }) {
+                        // Never fall back onto another display's independent owner.
+                        throw CancellationError()
+                    }
                     if available.count > 1, let activeBackdrop = backdrop {
                         // Restore the owned single-display lease before moving
                         // onto a topology where the global switch is unsafe.
@@ -320,7 +345,7 @@ struct SceneLaunchConfiguration: Sendable {
                     let needsFocus = configuration.preferences.followsDisplay ||
                         !available.contains(where: { $0.id == handoff.currentDisplayID })
                     let focusedDisplay = needsFocus ? await focus() : nil
-                    let target = SceneDisplay.resolve(configuration.preferences,
+                    let target = pinnedDisplay != nil ? handoff.currentDisplayID : SceneDisplay.resolve(configuration.preferences,
                         displays: available, focus: focusedDisplay, current: handoff.currentDisplayID)
                     try Task.checkCancellation()
                     if let move = handoff.observe(target, at: ProcessInfo.processInfo.systemUptime) {
@@ -519,6 +544,12 @@ struct SceneLaunchConfiguration: Sendable {
         notice = "多屏模式下暂不启用 Space 过渡底图，场景仍可选择或跟随显示器播放。"
     }
 
+    private func backdropUnavailable(token: UUID, reason: String) {
+        guard token == generation else { return }
+        automaticBackdropActive = false
+        automaticBackdropImage = nil
+        notice = "场景过渡底图未就绪：" + reason
+    }
     private func backdropActivated(token: UUID, image: URL?) {
         guard token == generation else { return }
         automaticBackdropActive = true

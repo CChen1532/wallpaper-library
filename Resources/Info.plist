@@ -8,9 +8,9 @@
 <key>CFBundleExecutable</key><string>WallpaperUI</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.69</string>
+<key>CFBundleShortVersionString</key><string>0.2.71</string>
 <key>CFBundleVersion</key><string>1</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSDesktopFolderUsageDescription</key><string>访问桌面视频素材和您选择的场景目录，以管理并播放动态壁纸。</string>
 <key>NSAudioCaptureUsageDescription</key><string>让支持音频响应的场景随系统声音变化。</string>

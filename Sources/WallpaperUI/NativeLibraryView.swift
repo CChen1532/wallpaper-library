@@ -8,6 +8,7 @@ enum LibraryPage: String, Hashable { case library, videos, scenes, workshop, rot
 struct NativeLibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
+    @EnvironmentObject var playback: DisplayPlayback
     @EnvironmentObject var model: LibraryModel
     @EnvironmentObject var scenePlayer: ScenePlayer
     @AppStorage("libraryPage") private var page = LibraryPage.library
@@ -88,6 +89,8 @@ struct NativeLibraryView: View {
 
         } detail: {
             VStack(spacing: 0) {
+                if let issue = playback.issue { issueBanner(AppStrings.text(issue, locale: locale)) }
+                if page != .settings { displayPlaybackBar }
                 if let issue = model.stateIssue { issueBanner(AppStrings.text("状态暂不可用：", locale: locale) + issue) }
                 if let issue = model.libraryIssue { issueBanner(AppStrings.text("素材读取失败：", locale: locale) + issue) }
                 if let issue = model.videoBackdropIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
@@ -136,7 +139,7 @@ struct NativeLibraryView: View {
             if page == .scenes || page == .videos { page = .library }
             catalog.start()
             syncRotationFields()
-            rotationUsesSelection = !collection.rotationItems.isEmpty
+            rotationUsesSelection = model.targetDisplayUUID != nil || !collection.rotationItems.isEmpty
         }
         .onReceive(catalog.$scenes.combineLatest(model.$items)) { scenes, videos in
             galleryIndex = GalleryIndex(
@@ -522,7 +525,7 @@ struct NativeLibraryView: View {
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为场景壁纸（⌘Return）")
                     .disabled(model.isWorking || !model.sceneRuntimeAvailable || item.error != nil || item.packageBytes <= 0)
-                    Text("会立即更换桌面壁纸").font(.caption).foregroundStyle(.secondary)
+                    Text("仅更换所选屏幕的壁纸").font(.caption).foregroundStyle(.secondary)
                 }.padding(16).frame(maxWidth: .infinity).background(.bar)
             }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
@@ -667,7 +670,7 @@ struct NativeLibraryView: View {
                     Label("设为动态壁纸", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
                 }.buttonStyle(.borderedProminent).controlSize(.large)
                     .keyboardShortcut(.return, modifiers: .command).help("设为动态壁纸（⌘Return）").disabled(model.isWorking || !item.playable)
-                    Text("会立即更换桌面壁纸").font(.caption).foregroundStyle(.secondary)
+                    Text("仅更换所选屏幕的壁纸").font(.caption).foregroundStyle(.secondary)
                 }.padding(16).frame(maxWidth: .infinity).background(.bar)
             }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
@@ -682,12 +685,12 @@ struct NativeLibraryView: View {
     }
     private var rotationSettings: some View {
         VStack(spacing: 0) {
-            Picker("轮播来源", selection: $rotationUsesSelection) {
+            if model.targetDisplayUUID == nil { Picker("轮播来源", selection: $rotationUsesSelection) {
                 Text("所选壁纸").tag(true)
                 Text("默认视频文件夹").tag(false)
             }.pickerStyle(.segmented).frame(maxWidth: 480).padding(16)
-                .accessibilityIdentifier("rotation.source")
-            if rotationUsesSelection {
+                .accessibilityIdentifier("rotation.source") }
+            if rotationUsesSelection || model.targetDisplayUUID != nil {
                 SelectionRotationView(collection: collection, draft: $selectionRotationDraft) {
                     showHidden = false; page = .library; isSelecting = true; batchSelection.clear()
                 }
@@ -757,6 +760,27 @@ struct NativeLibraryView: View {
             }.disabled(model.isWorking)
         }.formStyle(.grouped).frame(maxWidth: 680).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    private var displayPlaybackBar: some View {
+        HStack(spacing: 12) {
+            Label("播放到", systemImage: "display.2")
+            Picker("播放显示器", selection: $playback.selectedUUID) {
+                ForEach(playback.displays, id: \.uuid) { display in
+                    Text(playback.label(for: display)).tag(display.uuid)
+                }
+                if playback.displays.isEmpty { Text("未连接").tag("") }
+            }.labelsHidden().frame(minWidth: 180, maxWidth: 300)
+                .disabled(playback.busy).accessibilityIdentifier("playback.display")
+            Text("每块屏幕独立选择，也可使用同一张壁纸")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Menu {
+                ForEach(playback.displays, id: \.uuid) { display in
+                    Text(playback.label(for: display) + " · " + (playback.playingTitle(for: display) ?? AppStrings.text("未播放壁纸", locale: locale)))
+                }
+            } label: { Label("各屏幕状态", systemImage: "info.circle") }
+                .menuStyle(.borderlessButton).fixedSize()
+        }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)
+    }
     private var desktopControls: some View {
         HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
@@ -784,12 +808,12 @@ struct NativeLibraryView: View {
                 }.disabled(model.isWorking)
             }
             Button { Task { await model.perform(.stop) } } label: {
-                Label("停止", systemImage: "stop.fill").font(.system(size: 11, weight: .medium))
-            }.help("停止场景或视频，保留视频轮播设置").accessibilityLabel("停止桌面播放")
+                Label("停止此屏幕", systemImage: "stop.fill").font(.system(size: 11, weight: .medium))
+            }.help("停止所选屏幕的壁纸与轮播").accessibilityLabel("停止此屏幕")
                 .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.selectionRotation.active && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
-            Button("全部关闭") { Task { await model.perform(.off) } }
+            Button("停止所有壁纸") { Task { await playback.stopAll() } }
                 .font(.system(size: 11, weight: .medium)).help("停止场景和视频，并关闭轮播")
-                .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.isRotating && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
+                .disabled(playback.busy)
         }.controlSize(.regular).padding(.horizontal, 24).padding(.vertical, 14)
             .background(Color(nsColor: .windowBackgroundColor))
     }

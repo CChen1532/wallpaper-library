@@ -808,3 +808,29 @@
 "项目文件夹及素材会一并移动；受影响的播放会先停止。" = "Project folders and their materials are moved together. Affected playback stops first.";
 
 "默认视频文件夹" = "Default Video Folder";
+
+"播放到" = "Play on";
+
+"每块屏幕独立选择，也可使用同一张壁纸" = "Choose independently for each display, or use the same wallpaper";
+
+"各屏幕状态" = "Display status";
+
+"停止此屏幕" = "Stop this display";
+
+"停止所选屏幕的壁纸与轮播" = "Stop wallpaper and rotation on the selected display";
+
+"仅更换所选屏幕的壁纸" = "Only the selected display will change";
+
+"在图库顶部选择目标屏幕；更换壁纸不会影响其他屏幕。" = "Choose the target display above the library. Changing wallpaper leaves other displays playing.";
+
+"显示器已断开，该屏幕播放已停止。重新连接后可再次选择壁纸。" = "The display was disconnected and its playback stopped. Reconnect it to choose a wallpaper again.";
+
+"目标显示器已断开，请重新选择显示器" = "The target display was disconnected. Choose a connected display.";
+
+"视频引擎无法区分同名显示器；场景壁纸仍可独立播放" = "The video engine cannot distinguish displays with identical names. Scene wallpapers can still play independently.";
+
+"请使用所选壁纸轮播" = "Use selected wallpaper rotation";
+
+"没有可播放的视频" = "No playable videos";
+
+"多屏同时播放时暂不启用 Space 过渡底图。" = "Space transition backdrops are temporarily disabled during multi-display playback.";

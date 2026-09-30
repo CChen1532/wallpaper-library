@@ -21,13 +21,22 @@ mkdir -p "$app/Contents/Resources/NowPlaying"
 xcrun clang++ -dynamiclib -fobjc-arc -framework AppKit -framework Foundation \
     -mmacosx-version-min=14.0 Sources/MediaBridge/NowPlayingBridge.mm \
     -o "$app/Contents/Resources/NowPlaying/libWallpaperNowPlaying.dylib"
+mkdir -p "$app/Contents/Resources/Phonto"
+cp 工具/phonto/phonto-wall 工具/phonto/display-control.py "$app/Contents/Resources/Phonto/"
+swiftc -O -target arm64-apple-macos14.0 工具/phonto/display-name.swift -o "$app/Contents/Resources/Phonto/display-name"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp -R Resources/en.lproj Resources/zh-Hans.lproj "$app/Contents/Resources/"
 cp -R Resources/Licenses "$app/Contents/Resources/"
+python3 scripts/bundle-portable-tools.py "$app/Contents/Resources"
 # Use the committed icon for reproducible packaging; iconutil may reject a
 # regenerated iconset even when its input PNG and the existing ICNS are valid.
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
-python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
+if [[ -f "$scene_runtime/Contents/Resources/runtime-manifest.json" && -d "$scene_runtime/Contents/Frameworks" ]]; then
+    # Already relocated and signed: preserve the exact validated renderer bytes.
+    cp -R "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
+else
+    python3 scripts/bundle-scene-runtime.py "$scene_runtime" "$app/Contents/Resources/SceneRuntime"
+fi
 bash 工具/快速墙纸/build.sh
 mkdir -p "$app/Contents/Resources/WallpaperSwitch"
 cp 工具/快速墙纸/wallpaper-switch.py "$app/Contents/Resources/WallpaperSwitch/"
@@ -51,8 +60,15 @@ codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.wallpape
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.moon "$app/Contents/Resources/MoonSceneRenderer"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.gravity "$app/Contents/Resources/GravitySceneRenderer"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library.media "$app/Contents/Resources/NowPlaying/libWallpaperNowPlaying.dylib"
+# Sign all added standalone tools and CPython extension modules before the app.
+while IFS= read -r -d '' binary; do
+    if file "$binary" | grep -q 'Mach-O'; then
+        codesign --force --sign "$SIGN_ID" "$binary"
+    fi
+done < <(find "$app/Contents/Resources/Phonto" "$app/Contents/Resources/Python" -type f -print0)
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library "$app"
 codesign --verify --deep --strict "$app"
+python3 scripts/check-portable-app.py "$app"
 .build/release/MirageSceneBridgeProbe --verify-input-runtime "$app/Contents/Resources/SceneRuntime"
 python3 scripts/check-scene-input.py "$app/Contents/Resources/SceneRuntime/Contents/Resources/Renderers/SceneWallpaper"
 # Keep the previous app available until the staged build has passed validation.

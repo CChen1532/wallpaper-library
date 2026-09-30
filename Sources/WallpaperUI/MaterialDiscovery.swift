@@ -66,7 +66,9 @@ enum MaterialDiscovery {
     static func roots(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                       defaults: UserDefaults = .standard) -> [URL] {
         var paths = [home.appendingPathComponent("Movies/Wallpapers").path,
-                     home.appendingPathComponent("Movies/Wallpapers2").path]
+                     home.appendingPathComponent("Movies/Wallpapers2").path,
+                     home.appendingPathComponent("Movies/WallpaperUI").path]
+        paths = paths.filter { FileManager.default.fileExists(atPath: $0) }
         if let old = defaults.string(forKey: "sceneLibraryPath"), !old.isEmpty { paths.append(old) }
         paths += defaults.stringArray(forKey: "materialLibraryPaths") ?? []
         let excluded = Set((defaults.stringArray(forKey: "removedMaterialLibraryPaths") ?? []).map { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path })

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 @main struct ScenePlaybackChecks {
     @MainActor static func main() async throws {
+        setbuf(stdout, nil)
         var count = 0
         func check(_ value: Bool, _ name: String) {
             precondition(value, "FAIL: " + name)
@@ -236,8 +237,10 @@ import UniformTypeIdentifiers
         var mismatchConfig = configuration("blocked-backdrop")
         mismatchConfig.backdrop = incompatibleSettings
         await mismatchModel.playPreparedScene(mismatchConfig)
-        check(!mismatchPlayer.isActive && !hasLivePID("blocked-backdrop") && mismatchModel.error != nil,
-              "已请求匹配底图却不兼容时拒绝启动场景，不静默露出旧壁纸")
+        try await wait { mismatchPlayer.phase == .playing }
+        check(mismatchPlayer.isActive && mismatchModel.backdropCompatibilityIssue != nil,
+              "只读底图兼容预检失败后仍可播放并保留提示")
+        await mismatchPlayer.stop()
         let backend = SceneTestBackend()
         let model = LibraryModel(backend: backend, scenePlayer: coordinated,
                                  sceneRuntimeURL: root.appendingPathComponent("missing-runtime"))
@@ -704,6 +707,20 @@ import UniformTypeIdentifiers
         check(backdrop.events.last == "restore" && !automatic.automaticBackdropActive && !automatic.restorationPending,
               "停止场景自动复原且清理匹配状态")
 
+        let failedLease = BackdropFixture(failActivate: true)
+        let fallbackPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] }, backdropFactory: { _ in failedLease })
+        var fallbackConfig = configuration("backdrop-fallback"); fallbackConfig.backdrop = backdropConfig
+        try fallbackPlayer.start(fallbackConfig)
+        try await wait { fallbackPlayer.phase == .playing }
+        check(!fallbackPlayer.restorationPending && !fallbackPlayer.automaticBackdropActive && fallbackPlayer.notice != nil && failedLease.events.last == "restore", "底图失败且恢复确认完成后继续场景播放并提示")
+        await fallbackPlayer.stop()
+        let unsafeLease = BackdropFixture(failRestore: true, failActivate: true)
+        let unsafePlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] }, backdropFactory: { _ in unsafeLease })
+        var unsafeConfig = configuration("unsafe-backdrop-fallback"); unsafeConfig.backdrop = backdropConfig
+        try unsafePlayer.start(unsafeConfig)
+        try await wait { unsafePlayer.phase == .failed }
+        check(unsafePlayer.restorationPending && !hasLivePID("unsafe-backdrop-fallback"), "底图恢复失败仍阻止启动并回收渲染器")
+
         let liveBackdrop = BackdropFixture()
         let livePlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] }, backdropFactory: { _ in liveBackdrop })
         var liveConfig = configuration("live-effects")
@@ -990,10 +1007,10 @@ import UniformTypeIdentifiers
         print("\(count) Scene integration checks passed")
     }
 
-    @MainActor static func wait(_ predicate: () -> Bool) async throws {
+    @MainActor static func wait(file: StaticString = #filePath, line: UInt = #line, _ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !predicate() {
-            precondition(ContinuousClock.now < deadline, "condition timed out")
+            precondition(ContinuousClock.now < deadline, "condition timed out", file: file, line: line)
             try await Task.sleep(for: .milliseconds(25))
         }
     }
@@ -1043,12 +1060,14 @@ private final class BackdropFixture: SceneBackdropControlling, @unchecked Sendab
     private var recorded: [String] = []
     private var active = false
     private let failRestore: Bool
-    init(failRestore: Bool = false) { self.failRestore = failRestore }
+    private let failActivate: Bool
+    init(failRestore: Bool = false, failActivate: Bool = false) { self.failRestore = failRestore; self.failActivate = failActivate }
     var events: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
     var recoveryPending: Bool { lock.lock(); defer { lock.unlock() }; return active }
     func activate(displayID: UInt32, capture: (URL) throws -> Void) throws {
         lock.lock(); defer { lock.unlock() }
         active = true; recorded.append("apply:\(displayID)")
+        if failActivate { throw BackendError.message("fixture activate failure") }
     }
     func checkHealth() throws { }
     func finish() throws {

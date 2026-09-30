@@ -97,7 +97,7 @@ private struct VideoBackdropTarget: Equatable {
 
     init(configuration: @escaping () throws -> SceneBackdropConfiguration = { try .bundled() },
          runner: any CommandExecuting = CommandRunner(),
-         ffmpeg: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ffmpeg"),
+         ffmpeg: URL = RuntimeTools.executable("ffmpeg"),
          activateSystemWallpaper: @escaping @MainActor (UInt32, URL) async throws -> Void = { display, image in
              try await SpaceWallpaperSettingsController.activate(displayID: display, imageURL: image)
          }) {

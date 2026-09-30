@@ -5,6 +5,7 @@ import ApplicationServices
 struct WallpaperSettingsView: View {
     @Environment(\.locale) private var locale
     @EnvironmentObject private var catalog: UnifiedLibrary
+    @EnvironmentObject private var playback: DisplayPlayback
     @EnvironmentObject private var model: LibraryModel
     @EnvironmentObject private var scenePlayer: ScenePlayer
     @EnvironmentObject private var workshop: WorkshopModel
@@ -97,6 +98,10 @@ struct WallpaperSettingsView: View {
             Section {
                 Toggle("场景自动匹配过渡底图", isOn: $automaticBackdrop)
                     .disabled(model.isWorking || scenePlayer.isActive)
+                if playback.displays.count > 1 {
+                    Text("多屏同时播放时暂不启用 Space 过渡底图。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 Text("使用场景截图作为 Space 过渡底图；停止、换片或退出时恢复原壁纸。")
                     .font(.callout).foregroundStyle(.secondary)
                 if let issue = model.backdropCompatibilityIssue {
@@ -111,11 +116,11 @@ struct WallpaperSettingsView: View {
                     Text(LocalizedStringKey(scenePlayer.automaticBackdropActive ? "过渡底图已匹配；停止后可修改开关。" : "停止当前场景后可修改开关。"))
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                if scenePlayer.restorationPending {
+                if playback.needsRecovery {
                     Text("原壁纸恢复未完成，恢复记录已保留。")
                         .foregroundStyle(.orange)
-                    Button("恢复原壁纸") { Task { await scenePlayer.recoverBackdrop() } }
-                        .disabled(model.isWorking || scenePlayer.isActive)
+                    Button("恢复原壁纸") { Task { await playback.recoverBackdrops() } }
+                        .disabled(playback.busy || playback.hasPlayback)
                 }
                 if scenePlayer.recoveringBackdrop { ProgressView("正在恢复原壁纸…") }
                 if model.videoBackdrop.restorationPending {
@@ -166,9 +171,9 @@ struct WallpaperSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             accessibilityTrusted = AXIsProcessTrusted()
-            if scenePlayer.restorationPending || model.videoBackdrop.restorationPending { category = .playback }
+            if playback.needsRecovery { category = .playback }
         }
-        .onChange(of: scenePlayer.restorationPending || model.videoBackdrop.restorationPending) { _, pending in
+        .onChange(of: playback.needsRecovery) { _, pending in
             if pending { category = .playback }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

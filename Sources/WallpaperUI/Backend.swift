@@ -49,13 +49,37 @@ protocol WallpaperBackend: Sendable {
     func trash(_ url: URL) async throws
     func diagnostics() async throws -> BackendDiagnostics
 }
+/// Packaged applications resolve their tools relative to the bundle, independent of PATH.
+/// Source-only checks retain the developer tools fallback.
+enum RuntimeTools {
+    static func executable(_ name: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                           resources: URL? = Bundle.main.resourceURL) -> URL {
+        if let resources, Bundle.main.bundleURL.pathExtension == "app" {
+            return resources.appendingPathComponent(name == "python3" ? "Python/bin/python3" : "Phonto/" + name)
+        }
+        return name == "python3" ? URL(fileURLWithPath: "/usr/bin/python3") : home.appendingPathComponent(".local/bin/" + name)
+    }
+}
+
 struct PhontoBackend: WallpaperBackend {
     var home = FileManager.default.homeDirectoryForCurrentUser
     var runner: any CommandExecuting = CommandRunner()
     var directoryOverride: URL?
-    var directory: URL { directoryOverride ?? home.appendingPathComponent("Movies/Wallpapers") }
+    var displayUUID: String?
+    var displayCommand: String?
+    var directory: URL {
+        if let directoryOverride { return directoryOverride }
+        let legacy = home.appendingPathComponent("Movies/Wallpapers")
+        return FileManager.default.fileExists(atPath: legacy.path) ? legacy : home.appendingPathComponent("Movies/WallpaperUI")
+    }
     var capabilities: BackendCapabilities { .init(name: "phonto", libraryDirectory: directory, rotationModes: ["rand"], canImport: true, canTrash: true) }
-    var command: String { home.appendingPathComponent(".local/bin/phonto-wall").path }
+    var command: String {
+        if displayUUID != nil {
+            return displayCommand ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL)
+                .appendingPathComponent("Phonto/phonto-wall").path
+        }
+        return RuntimeTools.executable("phonto-wall", home: home).path
+    }
     var materialRoots: [URL] { directoryOverride != nil ? [directory] : MaterialDiscovery.roots(home: home) }
     func library() async throws -> [Wallpaper] {
         let roots = materialRoots
@@ -94,7 +118,7 @@ struct PhontoBackend: WallpaperBackend {
                 let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey])
                 guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
                 item.sizeBytes = Int64(values.fileSize ?? 0)
-                let result = try await runner.run(home.appendingPathComponent(".local/bin/ffprobe").path, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,avg_frame_rate", "-show_entries", "format=duration", "-of", "json", url.path])
+                let result = try await runner.run(RuntimeTools.executable("ffprobe", home: home).path, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,avg_frame_rate", "-show_entries", "format=duration", "-of", "json", url.path])
                 guard result.code == 0 else { throw BackendError.message(result.message) }
                 let probe = try JSONDecoder().decode(Probe.self, from: Data(result.text.utf8))
                 guard let stream = probe.streams.first else { throw BackendError.message("未找到视频轨道") }
@@ -109,7 +133,7 @@ struct PhontoBackend: WallpaperBackend {
                 if (try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 == 0 {
                     let temporary = cache.appendingPathComponent(UUID().uuidString + ".jpg")
                     defer { try? FileManager.default.removeItem(at: temporary) }
-                    let generated = try await runner.run(home.appendingPathComponent(".local/bin/ffmpeg").path, ["-v", "error", "-y", "-ss", "0", "-i", url.path, "-frames:v", "1", "-vf", "scale=640:-2", temporary.path])
+                    let generated = try await runner.run(RuntimeTools.executable("ffmpeg", home: home).path, ["-v", "error", "-y", "-ss", "0", "-i", url.path, "-frames:v", "1", "-vf", "scale=640:-2", temporary.path])
                     guard generated.code == 0, (try? temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 > 0 else { throw BackendError.message("预览生成失败。" + generated.message) }
                     let data = try Data(contentsOf: temporary)
                     try data.write(to: target, options: .atomic)
@@ -124,6 +148,13 @@ struct PhontoBackend: WallpaperBackend {
         return results
     }
     func state() async throws -> PlaybackState {
+        if let displayUUID {
+            let result = try await runner.run(command, ["display", displayUUID, "state"], timeout: 20)
+            guard result.code == 0 else { throw BackendError.message(result.message) }
+            struct DisplayState: Decodable { let running: Bool; let lastPath: String? }
+            let value = try JSONDecoder().decode(DisplayState.self, from: Data(result.text.utf8))
+            return PlaybackState(running: value.running, lastPath: value.lastPath)
+        }
         var state = PlaybackState()
         let running = try await runner.run("/usr/bin/pgrep", ["-x", "phonto"])
         guard running.code == 0 || running.code == 1 else { throw BackendError.message(running.message) }
@@ -181,7 +212,25 @@ struct PhontoBackend: WallpaperBackend {
     }
     func perform(_ action: Action) async throws {
         if case .play(let path) = action { try validateLibraryFile(URL(fileURLWithPath: path)) }
-        let result = try await runner.run(command, Self.arguments(for: action), timeout: 30)
+        let arguments: [String]
+        if let displayUUID {
+            let prefix = ["display", displayUUID]
+            switch action {
+            case .play(let path):
+                let displays = await MainActor.run { SceneDisplay.connected() }
+                guard let display = displays.first(where: { $0.uuid == displayUUID }) else {
+                    throw BackendError.message("目标显示器已断开，请重新选择显示器")
+                }
+                guard displays.filter({ $0.name == display.name }).count == 1 else {
+                    throw BackendError.message("视频引擎无法区分同名显示器；场景壁纸仍可独立播放")
+                }
+                arguments = prefix + ["start", display.name, path]
+            case .stop, .off: arguments = prefix + ["off"]
+            case .stopRotation: arguments = prefix + ["stop-rotation"]
+            default: throw BackendError.message("请使用所选壁纸轮播")
+            }
+        } else { arguments = try Self.arguments(for: action) }
+        let result = try await runner.run(command, arguments, timeout: 30)
         guard result.code == 0, !result.text.contains("❌") else { throw BackendError.message(result.message.isEmpty ? "控制失败（\(result.code)）" : result.message) }
         let actual = try await state()
         switch action {
@@ -211,11 +260,12 @@ struct PhontoBackend: WallpaperBackend {
                 try Task.checkCancellation()
                 let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                 guard source.pathExtension.lowercased() == "mp4", values.isRegularFile == true, values.isSymbolicLink != true else { throw BackendError.message("仅支持 MP4 普通文件") }
-                let probe = try await runner.run(home.appendingPathComponent(".local/bin/ffprobe").path, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source.path])
+                let probe = try await runner.run(RuntimeTools.executable("ffprobe", home: home).path, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source.path])
                 guard probe.code == 0, let parsed = try? JSONDecoder().decode(Probe.self, from: Data(probe.text.utf8)), let first = parsed.streams.first, (first.width ?? 0) > 0 else { throw BackendError.message("视频无法读取，未导入") }
                 // The CLI glob is lowercase *.mp4; normalize imported extensions to match it.
                 let destination = directory.appendingPathComponent(source.deletingPathExtension().lastPathComponent + ".mp4")
                 guard !FileManager.default.fileExists(atPath: destination.path) else { throw BackendError.message("同名文件已存在，已跳过") }
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let staged = directory.appendingPathComponent(".import-" + UUID().uuidString)
                 defer { try? FileManager.default.removeItem(at: staged) }
                 try await Task.detached(priority: .utility) { try FileManager.default.copyItem(at: source, to: staged) }.value
@@ -232,8 +282,8 @@ struct PhontoBackend: WallpaperBackend {
         try FileManager.default.trashItem(at: url, resultingItemURL: nil)
     }
     func diagnostics() async throws -> BackendDiagnostics {
-        let displays = try await runner.run(home.appendingPathComponent(".local/bin/phonto").path, ["displays"])
-        let status = try await runner.run(command, ["status"])
+        let displays = try await runner.run(RuntimeTools.executable("phonto", home: home).path, ["displays"])
+        let status = try await runner.run(command, displayUUID.map { ["display", $0, "state"] } ?? ["status"])
         guard displays.code == 0, status.code == 0 else { throw BackendError.message(displays.message + "\n" + status.message) }
         return BackendDiagnostics(displays: displays.text, status: status.text)
     }

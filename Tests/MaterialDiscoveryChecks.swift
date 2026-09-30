@@ -66,6 +66,16 @@ import Foundation
         try fm.createSymbolicLink(at: root.appendingPathComponent("package-symlink/scene.pkg"), withDestinationURL: scene)
         check(try MaterialDiscovery.scan(root.appendingPathComponent("package-symlink")).map(\.url) == [symlinkCollision],
               "忽略scene.pkg符号链接并继续发现同层视频")
+        let cleanHome = root.appendingPathComponent("clean-home")
+        let cleanDefaults = UserDefaults(suiteName: "WallpaperPortable-" + UUID().uuidString)!
+        check(MaterialDiscovery.roots(home: cleanHome, defaults: cleanDefaults).isEmpty, "新电脑不存在旧素材目录时不产生扫描错误")
+        let portable = PhontoBackend(home: cleanHome)
+        check(portable.directory == cleanHome.appendingPathComponent("Movies/WallpaperUI"), "新用户使用可创建的标准素材目录")
+        try fm.createDirectory(at: portable.directory, withIntermediateDirectories: true)
+        check(MaterialDiscovery.roots(home: cleanHome, defaults: cleanDefaults) == [portable.directory], "默认新目录在创建后参与发现")
+        let unavailable = cleanHome.appendingPathComponent("missing-explicit-source")
+        MaterialDiscovery.setIncluded(true, folder: unavailable, defaults: cleanDefaults)
+        check(MaterialDiscovery.roots(home: cleanHome, defaults: cleanDefaults).contains(unavailable), "用户明确添加的失效来源保留供修复")
         print("\(count) discovery checks passed")
     }
 }
