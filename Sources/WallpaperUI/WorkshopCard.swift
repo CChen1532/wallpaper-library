@@ -7,6 +7,7 @@ struct WorkshopCard: View, Equatable {
     let locked: Bool
     let detailsLocked: Bool
     let classification: String
+    var progress: WorkshopDownloadProgress? = nil
     let showDetails: () -> Void
     let download: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduced
@@ -14,7 +15,7 @@ struct WorkshopCard: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item == rhs.item && lhs.state == rhs.state && lhs.locked == rhs.locked && lhs.detailsLocked == rhs.detailsLocked
-            && lhs.classification == rhs.classification
+            && lhs.classification == rhs.classification && lhs.progress == rhs.progress
     }
     var body: some View {
         VStack(spacing: 7) {
@@ -25,8 +26,15 @@ struct WorkshopCard: View, Equatable {
                         .aspectRatio(16 / 9, contentMode: .fit).clipped()
                     Text(item.title).font(.callout.weight(.medium)).lineLimit(2)
                         .frame(height: 36, alignment: .topLeading).padding(.horizontal, 10)
-                    Text(classification).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        .padding(.horizontal, 10).padding(.bottom, 10)
+                    Group {
+                        if state == .downloading {
+                            WorkshopTransferView(progress: progress ?? .init(fraction: nil), compact: true)
+                                .accessibilityIdentifier("workshop.card.progress." + item.id)
+                        } else {
+                            Text(classification).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }.frame(height: 30).padding(.horizontal, 10).padding(.bottom, 10)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                     .background(.background, in: RoundedRectangle(cornerRadius: 12))
                     .clipShape(RoundedRectangle(cornerRadius: 12))

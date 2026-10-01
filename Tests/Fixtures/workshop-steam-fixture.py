@@ -53,8 +53,10 @@ if item == '103' or account == 'mobile_user':
 if item is None:
     print('Logged in OK\nWaiting for user info...OK', flush=True)
 else:
+    print('Update state downloading, progress: 99.5', flush=True)
     print('Downloading item', flush=True)
     print('Update state (0x61) downloading, progress: 37.5', flush=True)
+    time.sleep(0.2)
     out = stage / 'steamapps' / 'workshop' / 'content' / '431960' / item
     out.mkdir(parents=True)
     (out / 'project.json').write_text(json.dumps({'type': 'video', 'file': 'movie.mp4'}))

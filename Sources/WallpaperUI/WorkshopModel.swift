@@ -117,6 +117,18 @@ import Combine
         return WorkshopFilters.supportsPlayback(tags: value.tags) ? .available : .unsupported
     }
 
+    var downloadProgress: WorkshopDownloadProgress? {
+        guard activity == .download else { return nil }
+        switch event {
+        case .transfer(let value): return value
+        case .downloading(let fraction): return .init(fraction: fraction)
+        default: return nil
+        }
+    }
+    func cardProgress(_ value: WorkshopItem) -> WorkshopDownloadProgress? {
+        activeDownloadID == value.id ? downloadProgress : nil
+    }
+
     /// Only page changes/explicit refreshes inspect disk, never a card's body or hover callback.
     func refreshDownloadedStatus() {
         installedJob?.cancel()
@@ -414,7 +426,7 @@ import Combine
         let token = UUID(); downloadToken = token
         defer { downloadToken = nil }
         do {
-            let source = try await worker.download(binary: component, account: account, password: password, id: item.id, staging: stage, keepAlive: true) { [weak self] event in
+            let source = try await worker.download(binary: component, account: account, password: password, id: item.id, staging: stage, keepAlive: true, expectedBytes: item.bytes) { [weak self] event in
                 Task { @MainActor in
                     guard let self, self.process === worker, self.downloadToken == token, self.activity == .download else { return }
                     self.event = event

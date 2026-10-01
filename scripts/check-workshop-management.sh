@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 mkdir -p .build/checks
 swiftc -parse-as-library -module-cache-path .build/checks/module-cache \
   Sources/WallpaperUI/CommandRunner.swift Sources/WallpaperUI/WorkshopURLParser.swift \
-  Sources/WallpaperUI/WorkshopCore.swift Sources/WallpaperUI/WorkshopSteam.swift Sources/WallpaperUI/WorkshopFilters.swift Sources/WallpaperUI/WorkshopBrowse.swift \
-  Sources/WallpaperUI/MaterialDiscovery.swift Sources/WallpaperUI/Backend.swift Sources/WallpaperUI/WorkshopModel.swift \
+  Sources/WallpaperUI/WorkshopCore.swift Sources/WallpaperUI/WorkshopDownloadProgress.swift Sources/WallpaperUI/WorkshopSteam.swift Sources/WallpaperUI/WorkshopFilters.swift Sources/WallpaperUI/WorkshopBrowse.swift \
+  Sources/WallpaperUI/MaterialDiscovery.swift Sources/GravitySceneCore/*.swift Sources/MirageSceneBridge/*.swift Sources/WallpaperUI/ScenePreferences.swift Sources/WallpaperUI/Backend.swift Sources/WallpaperUI/WorkshopModel.swift \
   Tests/WorkshopManagementChecks.swift -o .build/checks/workshop-management-checks
 .build/checks/workshop-management-checks "$@"

@@ -834,3 +834,13 @@
 "没有可播放的视频" = "No playable videos";
 
 "多屏同时播放时暂不启用 Space 过渡底图。" = "Space transition backdrops are temporarily disabled during multi-display playback.";
+
+"估算" = "Estimated";
+
+"正在下载…" = "Downloading…";
+
+"正在测速…" = "Measuring speed…";
+
+"速度统计当前 Steam 下载进程的网络接收量；估算进度可能因压缩和协议开销而变化。" = "Speed measures incoming network traffic for the current Steam download process. Estimated progress may vary due to compression and protocol overhead.";
+
+"Steam 下载进度与速度" = "Steam download progress and speed";

@@ -51,6 +51,7 @@ enum WorkshopComponent {
 
 enum WorkshopSteamEvent: Equatable, Sendable {
     case preparing, signingIn, guardCode, mobileApproval, downloading(Double?)
+    case transfer(WorkshopDownloadProgress)
 }
 
 /// Downloads may share an authenticated interactive process. Secrets only enter the PTY.
@@ -108,20 +109,20 @@ final class WorkshopSteamProcess: @unchecked Sendable {
     }
 
     func download(binary: URL, account: String, password: String, id: String, staging: URL,
-                  timeout: TimeInterval = 3600, keepAlive: Bool = false, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
+                  timeout: TimeInterval = 3600, keepAlive: Bool = false, expectedBytes: Int64 = 0, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
         guard case .ok = WorkshopURLParser.parse(id) else { throw WorkshopFailure.invalidAccount }
         return try await execute(binary: binary, account: account, password: password, id: id, staging: staging,
-                                 timeout: timeout, keepAlive: keepAlive, onEvent: onEvent)
+                                 timeout: timeout, keepAlive: keepAlive, expectedBytes: expectedBytes, onEvent: onEvent)
     }
 
     func connect(binary: URL, account: String, password: String = "", staging: URL,
                  timeout: TimeInterval = 120, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws {
         _ = try await execute(binary: binary, account: account, password: password, id: nil, staging: staging,
-                              timeout: timeout, keepAlive: true, onEvent: onEvent)
+                              timeout: timeout, keepAlive: true, expectedBytes: 0, onEvent: onEvent)
     }
 
     private func execute(binary: URL, account: String, password: String, id: String?, staging: URL,
-                         timeout: TimeInterval, keepAlive: Bool, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
+                         timeout: TimeInterval, keepAlive: Bool, expectedBytes: Int64, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) async throws -> URL {
         guard Self.validCredentials(account: account, password: password) else { throw WorkshopFailure.invalidAccount }
         let available = lock.withLock { if started { return false }; started = true; cancelled = false; pendingCode = nil; return true }
         guard available else { throw WorkshopFailure.busy }
@@ -132,7 +133,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                     for attempt in 0..<3 {
                         do {
                             let result = try self.run(binary: binary, account: account, password: password,
-                                                      id: id, staging: staging, timeout: timeout, keepAlive: keepAlive, onEvent: onEvent)
+                                                      id: id, staging: staging, timeout: timeout, keepAlive: keepAlive, expectedBytes: expectedBytes, onEvent: onEvent)
                             continuation.resume(returning: result); return
                         } catch Bootstrap.restart {
                             // Valve's bootstrap exits with 42 after replacing itself; its shell wrapper normally restarts it.
@@ -151,7 +152,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
     }
 
     private func run(binary: URL, account: String, password: String, id: String?, staging: URL,
-                     timeout: TimeInterval, keepAlive: Bool, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) throws -> URL {
+                     timeout: TimeInterval, keepAlive: Bool, expectedBytes: Int64, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) throws -> URL {
         if lock.withLock({ cancelled }) { throw CancellationError() }
         if let current = session, !keepAlive || !current.process.isRunning || current.account != account || current.binary != binary || current.staging != staging {
             session = nil
@@ -206,6 +207,14 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 }
             }
         }
+        var sampler: WorkshopNetworkSampler?
+        defer { sampler?.stop() }
+        var downloading = false
+        var currentProgress: Double?
+        var nextSample = ProcessInfo.processInfo.systemUptime
+        func completedTransfer() {
+            publish(.transfer(sampler?.snapshot(progress: 1, expectedBytes: expectedBytes) ?? .init(fraction: 1)))
+        }
         var transcript = "", sentPassword = reused, waitingGuard = false, success = false
         if reused {
             if let id { try send("workshop_download_item 431960 " + id) }
@@ -248,27 +257,45 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                     success = true
                     // Only a prompt after this item's success is a command boundary.
                     if keepAlive && lower[marker.upperBound...].contains("steam>") {
+                        completedTransfer()
                         reusable = process.isRunning
                         return staging.appendingPathComponent("steamapps/workshop/content/431960/" + id, isDirectory: true)
                     }
                 }
-                if !sentPassword && (lower.contains("password:") || lower.contains("password: ")) {
+                let marker = lower.range(of: "downloading item")
+                if id != nil, downloading || marker != nil {
+                    // Ignore client-update percentages before this item's boundary.
+                    // Once acknowledged, progress continues even if the marker falls
+                    // out of the bounded output buffer.
+                    let itemOutput = marker.map { String(transcript[$0.lowerBound...]) } ?? transcript
+                    if !downloading {
+                        downloading = true
+                        let monitor = WorkshopNetworkSampler(pid: process.processIdentifier)
+                        sampler = monitor; monitor.start()
+                    }
+                    if let progress = Self.progress(in: itemOutput) { currentProgress = progress }
+                    publish(.transfer(sampler?.snapshot(progress: currentProgress, expectedBytes: expectedBytes) ?? .init(fraction: currentProgress)))
+                } else if !sentPassword && (lower.contains("password:") || lower.contains("password: ")) {
                     guard !password.isEmpty else { throw WorkshopFailure.passwordRequired }
                     sentPassword = true; try send(password); transcript = ""; publish(.signingIn)
                 } else if lower.contains("steam guard code:") || lower.contains("two-factor code:") || lower.contains("authenticator code:") || lower.contains("enter the current code") || lower.contains("enter the code") {
                     waitingGuard = true; transcript = ""; publish(.guardCode)
                 } else if lower.contains("confirm") && (lower.contains("mobile") || lower.contains("steam app")) {
                     publish(.mobileApproval)
-                } else if lower.contains("downloading item") || lower.contains("update state") {
-                    publish(.downloading(Self.progress(in: transcript)))
                 } else if lower.contains("logging in") { publish(.signingIn) }
             } else if !process.isRunning { break }
+            let now = ProcessInfo.processInfo.systemUptime
+            if downloading, now >= nextSample {
+                nextSample = now + 1
+                if let sampler { publish(.transfer(sampler.snapshot(progress: currentProgress, expectedBytes: expectedBytes))) }
+            }
         }
         guard !process.isRunning else { throw WorkshopFailure.timedOut }
         if lock.withLock({ cancelled }) { throw CancellationError() }
         if process.terminationStatus == 42 { throw Bootstrap.restart }
         guard let id else { throw WorkshopFailure.loginFailed }
         guard process.terminationStatus == 0, success else { throw WorkshopFailure.downloadFailed }
+        completedTransfer()
         return staging.appendingPathComponent("steamapps/workshop/content/431960/" + id, isDirectory: true)
     }
 

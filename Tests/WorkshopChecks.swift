@@ -6,10 +6,12 @@ final class WorkshopEventLog: @unchecked Sendable {
     private var values: [WorkshopSteamEvent] = []
     func append(_ value: WorkshopSteamEvent) { lock.withLock { values.append(value) } }
     func contains(_ value: WorkshopSteamEvent) -> Bool { lock.withLock { values.contains(value) } }
+    var progress: [WorkshopDownloadProgress] { lock.withLock { values.compactMap { if case .transfer(let value) = $0 { return value }; return nil } } }
 }
 
 @main struct WorkshopChecks {
     static func main() async throws {
+        setbuf(stdout, nil)
         var count = 0
         func check(_ condition: Bool, _ label: String) {
             precondition(condition, label); count += 1; print("PASS: " + label)
@@ -106,6 +108,9 @@ final class WorkshopEventLog: @unchecked Sendable {
             check(!fm.fileExists(atPath: result.path), "completed staging moved without another media copy")
             check(try MaterialDiscovery.scan(storage.library).contains { $0.url.deletingLastPathComponent() == added }, "downloaded project visible to the existing library scanner")
             check(events.contains(.signingIn), "split password prompt handled through PTY")
+            check(events.progress.contains { $0.fraction == 0.375 }, "item-scoped Steam progress reaches telemetry")
+            check(!events.progress.contains { $0.fraction == 0.995 }, "client update percentage does not leak into wallpaper progress")
+            check(events.progress.last?.fraction == 1, "successful item reaches 100 percent")
             if id == "102" { check(events.contains(.guardCode), "interactive Steam Guard round trip") }
             if id == "103" { check(events.contains(.mobileApproval), "mobile approval status exposed") }
             if id == "108" { check(try String(contentsOf: stage.appendingPathComponent("updated"), encoding: .utf8) == "3", "two self-update exits restart automatically before download") }

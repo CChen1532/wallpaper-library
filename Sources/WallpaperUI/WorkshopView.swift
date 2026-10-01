@@ -81,7 +81,7 @@ struct WorkshopView: View {
                         ForEach(page.items) { item in
                             WorkshopCard(item: item, state: workshop.cardState(item),
                                          locked: model.isWorking, detailsLocked: workshop.busy,
-                                         classification: classification(item),
+                                         classification: classification(item), progress: workshop.cardProgress(item),
                                          showDetails: { openDownloadDetails(item) },
                                          download: { workshop.downloadFromCard(item) })
                                 .equatable()
@@ -508,10 +508,11 @@ struct WorkshopView: View {
             case .guardCode: EmptyView()
             case .mobileApproval: Label("请在手机 Steam 中确认登录。", systemImage: "iphone")
             case .downloading(let progress):
-                VStack(alignment: .leading, spacing: 6) {
-                    if let progress { ProgressView(value: progress); Text(progress, format: .percent.precision(.fractionLength(0))).font(.caption).monospacedDigit() }
-                    else { ProgressView("正在下载素材…").controlSize(.small) }
-                }
+                WorkshopTransferView(progress: .init(fraction: progress))
+                    .accessibilityIdentifier("workshop.download.progress")
+            case .transfer(let progress):
+                WorkshopTransferView(progress: progress)
+                    .accessibilityIdentifier("workshop.download.progress")
             }
         }
     }
