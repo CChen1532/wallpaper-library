@@ -45,12 +45,14 @@ with tempfile.TemporaryDirectory(prefix='Wallpaper Portable 中文 ') as folder:
     resources = moved / 'Contents/Resources'
     env = {'PATH': '/usr/bin:/bin', 'TMPDIR': folder, 'LANG': 'en_US.UTF-8'}
     python = resources / 'Python/bin/python3'
-    result = subprocess.check_output([str(python), '-I', '-c',
+    result = subprocess.check_output([str(python), '-I', '-B', '-c',
         'import sys,fcntl,hashlib,plistlib,subprocess,uuid; print(sys.prefix)'], env=env, text=True)
     check(str(resources / 'Python') in result, 'Python discovers relocated bundled stdlib without developer tools')
     for tool in ('ffmpeg', 'ffprobe'):
         check(subprocess.run([str(resources / 'Phonto' / tool), '-version'], env=env, capture_output=True).returncode == 0, f'relocated {tool} starts')
     check(subprocess.run([str(resources / 'Phonto/phonto'), 'displays'], env=env, capture_output=True).returncode == 0, 'relocated video engine enumerates displays')
     check(subprocess.run([str(resources / 'Phonto/phonto-wall'), 'status'], env=env, capture_output=True).returncode == 0, 'wrapper uses bundled Python')
-    check(subprocess.run([str(python), '-I', str(resources / 'WallpaperSwitch/wallpaper-switch.py'), '--help'], env=env, capture_output=True).returncode == 0, 'wallpaper helper imports offline')
+    check(subprocess.run([str(python), '-I', '-B', str(resources / 'WallpaperSwitch/wallpaper-switch.py'), '--help'], env=env, capture_output=True).returncode == 0, 'wallpaper helper imports offline')
+    check(not list((resources / 'Python').rglob('*.pyc')), 'runtime helper checks leave no bytecode inside the signed bundle')
+    check(subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(moved)], capture_output=True).returncode == 0, 'relocated signed app stays valid after running its helpers')
 print(count, 'portability checks passed (does not replace a physical clean-Mac trial)')

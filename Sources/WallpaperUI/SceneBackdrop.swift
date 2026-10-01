@@ -44,7 +44,7 @@ struct SpaceBackdropCompatibilityFailure: LocalizedError, Sendable {
 /// immediately before the first system write; restore never uses this gate.
 enum SpaceBackdropCompatibility {
     static func check(_ settings: SceneBackdropConfiguration, displayID: UInt32) async throws {
-        let result = try await CommandRunner().run(RuntimeTools.executable("python3").path, ["-I",
+        let result = try await CommandRunner().run(RuntimeTools.executable("python3").path, ["-I", "-B",
             settings.helper.path, "--state-dir", settings.state.path,
             "--inventory", settings.inventory.path,
             "check-compatibility", "--display", String(displayID)
@@ -102,7 +102,7 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
         lock.lock(); messages.removeAll(); lock.unlock()
         let child = Process(), stdin = Pipe(), stdout = Pipe()
         child.executableURL = RuntimeTools.executable("python3")
-        child.arguments = ["-I", configuration.helper.path, "--state-dir", configuration.state.path,
+        child.arguments = ["-I", "-B", configuration.helper.path, "--state-dir", configuration.state.path,
                            "--inventory", configuration.inventory.path] + arguments
         child.standardInput = stdin
         child.standardOutput = stdout

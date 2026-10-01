@@ -129,7 +129,9 @@ struct WorkshopView: View {
             if workshop.busy {
                 HStack {
                     if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
-                    else { ProgressView().controlSize(.small) }
+                    else if workshop.activity != .download && workshop.activity != .importing {
+                        ProgressView().controlSize(.small)
+                    }
                     if workshop.activity == .download || workshop.activity == .importing {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(workshop.downloadTitle).font(.caption).lineLimit(1)

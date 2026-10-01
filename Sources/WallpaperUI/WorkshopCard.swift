@@ -11,6 +11,7 @@ struct WorkshopCard: View, Equatable {
     let showDetails: () -> Void
     let download: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduced
+    @Environment(\.scenePhase) private var scenePhase
     @State private var hovered = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -19,40 +20,50 @@ struct WorkshopCard: View, Equatable {
     }
     var body: some View {
         VStack(spacing: 7) {
-            Button(action: showDetails) {
-                VStack(alignment: .leading, spacing: 8) {
-                    LibraryCover(source: .remote(item.previewURL), symbol: "photo")
-                        .scaleEffect(hovered && !reduced ? 1.025 : 1)
-                        .aspectRatio(16 / 9, contentMode: .fit).clipped()
-                    Text(item.title).font(.callout.weight(.medium)).lineLimit(2)
-                        .frame(height: 36, alignment: .topLeading).padding(.horizontal, 10)
-                    Group {
-                        if state == .downloading {
-                            WorkshopTransferView(progress: progress ?? .init(fraction: nil), compact: true)
-                                .accessibilityIdentifier("workshop.card.progress." + item.id)
-                        } else {
-                            Text(classification).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }.frame(height: 30).padding(.horizontal, 10).padding(.bottom, 10)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(hovered ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.10))
-                            .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 8) {
+                Button(action: showDetails) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        LibraryCover(source: .remote(item.previewURL), symbol: "photo")
+                            .scaleEffect(hovered && !reduced ? 1.025 : 1)
+                            .aspectRatio(16 / 9, contentMode: .fit).clipped()
+                        Text(item.title).font(.callout.weight(.medium)).lineLimit(2)
+                            .frame(height: 36, alignment: .topLeading).padding(.horizontal, 10)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(GalleryPressStyle()).disabled(detailsLocked)
+                Group {
+                    if state == .downloading {
+                        WorkshopTransferView(progress: progress ?? .init(fraction: nil), compact: true)
+                            .accessibilityIdentifier("workshop.card.progress." + item.id)
+                            .accessibilityLabel(Text(item.title) + Text(", ") + Text("Steam 下载进度与速度"))
+                    } else {
+                        Text(classification).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .shadow(color: .black.opacity(hovered && !reduced ? 0.12 : 0), radius: 6, y: 2)
-            }.buttonStyle(GalleryPressStyle()).disabled(detailsLocked)
+                }.frame(height: 30).padding(.horizontal, 10).padding(.bottom, 10)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(hovered ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.10))
+                        .allowsHitTesting(false)
+                }
+                .shadow(color: .black.opacity(hovered && !reduced ? 0.12 : 0), radius: 6, y: 2)
                 .contentShape(RoundedRectangle(cornerRadius: 12))
                 .onHover { hovered = $0 }
                 .animation(reduced ? nil : .easeOut(duration: 0.16), value: hovered)
                 .onDisappear { hovered = false }
             Button(action: download) {
-                Label(LocalizedStringKey(buttonTitle), systemImage: symbol)
-                    .font(.callout.weight(.medium)).frame(maxWidth: .infinity).frame(height: 30)
-            }.buttonStyle(WorkshopDownloadStyle(completed: state == .downloaded))
+                HStack(spacing: 6) {
+                    Image(systemName: symbol)
+                        .contentTransition(.symbolEffect(.replace))
+                        // Finite feedback on actual byte samples; no perpetual animation timer.
+                        .symbolEffect(.pulse, options: .nonRepeating, value: progress?.receivedBytes ?? 0)
+                        .symbolEffectsRemoved(reduced || scenePhase != .active || state != .downloading)
+                    Text(LocalizedStringKey(buttonTitle))
+                }.font(.callout.weight(.medium)).frame(maxWidth: .infinity).frame(height: 30)
+                    .animation(reduced ? nil : .easeOut(duration: 0.18), value: state)
+            }.buttonStyle(WorkshopDownloadStyle(completed: state == .downloaded, active: state == .downloading || state == .waiting || state == .importing))
                 .disabled(locked || (state != .available && state != .failed))
                 .accessibilityIdentifier("workshop.card.download." + item.id)
         }
@@ -83,12 +94,13 @@ struct WorkshopCard: View, Equatable {
 
 private struct WorkshopDownloadStyle: ButtonStyle {
     let completed: Bool
+    let active: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduced
     @State private var hovered = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(completed ? Color.green : (hovered && enabled ? Color.accentColor : Color.primary))
+            .foregroundStyle(completed ? Color.green : (active || (hovered && enabled) ? Color.accentColor : Color.primary))
             .background {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(completed ? Color.green.opacity(0.10) : Color.accentColor.opacity(hovered && enabled ? 0.16 : 0.065))
@@ -98,7 +110,7 @@ private struct WorkshopDownloadStyle: ButtonStyle {
                     .strokeBorder(completed ? Color.green.opacity(0.22) : Color.accentColor.opacity(hovered && enabled ? 0.5 : 0.12))
                     .allowsHitTesting(false)
             }
-            .opacity(!enabled && !completed ? 0.6 : 1)
+            .opacity(!enabled && !completed && !active ? 0.6 : 1)
             .scaleEffect(configuration.isPressed && enabled && !reduced ? 0.98 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 7))
             .onHover { hovered = $0 }

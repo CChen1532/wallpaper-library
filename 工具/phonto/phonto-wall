@@ -3,4 +3,4 @@
 # supplied by a wallpaper; all arguments remain distinct argv elements.
 set -euo pipefail
 tools="$(cd "$(dirname "$0")" && pwd)"
-exec "$tools/../Python/bin/python3" -I "$tools/display-control.py" "$@"
+exec "$tools/../Python/bin/python3" -I -B "$tools/display-control.py" "$@"
