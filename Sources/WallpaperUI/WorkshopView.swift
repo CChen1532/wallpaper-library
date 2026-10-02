@@ -27,34 +27,44 @@ struct WorkshopView: View {
                     Text("全文搜索").tag(0)
                     Text("链接或 ID").tag(1)
                     Text("订阅同步").tag(2)
-                }.pickerStyle(.segmented).labelsHidden().disabled(workshop.busy).id("workshopTop")
+                }.pickerStyle(.segmented).labelsHidden().disabled(workshop.browseLocked).id("workshopTop")
                 if tab == 0 {
                     HStack {
                         TextField("搜索标题与描述", text: $workshop.searchText).textFieldStyle(.roundedBorder)
-                            .onSubmit { workshop.search() }.disabled(workshop.busy)
+                            .onSubmit { workshop.search() }.disabled(workshop.browseLocked)
                             .accessibilityIdentifier("workshop.searchText")
                         if !workshop.searchText.isEmpty {
                             Button("清除搜索") { workshop.searchText = ""; workshop.search() }
-                                .disabled(workshop.busy).help("清除关键词并按当前筛选浏览")
+                                .disabled(workshop.browseLocked).help("清除关键词并按当前筛选浏览")
                         }
-                        Button("搜索") { workshop.search() }.disabled(workshop.busy || !workshop.filters.validDates)
+                        Button("搜索") { workshop.search() }.disabled(workshop.browseLocked || !workshop.filters.validDates)
                             .accessibilityIdentifier("workshop.search")
                     }
                     browseFilters
                     Text("点击封面查看详情；点击下载直接加入队列。")
                         .font(.caption).foregroundStyle(.secondary)
-                    if workshop.activity == .search { ProgressView("正在搜索…").controlSize(.small) }
+                    if workshop.browseActivity == .search {
+                        HStack {
+                            ProgressView("正在搜索…").controlSize(.small)
+                            Button("取消浏览请求") { workshop.cancelBrowsing() }
+                        }
+                    }
                 } else if tab == 1 {
                     HStack(spacing: 10) {
                         TextField("创意工坊链接或 ID", text: $workshop.link)
                             .textFieldStyle(.roundedBorder).onSubmit { workshop.lookup() }
-                            .disabled(workshop.busy).accessibilityIdentifier("workshop.link")
+                            .disabled(workshop.browseLocked).accessibilityIdentifier("workshop.link")
                         Button("查看详情") { workshop.lookup() }
-                            .disabled(workshop.busy || workshop.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(workshop.browseLocked || workshop.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             .accessibilityIdentifier("workshop.lookup")
                     }
                 } else { subscriptionSection }
-                if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
+                if workshop.browseActivity == .lookup {
+                    HStack {
+                        ProgressView("正在读取项目…").controlSize(.small)
+                        Button("取消浏览请求") { workshop.cancelBrowsing() }
+                    }
+                }
                 if tab == 1, let item = workshop.item { details(item).id("selectedWorkshop") }
                 if tab == 0, let page = workshop.searchPage {
                     HStack(spacing: 6) {
@@ -80,7 +90,7 @@ struct WorkshopView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 14)], spacing: 14) {
                         ForEach(page.items) { item in
                             WorkshopCard(item: item, state: workshop.cardState(item),
-                                         locked: model.isWorking, detailsLocked: workshop.busy,
+                                         locked: model.isWorking, detailsLocked: workshop.browseLocked,
                                          classification: classification(item), progress: workshop.cardProgress(item),
                                          showDetails: { openDownloadDetails(item) },
                                          download: { workshop.downloadFromCard(item) })
@@ -108,7 +118,7 @@ struct WorkshopView: View {
                     .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
                     Spacer()
                     if workshop.searchPage == nil && tab == 0 {
-                        Button("重新加载") { workshop.search() }.disabled(workshop.busy)
+                        Button("重新加载") { workshop.search() }.disabled(workshop.browseLocked)
                     }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.bar)
                     .accessibilityIdentifier("workshop.error")
@@ -178,7 +188,7 @@ struct WorkshopView: View {
                     Text("下载壁纸").font(.headline)
                     Spacer()
                     Button("完成") { showDownloadDetails = false }
-                        .keyboardShortcut(.cancelAction).disabled(workshop.busy)
+                        .keyboardShortcut(.cancelAction)
                 }.padding(16)
                 Divider()
                 ScrollView {
@@ -195,13 +205,17 @@ struct WorkshopView: View {
                     Divider()
                     HStack {
                         if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
-                        else if workshop.activity == .lookup { ProgressView("正在读取项目…").controlSize(.small) }
+                        else if workshop.browseActivity == .lookup {
+                            HStack {
+                                ProgressView("正在读取项目…").controlSize(.small)
+                                Button("取消浏览请求") { workshop.cancelBrowsing() }
+                            }
+                        }
                         Spacer()
                         Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
                     }.padding(12)
                 }
             }.frame(width: 620, height: 540)
-                .interactiveDismissDisabled(workshop.busy)
                 .environment(\.locale, locale)
         }
         .sheet(isPresented: $showSubscriptions) {
@@ -209,7 +223,7 @@ struct WorkshopView: View {
         }
         .onAppear {
             workshop.refreshComponent(); workshop.preconnect(); workshop.refreshDownloadedStatus()
-            if workshop.searchPage == nil && !workshop.busy && workshop.error == nil { workshop.search() }
+            if workshop.searchPage == nil && !workshop.browseLocked && workshop.error == nil { workshop.search() }
         }
         .onChange(of: workshop.authenticationRequired) { _, required in
             if required && !showDownloadDetails { showConnectionDetails = true }
@@ -298,14 +312,14 @@ struct WorkshopView: View {
     }
     private func floatingPagination(_ page: WorkshopBrowse.Page) -> some View {
         HStack(spacing: 12) {
-            paginationButton("上一页", enabled: !workshop.busy && page.number > 1) {
+            paginationButton("上一页", enabled: !workshop.browseLocked && page.number > 1) {
                 workshop.search(page: page.number - 1)
             }
             Text("\(page.number) / \(page.pages)")
                 .font(.callout.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.primary)
                 .accessibilityLabel("\(page.number) / \(page.pages)")
-            paginationButton("下一页", enabled: !workshop.busy && page.number < page.pages) {
+            paginationButton("下一页", enabled: !workshop.browseLocked && page.number < page.pages) {
                 workshop.search(page: page.number + 1)
             }
         }
@@ -380,7 +394,18 @@ struct WorkshopView: View {
                     Text("结束日期不能早于开始日期。").font(.caption).foregroundStyle(.red)
                 }
             }
-        }.disabled(workshop.busy)
+        }.disabled(workshop.browseLocked)
+    }
+
+    private func detailDownloadTitle(_ item: WorkshopItem) -> String {
+        switch workshop.cardState(item) {
+        case .downloaded: return "已下载"
+        case .queued: return "排队中"
+        case .waiting: return "等待连接…"
+        case .downloading: return "下载中…"
+        case .importing: return "正在加入…"
+        default: return workshop.steamBusy ? "加入下载队列" : "下载并加入资料库"
+        }
     }
 
     private func details(_ item: WorkshopItem) -> some View {
@@ -410,10 +435,10 @@ struct WorkshopView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     accountForm
-                    Button("下载并加入资料库") {
+                    Button(LocalizedStringKey(detailDownloadTitle(item))) {
                         workshop.download(password: password); password = ""
                     }.buttonStyle(.borderedProminent)
-                        .disabled(workshop.busy || workshop.connecting || model.isWorking || workshop.component == nil || workshop.account.isEmpty)
+                        .disabled(workshop.browseLocked || model.isWorking || workshop.component == nil || workshop.account.isEmpty || ![.available, .failed].contains(workshop.cardState(item)))
                         .accessibilityIdentifier("workshop.download")
                 }
             }

@@ -10,7 +10,10 @@ import Combine
     @Published private(set) var item: WorkshopItem?
     @Published private(set) var activity = Activity.idle
     @Published private(set) var event = WorkshopSteamEvent.preparing
-    @Published private(set) var error: String?
+    @Published private(set) var taskError: String?
+    @Published private(set) var browseError: String?
+    @Published private(set) var browseActivity = Activity.idle
+    var error: String? { browseError ?? taskError }
     @Published private(set) var component: URL?
     @Published private(set) var importedURL: URL?
     @Published private(set) var cancelling = false
@@ -48,6 +51,9 @@ import Combine
     private var installedRevision = UUID()
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
+    private var browseJob: Task<Void, Never>?
+    private var browseToken: UUID?
+    private var shuttingDown = false
     private var process: WorkshopSteamProcess?
     private let downloadWorker = WorkshopSteamProcess()
     private var downloadStage: URL?
@@ -58,7 +64,10 @@ import Combine
     private let libraryBusy: () -> Bool
     private let metadata: ([String]) async throws -> [WorkshopItem]
     private let browse: (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page
-    var busy: Bool { activity != .idle }
+    var taskBusy: Bool { activity != .idle }
+    var browseBusy: Bool { browseActivity != .idle }
+    var busy: Bool { taskBusy || browseBusy }
+    var browseLocked: Bool { browseBusy || activity == .component || activity == .subscriptions || shuttingDown }
     var waitingForGuard: Bool {
         (connecting && connectionEvent == .guardCode) || (event == .guardCode && activity == .download && !cancelling)
     }
@@ -66,7 +75,7 @@ import Combine
 
     /// Connection work has its own task so search, filters and cards remain usable.
     func preconnect(password: String = "", automatic: Bool = true) {
-        guard !steamBusy else { return }
+        guard !shuttingDown, !steamBusy else { return }
         guard let component else { return }
         let account = account.trimmingCharacters(in: .whitespacesAndNewlines)
         guard WorkshopSteamProcess.validCredentials(account: account, password: password) else {
@@ -160,7 +169,7 @@ import Combine
 
     /// Card action is a download request, not a detail selection.
     func downloadFromCard(_ value: WorkshopItem) {
-        guard !libraryBusy(), WorkshopFilters.supportsPlayback(tags: value.tags),
+        guard !shuttingDown, !libraryBusy(), WorkshopFilters.supportsPlayback(tags: value.tags),
               !downloadedIDs.contains(value.id), !queuedIDs.contains(value.id), activeDownloadID != value.id else { return }
         failedDownloads.removeValue(forKey: value.id)
         downloadQueue.append(value)
@@ -168,13 +177,12 @@ import Combine
         resumePendingDownload()
     }
     private func resumePendingDownload() {
-        guard !connecting, !busy, !libraryBusy(), !authenticationRequired, let value = pendingDownload else { return }
+        guard !shuttingDown, !connecting, !taskBusy, !libraryBusy(), !authenticationRequired, let value = pendingDownload else { return }
         guard component != nil,
               WorkshopSteamProcess.validCredentials(account: account.trimmingCharacters(in: .whitespacesAndNewlines), password: ""),
               connectionError == nil else { authenticationRequired = true; return }
         downloadQueue.removeFirst()
-        item = value; link = value.id; importedURL = nil
-        download(password: "", fromCard: true)
+        startDownload(value, password: "", fromCard: true)
     }
     func removeQueuedDownload(_ id: String) {
         downloadQueue.removeAll { $0.id == id }
@@ -220,14 +228,14 @@ import Combine
     }
 
     func setFilters(_ value: WorkshopFilters, searchImmediately: Bool = true) {
-        guard !busy, filters != value else { return }
+        guard !browseLocked, filters != value else { return }
         filters = value
         if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: "workshopBrowseFilters") }
-        searchPage = nil; searchedRequest = nil; item = nil; importedURL = nil; error = nil
+        searchPage = nil; searchedRequest = nil; item = nil; importedURL = nil; browseError = nil
         if searchImmediately, value.period != .custom { search() }
     }
     func search(page requestedPage: Int? = nil) {
-        guard !busy, filters.validDates else { return }
+        guard !browseLocked, filters.validDates else { return }
         let request: WorkshopBrowse.Request
         let page: Int
         if let requestedPage {
@@ -238,25 +246,28 @@ import Combine
             request = .init(query: String(searchText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)), filters: filters)
             page = 1; searchPage = nil; searchedRequest = nil; item = nil; importedURL = nil
         }
-        activity = .search; error = nil
-        job = Task {
-            defer { finish() }
+        browseActivity = .search; browseError = nil
+        let token = UUID(); browseToken = token
+        browseJob = Task {
+            defer { finishBrowsing(token) }
             do {
                 let result = try await browse(request, page)
                 try Task.checkCancellation()
+                guard browseToken == token else { return }
                 searchPage = result; searchedText = request.query; searchedRequest = request; item = nil; importedURL = nil
                 refreshDownloadedStatus()
-            } catch { record(error) }
+            } catch { recordBrowse(error, token: token) }
         }
     }
     func select(_ value: WorkshopItem) {
-        guard !busy else { return }
-        item = value; link = value.id; error = nil
-        importedURL = nil; activity = .lookup
-        job = Task {
-            defer { finish() }
+        guard !browseLocked else { return }
+        item = value; link = value.id; browseError = nil
+        importedURL = nil; browseActivity = .lookup
+        let token = UUID(); browseToken = token
+        browseJob = Task {
+            defer { finishBrowsing(token) }
             let url = await existing(value.id)
-            if !Task.isCancelled { importedURL = url }
+            if !Task.isCancelled, browseToken == token { importedURL = url }
         }
     }
     private func existing(_ id: String) async -> URL? {
@@ -288,7 +299,7 @@ import Combine
     }
     func receiveSubscriptions(_ ids: [String]) {
         guard !busy else { return }
-        activity = .subscriptions; error = nil
+        activity = .subscriptions; taskError = nil
         job = Task {
             defer { finish() }
             do {
@@ -308,12 +319,12 @@ import Combine
     }
     func syncSubscriptions(password: String) {
         guard !busy, !connecting, !libraryBusy(), subscriptionReadAt != nil else { return }
-        guard let component else { error = WorkshopFailure.componentMissing.localizedDescription; return }
+        guard let component else { taskError = WorkshopFailure.componentMissing.localizedDescription; return }
         let account = account.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard WorkshopSteamProcess.validCredentials(account: account, password: password) else { error = WorkshopFailure.invalidAccount.localizedDescription; return }
+        guard WorkshopSteamProcess.validCredentials(account: account, password: password) else { taskError = WorkshopFailure.invalidAccount.localizedDescription; return }
         defaults.set(account, forKey: "workshopAccount")
         let queue = subscriptions.filter { !ignoredIDs.contains($0.id) }
-        syncing = true; syncPosition = 0; syncTotal = queue.count; error = nil; activity = .download
+        syncing = true; syncPosition = 0; syncTotal = queue.count; taskError = nil; activity = .download
         syncResults = [:]
         job = Task {
             defer { process = nil; syncing = false; downloadTitle = ""; finish() }
@@ -346,34 +357,33 @@ import Combine
     func selectComponent(_ url: URL) {
         guard !busy, !connecting else { return }
         let binary = url.resolvingSymlinksInPath()
-        guard WorkshopComponent.validBinary(binary) else { error = WorkshopFailure.componentInvalid.localizedDescription; return }
-        defaults.set(binary.path, forKey: "workshopSteamCMD"); component = binary; error = nil; connectionReady = false
+        guard WorkshopComponent.validBinary(binary) else { taskError = WorkshopFailure.componentInvalid.localizedDescription; return }
+        defaults.set(binary.path, forKey: "workshopSteamCMD"); component = binary; taskError = nil; connectionReady = false
     }
 
     func lookup() {
-        guard !busy else { return }
-        error = nil; item = nil; importedURL = nil
-        guard case let .ok(number, _) = WorkshopURLParser.parse(link) else { error = WorkshopFailure.invalidLink.localizedDescription; return }
+        guard !browseLocked else { return }
+        browseError = nil; item = nil; importedURL = nil
+        guard case let .ok(number, _) = WorkshopURLParser.parse(link) else { browseError = WorkshopFailure.invalidLink.localizedDescription; return }
         let id = String(number)
-        activity = .lookup
-        job = Task {
-            defer { finish() }
+        browseActivity = .lookup
+        let token = UUID(); browseToken = token
+        browseJob = Task {
+            defer { finishBrowsing(token) }
             do {
-                let result = try await WorkshopMetadata.fetch(id: id)
+                guard let result = try await metadata([id]).first else { throw WorkshopFailure.unavailable }
                 try Task.checkCancellation()
-                let storage = self.storage
-                let installed = await Task.detached(priority: .utility) { storage.installed(id) }.value
+                let installed = await existing(id)
                 try Task.checkCancellation()
-                item = result
-                if installed { importedURL = storage.destination(id) }
-                else { importedURL = findExisting(id) }
-            } catch { record(error) }
+                guard browseToken == token else { return }
+                item = result; importedURL = installed
+            } catch { recordBrowse(error, token: token) }
         }
     }
 
     func installComponent() {
         guard !busy, !connecting else { return }
-        activity = .component; error = nil
+        activity = .component; taskError = nil
         job = Task {
             defer { finish() }
             do { component = try await WorkshopComponent.install(storage: storage) }
@@ -386,23 +396,33 @@ import Combine
     }
 
     func download(password: String, fromCard: Bool = false) {
-        guard !busy, !connecting, !libraryBusy(), let item, importedURL == nil else { return }
-        guard WorkshopFilters.supportsPlayback(tags: item.tags) else { error = WorkshopFailure.unsupportedProject.localizedDescription; return }
-        guard let component else { error = WorkshopFailure.componentMissing.localizedDescription; return }
+        guard let item, importedURL == nil else { return }
+        if connecting || activity == .download || activity == .importing {
+            downloadFromCard(item)
+            return
+        }
+        startDownload(item, password: password, fromCard: fromCard)
+    }
+
+    private func startDownload(_ item: WorkshopItem, password: String, fromCard: Bool) {
+        guard !shuttingDown, !taskBusy, !connecting, !libraryBusy() else { return }
+        guard WorkshopFilters.supportsPlayback(tags: item.tags) else { taskError = WorkshopFailure.unsupportedProject.localizedDescription; return }
+        guard let component else { taskError = WorkshopFailure.componentMissing.localizedDescription; return }
         let account = account.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard WorkshopSteamProcess.validCredentials(account: account, password: password) else { error = WorkshopFailure.invalidAccount.localizedDescription; return }
+        guard WorkshopSteamProcess.validCredentials(account: account, password: password) else { taskError = WorkshopFailure.invalidAccount.localizedDescription; return }
         defaults.set(account, forKey: "workshopAccount")
-        activity = .download; event = .preparing; error = nil
+        activity = .download; event = .preparing; taskError = nil
         activeDownloadID = item.id; downloadTitle = item.title
         job = Task {
             defer { process = nil; activeDownloadID = nil; finish() }
             do {
                 // Recheck local state at click time even if the page cache has not loaded yet.
                 if let existing = await existing(item.id) {
-                    importedURL = existing; markDownloaded(item.id); return
+                    if self.item?.id == item.id { importedURL = existing }; markDownloaded(item.id); return
                 }
                 try Task.checkCancellation()
-                importedURL = try await downloadOne(item, component: component, account: account, password: password)
+                let imported = try await downloadOne(item, component: component, account: account, password: password)
+                if self.item?.id == item.id { importedURL = imported }
                 var ignored = ignoredIDs; ignored.remove(item.id)
                 defaults.set(ignored.sorted(), forKey: "workshopSyncIgnoredIDs")
                 authenticationRequired = false
@@ -459,13 +479,24 @@ import Combine
         return false
     }
     func cancel() {
-        guard busy else { return }
-        cancelling = true; process?.cancel(); job?.cancel()
+        if taskBusy { cancelling = true; process?.cancel(); job?.cancel() }
+        else { cancelBrowsing() }
     }
     func shutdown() async {
-        cancelConnection(); cancel(); installedJob?.cancel()
-        await connectionJob?.value; await job?.value; await installedJob?.value
+        shuttingDown = true
+        defer { shuttingDown = false }
+        cancelConnection(); cancel(); cancelBrowsing(); installedJob?.cancel()
+        await connectionJob?.value; await job?.value; await browseJob?.value; await installedJob?.value
         await discardSession()
+    }
+    func cancelBrowsing() { browseJob?.cancel() }
+    private func finishBrowsing(_ token: UUID) {
+        guard browseToken == token else { return }
+        browseActivity = .idle; browseJob = nil; browseToken = nil
+    }
+    private func recordBrowse(_ failure: Error, token: UUID) {
+        guard browseToken == token, !(failure is CancellationError), !Task.isCancelled else { return }
+        browseError = (failure as? WorkshopFailure)?.localizedDescription ?? WorkshopFailure.network.localizedDescription
     }
     private func finish() {
         activity = .idle; cancelling = false; job = nil
@@ -473,6 +504,6 @@ import Combine
     }
     private func record(_ failure: Error) {
         guard !(failure is CancellationError), !Task.isCancelled else { return }
-        error = (failure as? WorkshopFailure)?.localizedDescription ?? "无法完成文件操作，请检查磁盘空间与文件夹权限。"
+        taskError = (failure as? WorkshopFailure)?.localizedDescription ?? "无法完成文件操作，请检查磁盘空间与文件夹权限。"
     }
 }

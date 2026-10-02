@@ -844,3 +844,7 @@
 "速度统计当前 Steam 下载进程的网络接收量；估算进度可能因压缩和协议开销而变化。" = "Speed measures incoming network traffic for the current Steam download process. Estimated progress may vary due to compression and protocol overhead.";
 
 "Steam 下载进度与速度" = "Steam download progress and speed";
+
+"取消浏览请求" = "Cancel browsing request";
+
+"加入下载队列" = "Add to download queue";
