@@ -252,23 +252,38 @@ def same_image(current, expected):
         return False
 
 
-def registered_spaces(current, original, scene, original_displays=None):
+def registered_spaces(current, original, scene, original_displays=None, original_default=None):
     """Recover surviving Spaces after setDesktopImageURL normalizes the store.
 
     macOS can prune an old Space or inactive display while registering the
     scene. Restore only selectors on surviving, known nodes; never recreate a
     deleted Space or display. WallpaperAgent may materialize a missing display
     under an old Space; retain it only when it exactly matches that display's
-    checksummed original selection.
+    checksummed original selection. New Spaces may inherit that same baseline;
+    preserve them only when every selector matches the verified original.
     """
     if not current['present'] or not original['present']:
         return None
     now, before = current['value'], original['value']
-    if not isinstance(now, dict) or not isinstance(before, dict) or not set(now).issubset(before):
+    if not isinstance(now, dict) or not isinstance(before, dict):
         return None
     normalized = copy.deepcopy(now)
-    target = {uuid: copy.deepcopy(before[uuid]) for uuid in now}
+    target = {uuid: copy.deepcopy(before[uuid]) for uuid in now if uuid in before}
     for uuid, space in now.items():
+        if uuid not in before:
+            # WallpaperAgent registers newly created/full-screen Spaces after
+            # the lease. Do not drop them, or adopt an unverified new choice.
+            if (not isinstance(space, dict) or set(space) != {'Default', 'Displays'} or
+                    not isinstance(original_default, dict) or
+                    semantic(space['Default']) != semantic(original_default) or
+                    not isinstance(space['Displays'], dict) or
+                    not isinstance(original_displays, dict) or
+                    any(display not in original_displays or
+                        semantic(node) != semantic(original_displays[display])
+                        for display, node in space['Displays'].items())):
+                return None
+            target[uuid] = copy.deepcopy(space)
+            continue
         try:
             old_displays = before[uuid]['Displays']
             new_displays = space['Displays']
@@ -400,12 +415,14 @@ def merge(document, patches, restore=False, original=None, known_spaces=(), disp
                 scene = next((p['after'] for p in patches if
                               p['path'] == ['AllSpacesAndDisplays'] and p.get('field', 'Desktop') == 'Desktop'), None)
                 displays = original.get('Displays') if isinstance(original, dict) else None
-                recovered = registered_spaces(current, target, scene, displays) if scene is not None else None
+                default = original.get('SystemDefault') if isinstance(original, dict) else None
+                recovered = registered_spaces(current, target, scene, displays, default) if scene is not None else None
                 if recovered is not None:
                     allowed = True
                     target = recovered
         if not allowed:
-            raise ValueError('该桌面壁纸已被其他操作改变，拒绝覆盖；恢复记录保留：' + '/'.join(patch['path']))
+            raise ValueError('该桌面壁纸已被其他操作改变，拒绝覆盖；恢复记录保留：' +
+                             '/'.join(patch['path'] + [field]))
         targets.append(target)
     for patch, target in zip(patches, targets):
         put(entry(result, patch['path']), target,

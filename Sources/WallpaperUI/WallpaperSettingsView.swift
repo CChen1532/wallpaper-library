@@ -21,6 +21,12 @@ struct WallpaperSettingsView: View {
     let chooseFolder: () -> Void
     let showDiagnostics: () -> Void
 
+    private var backdropIssues: [String] {
+        var seen = Set<String>()
+        return [scenePlayer.error, model.videoBackdropIssue].compactMap { $0 }
+            .filter { seen.insert($0).inserted }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("设置分类", selection: $category) {
@@ -129,11 +135,9 @@ struct WallpaperSettingsView: View {
                     Button("恢复视频底图前的壁纸") { Task { await model.recoverVideoBackdrop() } }
                         .disabled(model.isWorking)
                 }
-                if let issue = model.videoBackdropIssue {
+                ForEach(backdropIssues, id: \.self) { issue in
                     Text(AppStrings.text(issue, locale: locale)).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
-                }
-                if let error = scenePlayer.error {
-                    Text(AppStrings.text(error, locale: locale)).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        .accessibilityIdentifier("settings.backdrop.issue")
                 }
             } header: {
                 Text("场景 Space 切换")

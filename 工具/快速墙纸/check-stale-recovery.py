@@ -182,4 +182,64 @@ with tempfile.TemporaryDirectory() as folder:
     assert store.read_bytes() == already_restored and not refreshes
     assert tool.read_session()['state'] == 'restored'
 print('PASS: journal-only restore refuses system writes, then closes already-restored selectors')
-print('12 stale-recovery checks passed; no system settings accessed')
+# A new Space can inherit the original system/display choices after a failed
+# lease. Preserve it instead of treating its UUID alone as a wallpaper edit.
+new_spaces = copy.deepcopy(restored)
+new_spaces['Spaces']['new-default-only'] = {
+    'Default': copy.deepcopy(historical['SystemDefault']), 'Displays': {}}
+new_spaces['Spaces']['new-with-displays'] = {
+    'Default': copy.deepcopy(historical['SystemDefault']),
+    'Displays': copy.deepcopy(historical['Displays'])}
+new_spaces['Spaces']['new-with-displays']['Default']['Desktop']['LastUse'] = 'later'
+new_restored = m.merge(new_spaces, patches, restore=True, original=historical,
+                       known_spaces={'a'}, display='display')
+assert new_restored['Spaces'] == new_spaces['Spaces']
+assert m.semantic(new_restored) == m.semantic(new_spaces)
+print('PASS: newly registered Spaces and original inherited choices survive restoration')
+
+def refuses_new_space(candidate, title):
+    unchanged = m.encoded(candidate)
+    try:
+        m.merge(candidate, patches, restore=True, original=historical,
+                known_spaces={'a'}, display='display')
+        raise AssertionError(title + ' accepted')
+    except ValueError:
+        assert m.encoded(candidate) == unchanged
+    print('PASS: ' + title)
+
+foreign_default = copy.deepcopy(new_spaces)
+foreign_default['Spaces']['new-default-only']['Default']['Desktop'] = {'user': 'new wallpaper'}
+refuses_new_space(foreign_default, 'a new Space with a user-changed wallpaper is left untouched')
+foreign_display = copy.deepcopy(new_spaces)
+foreign_display['Spaces']['new-with-displays']['Displays']['display']['Desktop'] = {'user': 'new wallpaper'}
+refuses_new_space(foreign_display, 'a new Space display with a user-changed wallpaper is left untouched')
+foreign_idle = copy.deepcopy(new_spaces)
+foreign_idle['Spaces']['new-default-only']['Default']['Idle'] = {'user': 'new screen saver'}
+refuses_new_space(foreign_idle, 'a new Space with changed screen-saver settings remains a conflict')
+unknown_display = copy.deepcopy(new_spaces)
+unknown_display['Spaces']['new-with-displays']['Displays']['unknown'] = copy.deepcopy(node)
+refuses_new_space(unknown_display, 'a new Space cannot adopt an unbacked display')
+unknown_schema = copy.deepcopy(new_spaces)
+unknown_schema['Spaces']['new-default-only']['foreign-field'] = True
+refuses_new_space(unknown_schema, 'unknown new Space structure remains a conflict')
+owned_new_image = copy.deepcopy(new_spaces)
+owned_new_image['Spaces']['new-default-only']['Default']['Desktop'] = m.image_desktop(scene)
+refuses_new_space(owned_new_image, 'a new Space still showing the temporary image cannot be falsely settled')
+
+# The journal can close without any store write or WallpaperAgent restart.
+with tempfile.TemporaryDirectory() as folder:
+    state = Path(folder) / 'state'; state.mkdir()
+    store = Path(folder) / 'Index.plist'; store.write_bytes(m.encoded(new_spaces))
+    backup = state / 'original.plist'; backup.write_bytes(m.encoded(historical))
+    original_store_bytes = store.read_bytes()
+    refreshes = []
+    tool = m.Switcher(store, state, lambda: refreshes.append(True), verify=lambda *_: None)
+    tool.save({'schema': 1, 'store': str(store.resolve()), 'state': 'pending_restore',
+               'backup': str(backup), 'backup_sha256': m.digest(backup.read_bytes()),
+               'patches': patches, 'spaces': inv['spaces'], 'display': 'display',
+               'image': str(scene)})
+    tool.restore(only_if_already_restored=True)
+    assert tool.read_session()['state'] == 'restored'
+    assert store.read_bytes() == original_store_bytes and not refreshes
+print('PASS: newly registered original Spaces allow journal-only settlement without system writes')
+print('20 stale-recovery checks passed; no system settings accessed')

@@ -271,7 +271,10 @@ import Combine
 
     func recoverBackdrops() async {
         await scenePlayer.recoverBackdrop()
-        do { try await videoBackdrop.recover() }
+        do {
+            try await videoBackdrop.recover()
+            videoBackdropIssue = nil; lastVideoBackdropAttempt = nil
+        }
         catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
         backdropsReady = !scenePlayer.restorationPending && !videoBackdrop.restorationPending
     }

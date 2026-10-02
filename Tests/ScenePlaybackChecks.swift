@@ -944,6 +944,20 @@ import UniformTypeIdentifiers
         try pendingJournal.write(to: backdropConfig.state.appendingPathComponent("session.plist"))
         try SceneBackdropLease.recover(backdropConfig)
         check(!backdropConfig.recoveryPending, "重启恢复入口处理遗留账本")
+        // Retry a failed shared recovery using an isolated helper and journal.
+        let retryHelper = root.appendingPathComponent("recovery-retry.py")
+        try "import sys\nprint('controlled recovery failure', flush=True)\nsys.exit(2)\n"
+            .write(to: retryHelper, atomically: true, encoding: .utf8)
+        let retryConfiguration = SceneBackdropConfiguration(helper: retryHelper, inventory: root, state: backdropConfig.state)
+        let retryModel = LibraryModel(backend: SceneTestBackend(),
+            videoBackdrop: VideoBackdropController(configuration: { retryConfiguration }))
+        await retryModel.recoverBackdrops()
+        check(retryModel.videoBackdropIssue?.contains("controlled recovery failure") == true,
+              "共享恢复失败时保留可重试的错误")
+        try Data(contentsOf: backdropConfig.helper).write(to: retryHelper)
+        await retryModel.recoverBackdrops()
+        check(retryModel.videoBackdropIssue == nil && !retryConfiguration.recoveryPending,
+              "共享恢复重试成功后清除先前视频恢复错误")
         // Interrupt a real isolated lease at the system activation boundary.
         // The injected callback never touches macOS Wallpaper settings.
         guard let display = NSScreen.screens.first,
