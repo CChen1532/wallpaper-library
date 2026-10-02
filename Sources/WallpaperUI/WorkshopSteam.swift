@@ -216,6 +216,18 @@ final class WorkshopSteamProcess: @unchecked Sendable {
             publish(.transfer(sampler?.snapshot(progress: 1, expectedBytes: expectedBytes) ?? .init(fraction: 1)))
         }
         var transcript = "", sentPassword = reused, waitingGuard = false, success = false
+        var promptAfterSuccess: String?
+        func reachedPrompt(after marker: Range<String.Index>?, output: String) -> Bool {
+            if let pending = promptAfterSuccess {
+                promptAfterSuccess = String((pending + output).suffix(8192))
+            } else if let marker {
+                success = true
+                // Discard prompts before THIS command's success. Keep the boundary
+                // state independently so a long log cannot erase successful work.
+                promptAfterSuccess = String(transcript[marker.upperBound...])
+            }
+            return promptAfterSuccess?.range(of: "steam>", options: .caseInsensitive) != nil
+        }
         if reused {
             if let id { try send("workshop_download_item 431960 " + id) }
             else { reusable = true; return staging }
@@ -236,7 +248,8 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 let n = read(master, &bytes, bytes.count)
                 if n <= 0 { if !process.isRunning { break }; usleep(100_000); continue }
                 lastOutput = Date()
-                transcript = String((transcript + String(decoding: bytes.prefix(n), as: UTF8.self)).suffix(8192))
+                let output = String(decoding: bytes.prefix(n), as: UTF8.self)
+                transcript = String((transcript + output).suffix(8192))
                 let lower = transcript.lowercased()
                 if lower.contains("invalid password") || lower.contains("invalidpassword") || lower.contains("invalid login auth code") || lower.contains("account logon denied") {
                     throw WorkshopFailure.loginFailed
@@ -246,23 +259,25 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                 }
                 if id == nil {
                     if lower.contains("failed") || lower.contains("error!") { throw WorkshopFailure.loginFailed }
-                    if let marker = lower.range(of: #"waiting for user info\.\.\.\s*ok"#, options: .regularExpression),
-                       lower[marker.upperBound...].contains("steam>") {
+                    let marker = transcript.range(of: #"waiting for user info\.\.\.\s*ok"#, options: [.regularExpression, .caseInsensitive])
+                    if reachedPrompt(after: marker, output: output) {
                         guard process.isRunning else { throw WorkshopFailure.loginFailed }
                         reusable = true
                         return staging
                     }
                 }
-                if let id, let marker = lower.range(of: "success. downloaded item \(id) to ") {
-                    success = true
-                    // Only a prompt after this item's success is a command boundary.
-                    if keepAlive && lower[marker.upperBound...].contains("steam>") {
+                if let id {
+                    let marker = transcript.range(of: "success. downloaded item \(id) to ", options: .caseInsensitive)
+                    let promptReady = reachedPrompt(after: marker, output: output)
+                    if keepAlive && promptReady {
                         completedTransfer()
                         reusable = process.isRunning
                         return staging.appendingPathComponent("steamapps/workshop/content/431960/" + id, isDirectory: true)
                     }
                 }
-                let marker = lower.range(of: "downloading item")
+                // Indices must belong to the sliced string: Unicode case folding
+                // can change UTF-8 length (for example İ becomes i plus a combining dot).
+                let marker = transcript.range(of: "downloading item", options: .caseInsensitive)
                 if id != nil, downloading || marker != nil {
                     // Ignore client-update percentages before this item's boundary.
                     // Once acknowledged, progress continues even if the marker falls

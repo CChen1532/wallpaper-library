@@ -42,7 +42,8 @@ enum VideoBackdropFrame {
         let values = try video.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey])
         guard video.pathExtension.lowercased() == "mp4", values.isRegularFile == true,
               values.isSymbolicLink != true else { throw BackendError.message("视频素材不可读取") }
-        let identity = "\(video.standardizedFileURL.resolvingSymlinksInPath().path)|\(values.fileSize ?? 0)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)|\(second)|\(width)x\(height)"
+        let stamp = try MaterialDiscovery.stamp(video)
+        let identity = "\(video.standardizedFileURL.resolvingSymlinksInPath().path)|\(stamp)|\(second)|\(width)x\(height)"
         let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         let directory = state.appendingPathComponent("VideoCaptures/" + key, isDirectory: true)
         let target = directory.appendingPathComponent("wallpaper.png")

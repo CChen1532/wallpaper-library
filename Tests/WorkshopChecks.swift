@@ -49,6 +49,63 @@ final class WorkshopEventLog: @unchecked Sendable {
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: root) }
         let storage = WorkshopStorage(root: root.appendingPathComponent("App"))
+        let logExecutable = root.appendingPathComponent("log-boundary-steamcmd")
+        try fm.copyItem(at: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Tests/Fixtures/workshop-log-boundary-fixture.py"), to: logExecutable)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: logExecutable.path)
+        func logBoundaryChecks(_ scenario: String) async throws {
+            let worker = WorkshopSteamProcess(), stage = try storage.makeStaging(), events = WorkshopEventLog()
+            let id: String
+            switch scenario {
+            case "unicode": id = "720"
+            case "long": id = "721"
+            case "old-prompt": id = "722"
+            case "login": id = ""
+            default: fatalError("unknown log-boundary fixture case")
+            }
+            if scenario == "old-prompt" {
+                do {
+                    _ = try await worker.download(binary: logExecutable, account: "cached_user", password: "", id: id,
+                                                  staging: stage, timeout: 0.5, keepAlive: true) { _ in }
+                    fatalError("prompt before current success completed the command")
+                } catch WorkshopFailure.timedOut {
+                    check(true, "a stale prompt before current success cannot complete the item")
+                }
+                let pid = Int32(try String(contentsOf: stage.appendingPathComponent("child.pid"), encoding: .utf8))!
+                check(kill(pid, 0) == -1, "missing current success-to-prompt boundary closes its child")
+                return
+            }
+            if scenario == "login" {
+                try await worker.connect(binary: logExecutable, account: "long_login_user", staging: stage, timeout: 3) { events.append($0) }
+                check(!fm.fileExists(atPath: stage.appendingPathComponent("steamapps").path),
+                      "login completion survives long logs before its split command prompt")
+            } else {
+                let result = try await worker.download(binary: logExecutable, account: "cached_user", password: "", id: id,
+                                                       staging: stage, timeout: 3, keepAlive: true) { events.append($0) }
+                try storage.validateProject(result)
+                if scenario == "unicode" {
+                    check(events.progress.contains { $0.fraction == 0.375 } && events.progress.last?.fraction == 1,
+                          "Unicode case expansion before the download marker preserves progress and completion")
+                } else {
+                    check(events.progress.last?.fraction == 1,
+                          "current success survives more than 8192 log characters before its split prompt")
+                }
+            }
+            let firstPID = Int32(try String(contentsOf: stage.appendingPathComponent("child.pid"), encoding: .utf8))!
+            let next = try await worker.download(binary: logExecutable, account: scenario == "login" ? "long_login_user" : "cached_user",
+                                                 password: "", id: "724", staging: stage, timeout: 3, keepAlive: true) { _ in }
+            try storage.validateProject(next)
+            check(try String(contentsOf: stage.appendingPathComponent("launches"), encoding: .utf8).split(separator: "\n").count == 1 && kill(firstPID, 0) == 0,
+                  scenario + " log boundary preserves one reusable process for the next download")
+            await worker.closeSession()
+            check(kill(firstPID, 0) == -1, scenario + " log-boundary fixture is reaped on close")
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--log-boundary-case"), flag + 1 < CommandLine.arguments.count {
+            let scenario = CommandLine.arguments[flag + 1]
+            do { try await logBoundaryChecks(scenario) }
+            catch { print("LOG BOUNDARY FAILURE " + scenario + ": " + String(describing: error)); exit(1) }
+            print("\(count) targeted Workshop checks passed")
+            return
+        }
         func fixture(_ name: String, type: String = "video", file: String = "movie.mp4") throws -> URL {
             let folder = root.appendingPathComponent(name)
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -226,6 +283,8 @@ final class WorkshopEventLog: @unchecked Sendable {
             check(Date().timeIntervalSince(began) < 3 && kill(pid, 0) == -1,
                   "idle session shutdown stays bounded across serial-queue thread reuse")
         }
+
+        for scenario in ["unicode", "long", "old-prompt", "login"] { try await logBoundaryChecks(scenario) }
 
         if CommandLine.arguments.contains("--live") {
             let live = try await WorkshopMetadata.fetch(id: "1000000001")

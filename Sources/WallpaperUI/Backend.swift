@@ -127,7 +127,9 @@ struct PhontoBackend: WallpaperBackend {
                 let duration = Double(probe.format?.duration ?? "") ?? 0
                 item.duration = duration.isFinite && duration >= 0 ? duration : 0
                 item.fps = Self.frameRate(stream.avg_frame_rate)
-                let key = "\(url.path)|\(values.fileSize ?? 0)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+                // Match the media cache's identity even when an atomic replacement
+                // preserves the byte count and modification time.
+                let key = "\(url.path)|\(signature)"
                 let hash = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
                 let target = cache.appendingPathComponent(hash + ".jpg")
                 if (try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 == 0 {

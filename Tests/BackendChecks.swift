@@ -1,5 +1,7 @@
 import Foundation
 import Combine
+import CoreGraphics
+import ImageIO
 
 @main struct BackendChecks {
     @MainActor
@@ -96,6 +98,43 @@ import Combine
         catch { check(true, "权限错误显示未知而不是关闭") }
         await fakeRunner.setFailure(false)
         check(try await backend.library().isEmpty, "空目录可正常读取")
+        // Both generated-cover caches must distinguish an atomic same-size,
+        // same-mtime replacement. The fake decoder only writes temporary PNGs.
+        let cacheRoot = fixture.appendingPathComponent("cache-replacement")
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        let cacheVideo = cacheRoot.appendingPathComponent("replacement.mp4")
+        let fixedTime = Date(timeIntervalSince1970: 1_600_000_000)
+        func replaceCacheVideo(_ value: UInt8) throws {
+            try Data([value]).write(to: cacheVideo, options: .atomic)
+            try FileManager.default.setAttributes([.modificationDate: fixedTime], ofItemAtPath: cacheVideo.path)
+        }
+        try replaceCacheVideo(1)
+        let oldStamp = try MaterialDiscovery.stamp(cacheVideo)
+        let cacheRunner = CacheMediaRunner()
+        let cacheBackend = PhontoBackend(home: fixture, runner: cacheRunner, directoryOverride: cacheRoot)
+        let firstCacheItem = try await cacheBackend.library().first!
+        let firstCacheImage = try Data(contentsOf: firstCacheItem.thumbnail!)
+        let cacheFrameRoot = fixture.appendingPathComponent("cache-frames")
+        let firstCacheFrame = try await VideoBackdropFrame.capture(video: cacheVideo, second: 0, width: 8, height: 8,
+            state: cacheFrameRoot, ffmpeg: URL(fileURLWithPath: "/fixture/ffmpeg"), runner: cacheRunner)
+        let firstCacheFrameData = try Data(contentsOf: firstCacheFrame)
+        try replaceCacheVideo(2)
+        check(try MaterialDiscovery.stamp(cacheVideo) != oldStamp,
+              "同大小同修改时间的视频原子替换确实改变文件身份")
+        let replacedCacheItem = try await cacheBackend.library().first!
+        check(try replacedCacheItem.thumbnail != firstCacheItem.thumbnail &&
+              Data(contentsOf: replacedCacheItem.thumbnail!) != firstCacheImage,
+              "视频替换后重新生成封面，不复用旧磁盘缩略图")
+        let replacedCacheFrame = try await VideoBackdropFrame.capture(video: cacheVideo, second: 0, width: 8, height: 8,
+            state: cacheFrameRoot, ffmpeg: URL(fileURLWithPath: "/fixture/ffmpeg"), runner: cacheRunner)
+        check(try replacedCacheFrame != firstCacheFrame && Data(contentsOf: replacedCacheFrame) != firstCacheFrameData,
+              "视频替换后重新生成过渡底图，不复用旧画面")
+        let decodes = await cacheRunner.decodes
+        let reusedCacheItem = try await cacheBackend.library().first!
+        let reusedCacheFrame = try await VideoBackdropFrame.capture(video: cacheVideo, second: 0, width: 8, height: 8,
+            state: cacheFrameRoot, ffmpeg: URL(fileURLWithPath: "/fixture/ffmpeg"), runner: cacheRunner)
+        check(await cacheRunner.decodes == decodes && reusedCacheItem.thumbnail == replacedCacheItem.thumbnail &&
+              reusedCacheFrame == replacedCacheFrame, "视频未变化时继续复用封面和底图缓存")
         let outside = fixture.appendingPathComponent("outside.mp4")
         try Data([1, 2, 3]).write(to: outside)
         do { try await backend.trash(outside); fatalError("允许越界删除") }
@@ -285,5 +324,27 @@ struct MediaRunner: CommandExecuting {
     func run(_ executable: String, _ args: [String], timeout: Double) async throws -> CommandResult {
         let tool = URL(fileURLWithPath: executable).lastPathComponent
         return try await CommandRunner().run(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/" + tool).path, args, timeout: timeout)
+    }
+}
+
+private actor CacheMediaRunner: CommandExecuting {
+    private(set) var decodes = 0
+    func run(_ executable: String, _ args: [String], timeout: Double) async throws -> CommandResult {
+        if executable.hasSuffix("ffprobe") {
+            return .init(code: 0, text: #"{"streams":[{"codec_name":"h264","width":8,"height":8,"avg_frame_rate":"30/1"}],"format":{"duration":"1"}}"#)
+        }
+        guard executable.hasSuffix("ffmpeg"), let input = args.firstIndex(of: "-i"), let output = args.last else {
+            throw BackendError.message("unexpected cache fixture command")
+        }
+        decodes += 1
+        let red = try Data(contentsOf: URL(fileURLWithPath: args[input + 1])).first == 1
+        let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(red: red ? 1 : 0, green: 0, blue: red ? 0 : 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: output) as CFURL, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        precondition(CGImageDestinationFinalize(destination))
+        return .init(code: 0, text: "")
     }
 }

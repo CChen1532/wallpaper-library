@@ -78,7 +78,9 @@ actor CoverImageLoader {
                   values[.type] as? FileAttributeType == .typeRegular,
                   let size = values[.size] as? Int, size > 0, size <= Self.maximumBytes else { continue }
             let modified = (values[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            let key = "\(url.standardizedFileURL.path)|\(size)|\(modified)|\(requestedSize.rawValue)|\(animated)"
+            // Atomic replacement can preserve both size and modification time.
+            let fileIdentity = "\(values[.systemNumber] ?? 0)|\(values[.systemFileNumber] ?? 0)"
+            let key = "\(url.standardizedFileURL.path)|\(fileIdentity)|\(size)|\(modified)|\(requestedSize.rawValue)|\(animated)"
             if let cached = cache.object(forKey: key as NSString) { return cached }
             let result = await coalesced(key) {
                 await self.decode(url: url, size: requestedSize, animated: animated)

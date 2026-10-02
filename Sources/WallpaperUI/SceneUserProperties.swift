@@ -221,10 +221,15 @@ struct ScenePropertyLaunch: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let identity = package.standardizedFileURL.resolvingSymlinksInPath().path
-        let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
-        let file = directory.appendingPathComponent(key + ".json")
         let data = try JSONSerialization.data(withJSONObject: overrides, options: [.sortedKeys])
-        try data.write(to: file, options: .atomic)
+        var snapshot = Data(identity.utf8)
+        snapshot.append(0)
+        snapshot.append(data)
+        let key = SHA256.hash(data: snapshot).map { String(format: "%02x", $0) }.joined()
+        let file = directory.appendingPathComponent(key + ".json")
+        // Different launches must not overwrite a file an older child has yet to read.
+        // Identical validated content can safely share the same immutable snapshot.
+        if (try? Data(contentsOf: file)) != data { try data.write(to: file, options: .atomic) }
         return .init(file: file, effectiveValues: effective)
     }
 }
@@ -235,6 +240,8 @@ struct ScenePropertyLaunch: Sendable {
     private struct CachedCatalog: Sendable {
         let modified: Date?
         let size: Int?
+        let fileNumber: UInt64?
+        let fileSystem: UInt64?
         let catalog: ScenePropertyCatalog
     }
     private struct CachedSavedValues {
@@ -262,9 +269,14 @@ struct ScenePropertyLaunch: Sendable {
         let attributes = try? FileManager.default.attributesOfItem(atPath: project.path)
         let modified = attributes?[.modificationDate] as? Date
         let size = attributes?[.size] as? Int
-        if let cached = catalogs[identity], cached.modified == modified, cached.size == size { return cached.catalog }
+        let fileNumber = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
+        let fileSystem = (attributes?[.systemNumber] as? NSNumber)?.uint64Value
+        if let cached = catalogs[identity], fileNumber != nil,
+           cached.modified == modified, cached.size == size,
+           cached.fileNumber == fileNumber, cached.fileSystem == fileSystem { return cached.catalog }
         let result = ScenePropertyCatalog.load(for: package)
-        catalogs[identity] = .init(modified: modified, size: size, catalog: result)
+        catalogs[identity] = .init(modified: modified, size: size, fileNumber: fileNumber,
+                                  fileSystem: fileSystem, catalog: result)
         return result
     }
 
@@ -274,8 +286,10 @@ struct ScenePropertyLaunch: Sendable {
             let attributes = try? FileManager.default.attributesOfItem(atPath: project.path)
             let modified = attributes?[.modificationDate] as? Date
             let size = attributes?[.size] as? Int
-            return CachedCatalog(modified: modified, size: size,
-                                 catalog: ScenePropertyCatalog.load(for: package))
+            let fileNumber = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
+            let fileSystem = (attributes?[.systemNumber] as? NSNumber)?.uint64Value
+            return CachedCatalog(modified: modified, size: size, fileNumber: fileNumber,
+                                 fileSystem: fileSystem, catalog: ScenePropertyCatalog.load(for: package))
         }
         let result = await worker.value
         guard !Task.isCancelled else { return .empty }

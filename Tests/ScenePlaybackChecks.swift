@@ -38,6 +38,27 @@ import UniformTypeIdentifiers
         check(nativeLaunch.executable == nativeRenderer && nativeLaunch.arguments.contains("efficient") &&
               nativeLaunch.arguments.contains("--deferred-show") && !nativeLaunch.preferences.mouseEnabled,
               "原生引力场景选择专用渲染器并禁用交互、等待底图后显示")
+        let fixedReplacementDate = Date(timeIntervalSince1970: 1700000000)
+        try FileManager.default.setAttributes([.modificationDate: fixedReplacementDate], ofItemAtPath: manifest.path)
+        let nativePreparation = ScenePreparationCache()
+        let nativeCached = try await nativePreparation.prepare(runtimeURL: nativeRoot.appendingPathComponent("SceneRuntime"),
+            root: nativeRoot, name: "native", title: "Gravity", expectedBytes: Int64(manifestData.count), displayID: 1,
+            preferences: .init())
+        let manifestBefore = try FileManager.default.attributesOfItem(atPath: manifest.path)
+        let ultraReplacement = Data(#"{"format":"wallpaperui.gravity.v1","preset":"ultra"}    "#.utf8)
+        try ultraReplacement.write(to: manifest, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: fixedReplacementDate], ofItemAtPath: manifest.path)
+        let manifestAfter = try FileManager.default.attributesOfItem(atPath: manifest.path)
+        check(ultraReplacement.count == manifestData.count &&
+              manifestBefore[.modificationDate] as? Date == manifestAfter[.modificationDate] as? Date &&
+              manifestBefore[.systemFileNumber] as? NSNumber != manifestAfter[.systemFileNumber] as? NSNumber,
+              "预热缓存替换测试保留大小与修改时间但真正改变文件身份")
+        let nativeReplaced = try await nativePreparation.prepare(runtimeURL: nativeRoot.appendingPathComponent("SceneRuntime"),
+            root: nativeRoot, name: "native", title: "Gravity", expectedBytes: Int64(manifestData.count), displayID: 1,
+            preferences: .init())
+        check(nativeCached.arguments.contains("efficient") && nativeReplaced.arguments.contains("ultra") &&
+              nativeReplaced.preferences.fps == 120,
+              "同大小与mtime的原子替换不会复用旧场景预设或帧率")
         try Data(#"{"format":"wallpaperui.gravity.v1","preset":"arbitrary-code"}"#.utf8).write(to: manifest)
         do { _ = try GravityScene.load(manifest); preconditionFailure("invalid preset accepted") }
         catch { check(true, "原生包拒绝未知预设") }
@@ -410,6 +431,25 @@ import UniformTypeIdentifiers
         check(changedJSON["fog"] as? Bool == true && changedJSON["parallax"] as? Double == 1.5 &&
               changedJSON["schemecolor"] as? String == "0.2 0.3 0.4" && changedJSON["watermark"] as? Bool == false,
               "布尔、滑块和颜色效果以校验后的值传给渲染器")
+        let changedSnapshot = try Data(contentsOf: changed.file!)
+        propertyStore.save(.number(0.5), for: parallax, package: markedPackage)
+        let newerLaunch = try propertyStore.launch(for: markedPackage)
+        let newerJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: newerLaunch.file!)) as! [String: Any]
+        let retainedSnapshot = try Data(contentsOf: changed.file!)
+        check(changed.file != newerLaunch.file && retainedSnapshot == changedSnapshot &&
+              changed.effectiveValues["parallax"] == .number(1.5) && newerJSON["parallax"] as? Double == 0.5,
+              "同一场景后续启动覆盖保留旧快照文件和旧有效值")
+        let newerAttributes = try FileManager.default.attributesOfItem(atPath: newerLaunch.file!.path)
+        let repeatedLaunch = try await propertyStore.launchInBackground(for: markedPackage)
+        let repeatedAttributes = try FileManager.default.attributesOfItem(atPath: repeatedLaunch.file!.path)
+        check(repeatedLaunch.file == newerLaunch.file && repeatedLaunch.effectiveValues == newerLaunch.effectiveValues &&
+              newerAttributes[.systemFileNumber] as? NSNumber == repeatedAttributes[.systemFileNumber] as? NSNumber,
+              "相同有序覆盖内容在后台准备时复用文件且不重写已有快照")
+        propertyStore.save(.number(1.5), for: parallax, package: markedPackage)
+        let restoredLaunch = try propertyStore.launch(for: markedPackage)
+        let restoredSnapshot = try Data(contentsOf: restoredLaunch.file!)
+        check(restoredLaunch.file == changed.file && restoredSnapshot == changedSnapshot,
+              "恢复同一覆盖内容复用其原始不可变启动文件")
         let reloadedProperties = SceneUserPropertiesStore(defaults: propertyDefaults,
             directory: root.appendingPathComponent("saved-properties"))
         check(reloadedProperties.value(for: fog, package: markedPackage) == .boolean(true) &&
@@ -430,6 +470,32 @@ import UniformTypeIdentifiers
         let visibleJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: visibleWatermark.file!)) as! [String: Any]
         check(visibleJSON["watermark"] == nil && visibleJSON["fog"] as? Bool == true,
               "用户开启水印后恢复作者默认画面，其他效果不受影响")
+
+        let identityFolder = root.appendingPathComponent("metadata-identity")
+        try FileManager.default.createDirectory(at: identityFolder, withIntermediateDirectories: true)
+        let identityPackage = identityFolder.appendingPathComponent("scene.pkg")
+        try Data([1]).write(to: identityPackage)
+        let identityProject = identityFolder.appendingPathComponent("project.json")
+        let metadataBefore = Data(#"{"general":{"properties":{"amount":{"type":"slider","text":"Amount","min":0,"max":2,"step":0.1,"value":1}}}}"#.utf8)
+        let metadataAfter = Data(#"{"general":{"properties":{"amount":{"type":"slider","text":"Amount","min":0,"max":2,"step":0.1,"value":2}}}}"#.utf8)
+        try metadataBefore.write(to: identityProject)
+        try FileManager.default.setAttributes([.modificationDate: fixedReplacementDate], ofItemAtPath: identityProject.path)
+        _ = propertyStore.catalog(for: identityPackage)
+        let originalMetadataAttributes = try FileManager.default.attributesOfItem(atPath: identityProject.path)
+        try metadataAfter.write(to: identityProject, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: fixedReplacementDate], ofItemAtPath: identityProject.path)
+        let replacedMetadataAttributes = try FileManager.default.attributesOfItem(atPath: identityProject.path)
+        check(metadataBefore.count == metadataAfter.count &&
+              originalMetadataAttributes[.modificationDate] as? Date == replacedMetadataAttributes[.modificationDate] as? Date &&
+              originalMetadataAttributes[.systemFileNumber] as? NSNumber != replacedMetadataAttributes[.systemFileNumber] as? NSNumber,
+              "作者属性缓存测试同样保留大小mtime并使用新文件身份")
+        check(propertyStore.catalog(for: identityPackage).properties.first?.sourceDefault == .number(2),
+              "原子替换同大小mtime的project.json会刷新作者属性定义")
+        _ = await propertyStore.loadCatalogInBackground(for: identityPackage)
+        try metadataBefore.write(to: identityProject, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: fixedReplacementDate], ofItemAtPath: identityProject.path)
+        check(propertyStore.catalog(for: identityPackage).properties.first?.sourceDefault == .number(1),
+              "后台作者属性缓存也记录文件身份以识别后续替换")
 
         let legacySliderFolder = root.appendingPathComponent("legacy-sliders")
         try FileManager.default.createDirectory(at: legacySliderFolder, withIntermediateDirectories: true)

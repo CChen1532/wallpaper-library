@@ -58,6 +58,54 @@ import ImageIO
         check(updated !== first && updated.image.width == 40 && updated.image.height == 20, "同路径封面更新后不复用旧图")
         let updatedCard = await loader.image(for: .video(large), size: .card)
         check(updatedCard !== card && updatedCard?.image.width == 40, "封面更新同时使小尺寸缓存失效")
+        // A fixed-width, uncompressed BMP keeps different colors exactly the same size.
+        func bmp(_ url: URL, blue: UInt8) throws {
+            let width = 32, height = 16, bytes = width * height * 3
+            var data = Data([0x42, 0x4d])
+            func u16(_ value: UInt16) {
+                var little = value.littleEndian
+                withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+            }
+            func u32(_ value: UInt32) {
+                var little = value.littleEndian
+                withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+            }
+            u32(UInt32(54 + bytes)); u32(0); u32(54); u32(40)
+            u32(UInt32(width)); u32(UInt32(height)); u16(1); u16(24)
+            u32(0); u32(UInt32(bytes)); u32(0); u32(0); u32(0); u32(0)
+            for _ in 0..<(width * height) { data.append(contentsOf: [blue, 0, 255 - blue]) }
+            try data.write(to: url, options: .atomic)
+        }
+        let replaced = root.appendingPathComponent("replaced.bmp")
+        let fixedModified = Date(timeIntervalSince1970: 1_700_000_000)
+        try bmp(replaced, blue: 0)
+        try FileManager.default.setAttributes([.modificationDate: fixedModified], ofItemAtPath: replaced.path)
+        let beforeReplacement = try FileManager.default.attributesOfItem(atPath: replaced.path)
+        let originalDetail = await loader.image(for: .video(replaced))!
+        let originalCard = await loader.image(for: .video(replaced), size: .card)!
+        let originalAnimated = await loader.image(for: .video(replaced), size: .card, animated: true)!
+        try bmp(replaced, blue: 255)
+        try FileManager.default.setAttributes([.modificationDate: fixedModified], ofItemAtPath: replaced.path)
+        let afterReplacement = try FileManager.default.attributesOfItem(atPath: replaced.path)
+        check(beforeReplacement[.size] as? NSNumber == afterReplacement[.size] as? NSNumber
+              && beforeReplacement[.modificationDate] as? Date == afterReplacement[.modificationDate] as? Date
+              && beforeReplacement[.systemFileNumber] as? NSNumber != afterReplacement[.systemFileNumber] as? NSNumber,
+              "原子替换封面保持大小和修改时间但使用新文件身份")
+        let fresh = await CoverImageLoader().image(for: .video(replaced))!
+        let freshPixels = fresh.image.dataProvider!.data! as Data
+        check(originalDetail.image.dataProvider!.data! as Data != freshPixels,
+              "原子替换测试素材包含实际不同的像素")
+        let replacementDetail = await loader.image(for: .video(replaced))!
+        check(replacementDetail !== originalDetail && replacementDetail.image.dataProvider!.data! as Data == freshPixels,
+              "同大小同时间原子替换使详情封面读取新像素")
+        let replacementCard = await loader.image(for: .video(replaced), size: .card)!
+        check(replacementCard !== originalCard && replacementCard.image.dataProvider!.data! as Data == freshPixels,
+              "同大小同时间原子替换使卡片封面读取新像素")
+        let replacementAnimated = await loader.image(for: .video(replaced), size: .card, animated: true)!
+        check(replacementAnimated !== originalAnimated && replacementAnimated.image.dataProvider!.data! as Data == freshPixels,
+              "同大小同时间原子替换使动画请求的首帧缓存失效")
+        check(await loader.image(for: .video(replaced)) === replacementDetail,
+              "替换后未再改变的封面继续复用缓存")
         let fallback = root.appendingPathComponent("preview.png")
         let custom = root.appendingPathComponent("custom.png")
         try png(fallback, width: 32, height: 16)
