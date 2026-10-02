@@ -223,10 +223,21 @@ private struct VideoBackdropTarget: Equatable {
     func recover() async throws {
         guard lease == nil, !transitioning else { return }
         transitioning = true
-        defer { finishTransition() }
-        let settings = try configuration()
-        try await Task.detached(priority: .userInitiated) { try SceneBackdropLease.recover(settings) }.value
-        restorationPending = settings.recoveryPending
-        issue = nil
+        var settings: SceneBackdropConfiguration?
+        defer {
+            // A thrown helper must not leave the UI claiming recovery is done.
+            // Missing configuration cannot prove that a journal is safe either.
+            restorationPending = settings?.recoveryPending ?? true
+            finishTransition()
+        }
+        do {
+            let configured = try configuration()
+            settings = configured
+            try await Task.detached(priority: .userInitiated) { try SceneBackdropLease.recover(configured) }.value
+            issue = nil
+        } catch {
+            issue = error.localizedDescription
+            throw error
+        }
     }
 }

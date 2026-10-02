@@ -55,6 +55,7 @@ import Combine
     private var sceneRequestRevision = 0
     private var stateRevision = 0
     private var lastVideoBackdropAttempt: String?
+    private var lastVideoBackdropCompatibilityIssue: String?
     private var backdropsReady = false
     var capabilities: BackendCapabilities { backend.capabilities }
     var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || videoBackdrop.transitioning || shuttingDown || otherDisplayBusy() || !displayConnected }
@@ -274,6 +275,7 @@ import Combine
         do {
             try await videoBackdrop.recover()
             videoBackdropIssue = nil; lastVideoBackdropAttempt = nil
+            clearVideoBackdropCompatibilityIssue()
         }
         catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
         backdropsReady = !scenePlayer.restorationPending && !videoBackdrop.restorationPending
@@ -284,6 +286,7 @@ import Combine
         do {
             try await videoBackdrop.recover()
             videoBackdropIssue = nil; lastVideoBackdropAttempt = nil
+            clearVideoBackdropCompatibilityIssue()
             backdropsReady = !scenePlayer.restorationPending && !videoBackdrop.restorationPending
         }
         catch { videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription }
@@ -358,10 +361,18 @@ import Combine
         }
     }
 
+    private func clearVideoBackdropCompatibilityIssue() {
+        guard let previous = lastVideoBackdropCompatibilityIssue else { return }
+        // A newer scene or multi-display notice owns the shared banner.
+        if backdropCompatibilityIssue == previous { backdropCompatibilityIssue = nil }
+        if videoBackdropIssue == previous { videoBackdropIssue = nil }
+        lastVideoBackdropCompatibilityIssue = nil
+    }
+
     private func syncVideoBackdrop(for value: PlaybackState, force: Bool, revision: Int) async {
         guard backdropsReady, revision == stateRevision, !shuttingDown else { return }
         if targetDisplayUUID != nil && scenePlayer.connectedDisplays.count > 1 {
-            do { try await videoBackdrop.stop(); videoBackdropIssue = nil }
+            do { try await videoBackdrop.stop(); videoBackdropIssue = nil; clearVideoBackdropCompatibilityIssue() }
             catch { videoBackdropIssue = error.localizedDescription }
             lastVideoBackdropAttempt = nil
             return
@@ -379,6 +390,7 @@ import Combine
                     videoBackdropIssue = "恢复原壁纸失败：" + error.localizedDescription
                 }
             }
+            clearVideoBackdropCompatibilityIssue()
             return
         }
         let video = URL(fileURLWithPath: path)
@@ -388,10 +400,15 @@ import Combine
         if let item = items.first(where: { $0.id == path }) {
             preferences.frameSecond = min(preferences.frameSecond, max(0, Int(item.duration.rounded(.down)) - 1))
         }
-        if videoBackdrop.matches(video: video, preferences: preferences) { videoBackdropIssue = nil; return }
+        if videoBackdrop.matches(video: video, preferences: preferences) {
+            videoBackdropIssue = nil
+            clearVideoBackdropCompatibilityIssue()
+            return
+        }
         let attempt = path + "|\(preferences.enabled)|\(preferences.frameSecond)"
         guard force || lastVideoBackdropAttempt != attempt else { return }
         lastVideoBackdropAttempt = attempt
+        clearVideoBackdropCompatibilityIssue()
         do {
             if preferences.enabled {
                 guard let displayID = scenePlayer.preferredDisplayID() else {
@@ -408,6 +425,7 @@ import Combine
             guard revision == stateRevision, !shuttingDown else { return }
             backdropCompatibilityIssue = "此视频的过渡底图未就绪：" + mismatch.localizedDescription
             videoBackdropIssue = backdropCompatibilityIssue
+            lastVideoBackdropCompatibilityIssue = backdropCompatibilityIssue
         } catch {
             guard revision == stateRevision, !shuttingDown else { return }
             videoBackdropIssue = "视频 Space 过渡底图未匹配：" + error.localizedDescription

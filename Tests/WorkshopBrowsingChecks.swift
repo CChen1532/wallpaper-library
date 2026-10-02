@@ -23,8 +23,8 @@ import Foundation
         func item(_ id: String) -> WorkshopItem { .init(id: id, title: "Fixture " + id, previewURL: nil, bytes: 1, tags: ["Video"]) }
         var heldBrowse: CheckedContinuation<Void, Never>?
         var holdBrowse = false, failBrowse = false, delayBrowse = false
-        var imports = 0
-        let model = WorkshopModel(storage: storage, defaults: defaults, component: executable,
+        var imports = 0, libraryBusy = false
+        let model = WorkshopModel(storage: storage, defaults: defaults, libraryBusy: { libraryBusy }, component: executable,
             metadata: { ids in ids == ["999"] ? [] : ids.map(item) }, browse: { _, page in
                 if holdBrowse { await withCheckedContinuation { heldBrowse = $0 } }
                 if delayBrowse { try? await Task.sleep(for: .milliseconds(200)) }
@@ -80,6 +80,33 @@ import Foundation
         delayBrowse = true; model.search(); model.downloadFromCard(item("104")); model.downloadFromCard(item("807"))
         await model.shutdown()
         check(!model.busy && model.pendingDownload == nil && !storage.installed("807"), "combined shutdown awaits browse and download and clears queue")
+        delayBrowse = false
+        model.downloadFromCard(item("808")); model.downloadFromCard(item("809"))
+        libraryBusy = true
+        try await wait { !model.taskBusy }
+        check(storage.installed("808") && model.pendingDownload?.id == "809" && !storage.installed("809"),
+              "playback busy at import completion temporarily holds the next queued item")
+        libraryBusy = false
+        try await wait { storage.installed("809") && !model.taskBusy }
+        check(model.pendingDownload == nil, "clearing playback busy automatically resumes and drains the queue")
+
+        model.downloadFromCard(item("810")); model.downloadFromCard(item("811"))
+        libraryBusy = true
+        try await wait { !model.taskBusy }
+        check(model.pendingDownload?.id == "811", "clear-queue fixture reaches the blocked waiter")
+        model.cancelPendingDownload(); libraryBusy = false
+        try await Task.sleep(for: .milliseconds(500))
+        check(model.pendingDownload == nil && !model.taskBusy && !storage.installed("811"),
+              "clearing a blocked queue cancels its waiter without reviving downloads")
+
+        model.downloadFromCard(item("812")); model.downloadFromCard(item("813"))
+        libraryBusy = true
+        try await wait { !model.taskBusy }
+        check(model.pendingDownload?.id == "813", "shutdown fixture reaches the blocked waiter")
+        await model.shutdown(); libraryBusy = false
+        try await Task.sleep(for: .milliseconds(500))
+        check(model.pendingDownload == nil && !model.taskBusy && !storage.installed("813"),
+              "shutdown awaits and cancels a blocked queue without post-exit downloads")
         print("\(count) concurrent browsing checks passed")
     }
 }

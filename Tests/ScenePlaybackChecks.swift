@@ -949,15 +949,36 @@ import UniformTypeIdentifiers
         try "import sys\nprint('controlled recovery failure', flush=True)\nsys.exit(2)\n"
             .write(to: retryHelper, atomically: true, encoding: .utf8)
         let retryConfiguration = SceneBackdropConfiguration(helper: retryHelper, inventory: root, state: backdropConfig.state)
-        let retryModel = LibraryModel(backend: SceneTestBackend(),
-            videoBackdrop: VideoBackdropController(configuration: { retryConfiguration }))
+        let retryBackdrop = VideoBackdropController(configuration: { retryConfiguration })
+        let retryModel = LibraryModel(backend: SceneTestBackend(), videoBackdrop: retryBackdrop)
+        try pendingJournal.write(to: retryConfiguration.state.appendingPathComponent("session.plist"))
         await retryModel.recoverBackdrops()
         check(retryModel.videoBackdropIssue?.contains("controlled recovery failure") == true,
               "共享恢复失败时保留可重试的错误")
+        check(retryBackdrop.restorationPending && !retryBackdrop.transitioning &&
+              retryBackdrop.issue?.contains("controlled recovery failure") == true,
+              "首次视频恢复失败同步账本状态与错误并结束过渡")
+        do {
+            try retryBackdrop.requireRestoredBackdrop()
+            preconditionFailure("failed recovery allowed another wallpaper")
+        } catch { check(true, "失败的恢复账本阻止新底图覆盖原始备份") }
         try Data(contentsOf: backdropConfig.helper).write(to: retryHelper)
         await retryModel.recoverBackdrops()
         check(retryModel.videoBackdropIssue == nil && !retryConfiguration.recoveryPending,
               "共享恢复重试成功后清除先前视频恢复错误")
+        check(!retryBackdrop.restorationPending && !retryBackdrop.transitioning && retryBackdrop.issue == nil,
+              "恢复重试成功清除控制器待恢复状态与错误")
+        let missingConfiguration = VideoBackdropController(configuration: {
+            throw BackendError.message("controlled missing recovery configuration")
+        })
+        do {
+            try await missingConfiguration.recover()
+            preconditionFailure("missing recovery configuration accepted")
+        } catch {
+            check(missingConfiguration.restorationPending && !missingConfiguration.transitioning &&
+                  missingConfiguration.issue?.contains("controlled missing recovery configuration") == true,
+                  "恢复配置不可读时保守阻止覆盖且结束过渡")
+        }
         // Interrupt a real isolated lease at the system activation boundary.
         // The injected callback never touches macOS Wallpaper settings.
         guard let display = NSScreen.screens.first,
@@ -970,6 +991,58 @@ import UniformTypeIdentifiers
         try helperSource.replacingOccurrences(of: "state = pathlib.Path", with:
             "if 'check-compatibility' in sys.argv:\n    print('WALLPAPER_COMPATIBILITY_OK'); sys.exit(0)\nstate = pathlib.Path")
             .write(to: videoHelper, atomically: true, encoding: .utf8)
+        // Compatibility failures and retries remain entirely inside temporary helpers.
+        // Frame decoding and system activation are injected; no desktop is changed.
+        let compatibleHelperSource = try String(contentsOf: videoHelper, encoding: .utf8)
+        let rejectedHelperSource = helperSource.replacingOccurrences(of: "state = pathlib.Path", with:
+            "if 'check-compatibility' in sys.argv:\n    print('controlled video compatibility failure', flush=True); sys.exit(3)\nstate = pathlib.Path")
+        for operation in ["disable", "retry", "preserve-scene", "preserve-multiscreen"] {
+            let state = root.appendingPathComponent("video-compatibility-" + operation)
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            let helper = state.appendingPathComponent("helper.py")
+            try rejectedHelperSource.write(to: helper, atomically: true, encoding: .utf8)
+            let settings = SceneBackdropConfiguration(helper: helper, inventory: root, state: state)
+            let controller = VideoBackdropController(configuration: { settings }, runner: VideoFrameFixture(),
+                activateSystemWallpaper: { _, _ in })
+            let suite = "WallpaperUI.VideoCompatibility." + UUID().uuidString
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let preferences = VideoBackdropPreferencesStore(defaults: defaults)
+            let compatibilityScreen = SceneDisplay(id: displayID, uuid: UUID().uuidString, name: "Fixture")
+            let compatibilityPlayer = ScenePlayer(focusProvider: { displayID }, displayProvider: { [compatibilityScreen] })
+            let backend = VideoCompatibilityBackend(directory: root)
+            let compatibilityModel = LibraryModel(backend: backend, scenePlayer: compatibilityPlayer,
+                videoBackdropPreferences: preferences, videoBackdrop: controller)
+            compatibilityModel.finishDisplayStartup(recovered: true)
+            await compatibilityModel.perform(.play(video.path))
+            check(compatibilityModel.backdropCompatibilityIssue?.contains("controlled video compatibility failure") == true &&
+                  compatibilityModel.videoBackdropIssue == compatibilityModel.backdropCompatibilityIssue && !controller.hasSession,
+                  "视频\(operation)兼容检查失败通过临时 helper 复现并保留提示")
+            if operation == "retry" {
+                try compatibleHelperSource.write(to: helper, atomically: true, encoding: .utf8)
+                await compatibilityModel.applyVideoBackdropPreferences(for: video)
+                check(controller.activePath == video.path && compatibilityModel.videoBackdropIssue == nil &&
+                      compatibilityModel.backdropCompatibilityIssue == nil,
+                      "视频兼容检查重试成功清除原来的兼容性提示")
+                await compatibilityModel.perform(.off)
+                check(!settings.recoveryPending && !controller.hasSession && !controller.transitioning,
+                      "兼容性重试测试停止后清理临时恢复账本与 lease")
+            } else {
+                let retainedNotice: String?
+                switch operation {
+                case "preserve-scene": retainedNotice = "场景过渡底图未就绪：当前场景仍不兼容"
+                case "preserve-multiscreen": retainedNotice = "多屏模式下暂不启用 Space 过渡底图，场景仍可选择或跟随显示器播放。"
+                default: retainedNotice = nil
+                }
+                if let retainedNotice { compatibilityModel.backdropCompatibilityIssue = retainedNotice }
+                preferences.save(.init(enabled: false), for: video)
+                await compatibilityModel.applyVideoBackdropPreferences(for: video)
+                check(compatibilityModel.videoBackdropIssue == nil &&
+                      compatibilityModel.backdropCompatibilityIssue == retainedNotice && !controller.hasSession,
+                      operation == "disable" ? "视频关闭过渡底图清除原来的兼容性提示" : "清理视频旧提示保留\(operation)的有效共享提示")
+                await compatibilityModel.perform(.off)
+            }
+        }
         for operation in ["stop", "off", "shutdown", "normal"] {
             let state = root.appendingPathComponent("video-race-" + operation)
             try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
@@ -1121,4 +1194,22 @@ private struct VideoFrameFixture: CommandExecuting {
         try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args.last!))
         return CommandResult(code: 0, text: "")
     }
+}
+
+private actor VideoCompatibilityBackend: WallpaperBackend {
+    nonisolated let capabilities: BackendCapabilities
+    private var value = PlaybackState()
+    init(directory: URL) { capabilities = .init(name: "video compatibility fixture", libraryDirectory: directory) }
+    func library() async throws -> [Wallpaper] { [] }
+    func state() async throws -> PlaybackState { value }
+    func perform(_ action: Action) async throws {
+        switch action {
+        case .play(let path): value = .init(running: true, lastPath: path)
+        case .off, .stop: value = .init()
+        default: break
+        }
+    }
+    func importFiles(_ urls: [URL]) async -> [String] { [] }
+    func trash(_ url: URL) async throws { }
+    func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
 }

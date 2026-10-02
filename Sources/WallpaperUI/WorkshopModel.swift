@@ -51,6 +51,7 @@ import Combine
     private var installedRevision = UUID()
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
+    private var queueResumeJob: Task<Void, Never>?
     private var browseJob: Task<Void, Never>?
     private var browseToken: UUID?
     private var shuttingDown = false
@@ -114,6 +115,7 @@ import Combine
     func cancelConnection() {
         connectionJob?.cancel(); connectionReady = false
         downloadQueue = []; authenticationRequired = false
+        cancelQueueResume()
     }
 
     func cardState(_ value: WorkshopItem) -> CardState {
@@ -177,19 +179,49 @@ import Combine
         resumePendingDownload()
     }
     private func resumePendingDownload() {
-        guard !shuttingDown, !connecting, !taskBusy, !libraryBusy(), !authenticationRequired, let value = pendingDownload else { return }
+        guard !shuttingDown, !connecting, !taskBusy, !authenticationRequired, let value = pendingDownload else { return }
+        if libraryBusy() { scheduleQueueResume(); return }
+        cancelQueueResume()
         guard component != nil,
               WorkshopSteamProcess.validCredentials(account: account.trimmingCharacters(in: .whitespacesAndNewlines), password: ""),
               connectionError == nil else { authenticationRequired = true; return }
         downloadQueue.removeFirst()
         startDownload(value, password: "", fromCard: true)
     }
+    /// A playback transition can finish after the current import. Only an idle,
+    /// nonempty queue waits for it; active transfers and authentication own their
+    /// existing completion triggers. Cancellation always removes this waiter.
+    private func scheduleQueueResume() {
+        guard queueResumeJob == nil else { return }
+        queueResumeJob = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                guard !self.shuttingDown, !self.connecting, !self.taskBusy,
+                      !self.authenticationRequired, self.pendingDownload != nil else {
+                    self.queueResumeJob = nil
+                    return
+                }
+                if !self.libraryBusy() {
+                    self.queueResumeJob = nil
+                    self.resumePendingDownload()
+                    return
+                }
+            }
+        }
+    }
+    private func cancelQueueResume() {
+        queueResumeJob?.cancel(); queueResumeJob = nil
+    }
     func removeQueuedDownload(_ id: String) {
         downloadQueue.removeAll { $0.id == id }
-        if downloadQueue.isEmpty, activity != .download { authenticationRequired = false }
+        if downloadQueue.isEmpty {
+            cancelQueueResume()
+            if activity != .download { authenticationRequired = false }
+        }
     }
     func cancelPendingDownload() {
-        downloadQueue = []
+        downloadQueue = []; cancelQueueResume()
         if activity != .download { authenticationRequired = false }
     }
 
@@ -485,7 +517,9 @@ import Combine
     func shutdown() async {
         shuttingDown = true
         defer { shuttingDown = false }
+        let pendingResume = queueResumeJob
         cancelConnection(); cancel(); cancelBrowsing(); installedJob?.cancel()
+        await pendingResume?.value
         await connectionJob?.value; await job?.value; await browseJob?.value; await installedJob?.value
         await discardSession()
     }
