@@ -118,6 +118,7 @@ import Combine
         defer { busy = false }
         do {
             let package = root.appendingPathComponent(name).appendingPathComponent("scene.pkg")
+            try requireRotationCandidate(package, when: fromSelectionRotation)
             let preferences = playbackPreferences(for: package)
             if updatingEffects {
                 let launch = try await sceneUserProperties.launchInBackground(for: package)
@@ -152,7 +153,7 @@ import Combine
             let sourcePackage = configuration.package
             configuration.backdrop?.sourcePackage = sourcePackage
             guard !shuttingDown, request == sceneRequestRevision else { return }
-            try await commitPreparedScene(configuration, request: request)
+            try await commitPreparedScene(configuration, request: request, fromSelectionRotation: fromSelectionRotation)
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
         await readState()
@@ -195,7 +196,15 @@ import Combine
         await readState()
     }
 
-    private func commitPreparedScene(_ prepared: SceneLaunchConfiguration, request: Int) async throws {
+    private func requireRotationCandidate(_ url: URL, when fromSelectionRotation: Bool) throws {
+        guard fromSelectionRotation else { return }
+        let id = LibraryCollectionStore.identity(url)
+        guard collection.rotationCandidates.contains(where: { $0.id == id }) else { throw CancellationError() }
+    }
+
+    private func commitPreparedScene(_ prepared: SceneLaunchConfiguration, request: Int,
+                                     fromSelectionRotation: Bool = false) async throws {
+        try requireRotationCandidate(prepared.package, when: fromSelectionRotation)
         await scenePlayer.stop()
         try scenePlayer.requireRestoredBackdrop()
         try await backend.perform(.off)
@@ -225,6 +234,7 @@ import Combine
         }
         guard !shuttingDown, request == sceneRequestRevision else { return }
         guard displayConnected else { throw BackendError.message("目标显示器已断开，请重新选择显示器") }
+        try requireRotationCandidate(configuration.package, when: fromSelectionRotation)
         try scenePlayer.start(configuration)
     }
 
@@ -496,6 +506,10 @@ import Combine
                 default: break
                 }
             }
+            if case .play(let path) = routedAction {
+                // The shared list may change on another display while earlier commands await.
+                try requireRotationCandidate(URL(fileURLWithPath: path), when: fromSelectionRotation)
+            }
             try await backend.perform(routedAction)
             switch action {
             case .stop, .off:
@@ -535,7 +549,11 @@ import Combine
         guard !inventoryOnly else { return }
         stateRevision += 1
         if collection.rotationItems.contains(where: { MaterialRemoval.contains(target, $0.url) }) {
+            sceneRequestRevision += 1
             selectionRotation.stop()
+            // Finish a command already submitted, then query and stop its actual result.
+            // This method can itself run inside a busy deletion operation.
+            await selectionRotation.finishPendingSwitch()
         }
         if let package = scenePlayer.package, MaterialRemoval.contains(target, package) {
             await scenePlayer.stop()
@@ -612,7 +630,7 @@ import Combine
     }
 
     private func playRotationItem(_ item: RotationWallpaper) async -> Bool {
-        guard !isWorking, !shuttingDown, !collection.hiddenIDs.contains(item.id) else { return false }
+        guard !isWorking, !shuttingDown, collection.rotationCandidates.contains(where: { $0.id == item.id }) else { return false }
         error = nil
         switch item.kind {
         case .scene:

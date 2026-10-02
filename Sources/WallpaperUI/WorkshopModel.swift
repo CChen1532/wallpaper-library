@@ -48,6 +48,7 @@ import Combine
     @Published private(set) var authenticationRequired = false
     @Published private(set) var activeDownloadID: String?
     private var installedJob: Task<Void, Never>?
+    private var subscriptionCacheJob: Task<Void, Never>?
     private var installedRevision = UUID()
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
@@ -240,6 +241,7 @@ import Combine
          findExisting: @escaping (String) -> URL? = { _ in nil }, libraryBusy: @escaping () -> Bool = { false },
          component: URL? = nil, metadata: @escaping ([String]) async throws -> [WorkshopItem] = { try await WorkshopMetadata.fetch(ids: $0) },
          browse: @escaping (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page = { try await WorkshopBrowse.fetch(request: $0, page: $1) },
+         subscriptionCache: (() async -> WorkshopSubscriptionSnapshot?)? = nil,
          onImported: @escaping (URL) async -> Void = { _ in }) {
         self.storage = storage; self.defaults = defaults; self.onImported = onImported
         self.findExisting = findExisting
@@ -249,9 +251,20 @@ import Combine
         filters = defaults.data(forKey: "workshopBrowseFilters").flatMap { try? JSONDecoder().decode(WorkshopFilters.self, from: $0) } ?? .init()
         account = defaults.string(forKey: "workshopAccount") ?? ""
         self.component = component ?? WorkshopComponent.locate(storage: storage, custom: defaults.string(forKey: "workshopSteamCMD"))
-        Task { [weak self] in
-            let cached = await Task.detached(priority: .utility) { storage.loadSubscriptions() }.value
-            guard let self, let cached, self.subscriptionReadAt == nil, !self.busy else { return }
+        subscriptionCacheJob = Task { [weak self] in
+            let cached: WorkshopSubscriptionSnapshot?
+            if let subscriptionCache {
+                cached = await subscriptionCache()
+            } else {
+                let reader = Task.detached(priority: .utility) { storage.loadSubscriptions() }
+                cached = await withTaskCancellationHandler(operation: { await reader.value }, onCancel: { reader.cancel() })
+            }
+            guard let self else { return }
+            defer { self.subscriptionCacheJob = nil }
+            // Public browsing and downloads do not replace subscription metadata.
+            // A newer subscription read wins over a late cache; shutdown owns cancellation.
+            guard !Task.isCancelled, !self.shuttingDown, let cached, cached.isValid,
+                  self.subscriptionReadAt == nil else { return }
             self.subscriptions = cached.items
             self.subscriptionCount = cached.total
             self.subscriptionReadAt = cached.readAt
@@ -459,7 +472,8 @@ import Combine
                 defaults.set(ignored.sorted(), forKey: "workshopSyncIgnoredIDs")
                 authenticationRequired = false
             } catch {
-                if fromCard, error as? WorkshopFailure == .passwordRequired || error as? WorkshopFailure == .loginFailed {
+                if fromCard, !Task.isCancelled, !shuttingDown,
+                   error as? WorkshopFailure == .passwordRequired || error as? WorkshopFailure == .loginFailed {
                     downloadQueue.insert(item, at: 0); authenticationRequired = true
                     connectionError = (error as? WorkshopFailure)?.localizedDescription
                 } else {
@@ -517,9 +531,9 @@ import Combine
     func shutdown() async {
         shuttingDown = true
         defer { shuttingDown = false }
-        let pendingResume = queueResumeJob
-        cancelConnection(); cancel(); cancelBrowsing(); installedJob?.cancel()
-        await pendingResume?.value
+        let pendingResume = queueResumeJob, pendingCache = subscriptionCacheJob
+        cancelConnection(); cancel(); cancelBrowsing(); installedJob?.cancel(); subscriptionCacheJob?.cancel()
+        await pendingResume?.value; await pendingCache?.value
         await connectionJob?.value; await job?.value; await browseJob?.value; await installedJob?.value
         await discardSession()
     }

@@ -107,6 +107,76 @@ import Foundation
         try await Task.sleep(for: .milliseconds(500))
         check(model.pendingDownload == nil && !model.taskBusy && !storage.installed("813"),
               "shutdown awaits and cancels a blocked queue without post-exit downloads")
+        let cachedSnapshot = WorkshopSubscriptionSnapshot(total: 1, readAt: Date().addingTimeInterval(-60), items: [item("901")])
+        let cacheStorage = WorkshopStorage(root: root.appendingPathComponent("Cache"))
+        try cacheStorage.saveSubscriptions(cachedSnapshot)
+        var cacheGate: CheckedContinuation<WorkshopSubscriptionSnapshot?, Never>?
+        var cacheBrowseGate: CheckedContinuation<Void, Never>?
+        let cacheModel = WorkshopModel(storage: cacheStorage, defaults: defaults, component: executable,
+            browse: { _, page in
+                await withCheckedContinuation { cacheBrowseGate = $0 }
+                return .init(items: [], number: page, pages: 1, total: 0)
+            }, subscriptionCache: {
+                await withCheckedContinuation { cacheGate = $0 }
+            })
+        cacheModel.search()
+        try await wait { cacheGate != nil && cacheBrowseGate != nil }
+        cacheGate?.resume(returning: cacheStorage.loadSubscriptions()); cacheGate = nil
+        try await wait { cacheModel.subscriptionCacheLoaded }
+        check(cacheModel.browseBusy && cacheModel.subscriptions.map(\.id) == ["901"] && cacheModel.subscriptionReadAt != nil,
+              "saved subscriptions publish while the automatic public search is still pending")
+        cacheBrowseGate?.resume(); cacheBrowseGate = nil
+        try await wait { !cacheModel.busy }
+        cacheModel.account = "another_fixture_user"
+        check(cacheModel.subscriptions.map(\.id) == ["901"] && cacheModel.subscriptionReadAt == cachedSnapshot.readAt,
+              "changing SteamCMD account preserves separately acquired subscription metadata")
+        await cacheModel.shutdown()
+
+        var downloadCacheGate: CheckedContinuation<WorkshopSubscriptionSnapshot?, Never>?
+        let downloadCacheModel = WorkshopModel(storage: WorkshopStorage(root: root.appendingPathComponent("DownloadCache")),
+            defaults: defaults, component: executable, subscriptionCache: {
+                await withCheckedContinuation { downloadCacheGate = $0 }
+            })
+        downloadCacheModel.account = "cached_user"
+        downloadCacheModel.downloadFromCard(item("104"))
+        try await wait { downloadCacheGate != nil && downloadCacheModel.downloadProgress != nil }
+        downloadCacheGate?.resume(returning: cachedSnapshot); downloadCacheGate = nil
+        try await wait { downloadCacheModel.subscriptionCacheLoaded }
+        check(downloadCacheModel.taskBusy && downloadCacheModel.subscriptions.map(\.id) == ["901"],
+              "an active download does not discard a returning subscription cache")
+        await downloadCacheModel.shutdown()
+
+        var lateCacheGate: CheckedContinuation<WorkshopSubscriptionSnapshot?, Never>?
+        var lateCacheReturned = false
+        let lateCacheModel = WorkshopModel(storage: WorkshopStorage(root: root.appendingPathComponent("LateCache")),
+            defaults: defaults, component: executable, metadata: { $0.map(item) }, subscriptionCache: {
+                let result = await withCheckedContinuation { lateCacheGate = $0 }
+                lateCacheReturned = true
+                return result
+            })
+        try await wait { lateCacheGate != nil }
+        lateCacheModel.receiveSubscriptions(["902"])
+        try await wait { !lateCacheModel.taskBusy }
+        check(lateCacheModel.subscriptions.map(\.id) == ["902"] && !lateCacheModel.subscriptionCacheLoaded,
+              "a fresh subscription read completes before the held old cache")
+        lateCacheGate?.resume(returning: cachedSnapshot); lateCacheGate = nil
+        try await wait { lateCacheReturned }
+        check(lateCacheModel.subscriptions.map(\.id) == ["902"] && !lateCacheModel.subscriptionCacheLoaded,
+              "late saved subscriptions cannot overwrite a newer successful subscription read")
+        await lateCacheModel.shutdown()
+
+        var shutdownCacheGate: CheckedContinuation<WorkshopSubscriptionSnapshot?, Never>?
+        let shutdownCacheModel = WorkshopModel(storage: WorkshopStorage(root: root.appendingPathComponent("ShutdownCache")),
+            defaults: defaults, component: executable, subscriptionCache: {
+                await withCheckedContinuation { shutdownCacheGate = $0 }
+            })
+        try await wait { shutdownCacheGate != nil }
+        let cacheShutdown = Task { await shutdownCacheModel.shutdown() }
+        try await wait { shutdownCacheModel.browseLocked }
+        shutdownCacheGate?.resume(returning: cachedSnapshot); shutdownCacheGate = nil
+        await cacheShutdown.value
+        check(shutdownCacheModel.subscriptionReadAt == nil && !shutdownCacheModel.subscriptionCacheLoaded && shutdownCacheModel.subscriptions.isEmpty,
+              "shutdown cancels and awaits a late subscription cache without publishing it")
         print("\(count) concurrent browsing checks passed")
     }
 }

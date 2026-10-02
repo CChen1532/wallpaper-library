@@ -76,6 +76,31 @@ import Foundation
         check(first.scenePlayer.isActive && second.state.running, "unrelated material removal preserves both owners")
         check(await inventory.prepareMaterialRemoval(root), "shared material removal prepares every display")
         check(!first.scenePlayer.isActive && !second.state.running, "shared material removal stops every affected owner")
+        // A source removal must wait for a manual play already submitted on
+        // another screen. All state remains in the fake backend and temp files.
+        let pendingBackend = backends[b.uuid]!
+        await pendingBackend.holdNextPlay()
+        let pendingPlay = Task { await second.perform(.play(video.path)) }
+        try await waitAsync { await pendingBackend.playHeld }
+        var removalEntered = false, removalFinished = false, removalSucceeded = false
+        let stopOwners = inventory.beforeMaterialRemoval
+        inventory.beforeMaterialRemoval = { target in
+            removalEntered = true
+            try await stopOwners?(target)
+        }
+        let sourceRemoval = Task {
+            removalSucceeded = await inventory.prepareMaterialRemoval(root)
+            removalFinished = true
+        }
+        try await waitUntil { removalEntered }
+        check(!removalFinished && second.busy,
+              "source removal waits for another display's in-flight manual play")
+        await pendingBackend.releasePlay()
+        await pendingPlay.value; await sourceRemoval.value
+        check(removalSucceeded && !first.state.running && !second.state.running &&
+              FileManager.default.fileExists(atPath: video.path),
+              "source removal stops late manual playback before success and preserves material files")
+        inventory.beforeMaterialRemoval = stopOwners
         await first.perform(.play(video.path)); await second.perform(.play(video.path))
         await playback.stopAll()
         check(!first.state.running && !second.state.running, "all-stop clears both videos")
@@ -101,6 +126,13 @@ import Foundation
         check(!finalA.running && !finalB.running, "quit cleans both videos even without backdrop leases")
         print("\(count) display playback checks passed")
     }
+    @MainActor static func waitAsync(_ condition: () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while !(await condition()) {
+            if ContinuousClock.now > deadline { fatalError("async condition timed out") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
     @MainActor static func waitUntil(_ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(8))
         while !condition() {
@@ -116,11 +148,21 @@ import Foundation
 private actor DisplayBackend: WallpaperBackend {
     nonisolated let capabilities = BackendCapabilities(name: "fixture", canTrash: true)
     var value = PlaybackState()
+    private var shouldHoldPlay = false
+    private var heldPlay: CheckedContinuation<Void, Never>?
+    var playHeld: Bool { heldPlay != nil }
+    func holdNextPlay() { shouldHoldPlay = true }
+    func releasePlay() { heldPlay?.resume(); heldPlay = nil }
     func library() async throws -> [Wallpaper] { [] }
     func state() async -> PlaybackState { value }
     func perform(_ action: Action) async throws {
         switch action {
-        case .play(let path): value = PlaybackState(running: true, lastPath: path)
+        case .play(let path):
+            if shouldHoldPlay {
+                shouldHoldPlay = false
+                await withCheckedContinuation { heldPlay = $0 }
+            }
+            value = PlaybackState(running: true, lastPath: path)
         case .off, .stop: value = .init()
         default: break
         }

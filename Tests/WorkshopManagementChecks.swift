@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 @main struct WorkshopManagementChecks {
     @MainActor static func main() async throws {
@@ -241,6 +242,41 @@ import Foundation
         cards.downloadFromCard(waitingCard); cards.cancelPendingDownload()
         await cards.shutdown()
         check(cards.pendingDownload == nil && !storage.installed("503"), "cancelled pending card is never downloaded")
+
+        let authExecutable = root.appendingPathComponent("auth-cleanup-steamcmd")
+        try fm.copyItem(at: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Tests/Fixtures/workshop-auth-cleanup-fixture.py"), to: authExecutable)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: authExecutable.path)
+        func waitAuth(_ condition: @MainActor () -> Bool) async throws {
+            let deadline = Date().addingTimeInterval(6)
+            while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            precondition(condition(), "authentication cleanup fixture exceeded deadline")
+        }
+        for id in ["701", "702"] {
+            for quitting in [false, true] {
+                let authStorage = WorkshopStorage(root: root.appendingPathComponent("Auth-" + id + (quitting ? "-quit" : "-cancel")))
+                let authModel = WorkshopModel(storage: authStorage, defaults: defaults, component: authExecutable,
+                    subscriptionCache: { nil })
+                authModel.account = "fixture_user"
+                authModel.downloadFromCard(.init(id: id, title: "Auth cleanup " + id, previewURL: nil, bytes: 1, tags: ["Video"]))
+                let marker = authStorage.root.appendingPathComponent("auth-cleanup-" + id)
+                try await waitAuth { fm.fileExists(atPath: marker.path) }
+                precondition(authModel.taskBusy, "cancel must arrive while the old authentication failure is still being cleaned up")
+                let pid = Int32(try String(contentsOf: authStorage.root.appendingPathComponent("child.pid"), encoding: .utf8))!
+                if quitting { await authModel.shutdown() }
+                else {
+                    authModel.cancel()
+                    try await waitAuth { !authModel.busy }
+                }
+                let action = quitting ? "shutdown" : "cancellation"
+                let failure = id == "701" ? "password required" : "login failed"
+                check(authModel.downloadQueue.isEmpty && !authModel.authenticationRequired && authModel.connectionError == nil &&
+                      authModel.taskError == nil && authModel.failedDownloads.isEmpty && !authStorage.installed(id),
+                      action + " during " + failure + " cleanup never revives the item or its authentication request")
+                try await waitAuth { kill(pid, 0) == -1 && errno == ESRCH }
+                check(true, action + " during " + failure + " cleanup reaps the isolated child")
+                if !quitting { await authModel.shutdown() }
+            }
+        }
 
         if CommandLine.arguments.contains("--live") {
             let first = try await WorkshopBrowse.fetch(query: "mountain", page: 1)

@@ -146,6 +146,137 @@ import Foundation
         await model.shutdownScene()
         let finalState = await backend.state()
         check(!model.selectionRotation.active && !finalState.running, "application shutdown stops selected video even without a backdrop session")
+        // A shared collection can change on another screen during an awaited command.
+        // Keep every backend command behind a deterministic gate and preserve real files.
+        for mutation in ["hide", "remove", "unchanged"] {
+            let raceSuite = "WallpaperUI.BatchVideoRace." + UUID().uuidString
+            let raceDefaults = UserDefaults(suiteName: raceSuite)!
+            defer { raceDefaults.removePersistentDomain(forName: raceSuite) }
+            let raceStore = LibraryCollectionStore(defaults: raceDefaults)
+            raceStore.addToRotation(items)
+            let gate = BatchCommandGate()
+            let raceBackend = GatedBatchBackend(gate: gate, heldCommand: "stopRotation")
+            let raceModel = LibraryModel(backend: raceBackend, collection: raceStore, backdropConfiguration: { nil })
+            raceModel.startSelectedRotation(interval: 60, mode: "next")
+            try await waitUntil { gate.entered }
+            check(raceModel.busy && raceModel.selectionRotation.switching,
+                  "video \(mutation) fixture pauses after selecting a rotation member")
+            if mutation == "hide" { raceStore.setHidden(true, ids: [items[0].id]) }
+            if mutation == "remove" { raceStore.removeFromRotation(ids: [items[0].id]) }
+            gate.release()
+            if mutation == "unchanged" {
+                try await waitUntil { raceModel.selectionRotation.currentID == items[0].id }
+                check(raceModel.selectionRotation.active && raceModel.state.currentPath == first.path,
+                      "an unchanged video rotation still starts normally")
+                raceModel.selectionRotation.stop()
+            }
+            await raceModel.selectionRotation.finishPendingSwitch()
+            let raceEvents = await raceBackend.events
+            if mutation != "unchanged" {
+                check(!raceEvents.contains("play") && !raceModel.state.running && !raceModel.selectionRotation.active,
+                      "a video \(mutation) during an awaited command cannot start late")
+            }
+            await raceModel.perform(.off)
+            check(fm.fileExists(atPath: first.path) && fm.fileExists(atPath: second.path),
+                  "video \(mutation) race changes only collection metadata")
+        }
+
+        let sourceSuite = "WallpaperUI.BatchSourceRace." + UUID().uuidString
+        let sourceDefaults = UserDefaults(suiteName: sourceSuite)!
+        defer { sourceDefaults.removePersistentDomain(forName: sourceSuite) }
+        let sourceStore = LibraryCollectionStore(defaults: sourceDefaults)
+        sourceStore.addToRotation(items)
+        let sourceGate = BatchCommandGate()
+        let sourceBackend = GatedBatchBackend(gate: sourceGate, heldCommand: "play")
+        let sourceModel = LibraryModel(backend: sourceBackend, collection: sourceStore, backdropConfiguration: { nil })
+        let inventory = LibraryModel(backend: BatchBackend(), collection: sourceStore, backdropConfiguration: { nil })
+        inventory.inventoryOnly = true
+        inventory.beforeMaterialRemoval = { target in try await sourceModel.stopLocalPlaybackForRemoval(target) }
+        sourceModel.startSelectedRotation(interval: 60, mode: "next")
+        try await waitUntil { sourceGate.entered }
+        var removalFinished = false
+        var removalSucceeded = false
+        let removingSource = Task {
+            removalSucceeded = await inventory.prepareMaterialRemoval(media)
+            removalFinished = true
+        }
+        try await waitUntil { !sourceModel.selectionRotation.active }
+        try await Task.sleep(for: .milliseconds(30))
+        check(!removalFinished && sourceModel.busy && sourceModel.selectionRotation.switching,
+              "source removal waits for an already submitted rotation play command")
+        sourceGate.release()
+        await removingSource.value
+        let removedState = await sourceBackend.state()
+        let sourceEvents = await sourceBackend.events
+        check(removalSucceeded && !removedState.running && !sourceModel.state.running &&
+              !sourceModel.selectionRotation.switching && sourceEvents == ["stopRotation", "play", "off"],
+              "source removal stops the late command's actual result before reporting success")
+        check(sourceStore.rotationItems == items && fm.fileExists(atPath: first.path) && fm.fileExists(atPath: second.path),
+              "source removal coordination preserves playlist metadata and material files")
+
+        // Use a temporary native manifest and protocol-only shell child to exercise
+        // the real scene preparation/commit path without a desktop renderer.
+        let sceneRoot = root.appendingPathComponent("rotation-scene-race")
+        let sceneFolder = sceneRoot.appendingPathComponent("native")
+        try fm.createDirectory(at: sceneFolder, withIntermediateDirectories: true)
+        let scenePackage = sceneFolder.appendingPathComponent("scene.pkg")
+        let sceneData = Data(#"{"format":"wallpaperui.gravity.v1","preset":"efficient"}"#.utf8)
+        try sceneData.write(to: scenePackage)
+        let sceneExecutable = sceneRoot.appendingPathComponent("GravitySceneRenderer")
+        try #"""
+        #!/bin/sh
+        printf 'started\n' > "$0.started"
+        printf '%s\n' '{"event":"scene-ready"}' '{"event":"first-frame-presented"}'
+        while IFS= read -r command; do
+          case "$command" in
+            '{"cmd":"activate"}') printf '%s\n' '{"event":"activated"}' ;;
+            '{"cmd":"deactivate"}') printf '%s\n' '{"event":"deactivated"}' ;;
+            '{"cmd":"quit"}') exit 0 ;;
+          esac
+        done
+        """#.write(to: sceneExecutable, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sceneExecutable.path)
+        let sceneMarker = URL(fileURLWithPath: sceneExecutable.path + ".started")
+        let sceneItem = RotationWallpaper(url: scenePackage, title: "Temporary native fixture", kind: .scene,
+                                          expectedBytes: Int64(sceneData.count))
+        for mutation in ["hide", "remove", "unchanged"] {
+            try? fm.removeItem(at: sceneMarker)
+            let sceneSuite = "WallpaperUI.BatchSceneRace." + UUID().uuidString
+            let sceneDefaults = UserDefaults(suiteName: sceneSuite)!
+            defer { sceneDefaults.removePersistentDomain(forName: sceneSuite) }
+            let sceneStore = LibraryCollectionStore(defaults: sceneDefaults)
+            sceneStore.addToRotation([sceneItem, items[0]])
+            let sceneGate = BatchCommandGate()
+            let sceneBackend = GatedBatchBackend(gate: sceneGate, heldCommand: "off")
+            let display = SceneDisplay(id: 1, uuid: UUID().uuidString, name: "Fixture")
+            let player = ScenePlayer(focusProvider: { 1 }, displayProvider: { [display] })
+            let sceneModel = LibraryModel(backend: sceneBackend, scenePlayer: player,
+                sceneRuntimeURL: sceneRoot.appendingPathComponent("SceneRuntime"),
+                scenePreferences: ScenePreferencesStore(defaults: sceneDefaults),
+                sceneUserProperties: SceneUserPropertiesStore(defaults: sceneDefaults),
+                collection: sceneStore, backdropConfiguration: { nil })
+            sceneModel.startSelectedRotation(interval: 60, mode: "next")
+            try await waitUntil { sceneGate.entered }
+            check(sceneModel.busy && !player.isActive && !fm.fileExists(atPath: sceneMarker.path),
+                  "scene \(mutation) fixture pauses after preparation but before child startup")
+            if mutation == "hide" { sceneStore.setHidden(true, ids: [sceneItem.id]) }
+            if mutation == "remove" { sceneStore.removeFromRotation(ids: [sceneItem.id]) }
+            sceneGate.release()
+            if mutation == "unchanged" {
+                try await waitUntil { player.phase == .playing && sceneModel.selectionRotation.currentID == sceneItem.id }
+                check(fm.fileExists(atPath: sceneMarker.path) && sceneModel.selectionRotation.active,
+                      "an unchanged scene rotation still starts its protocol child normally")
+                sceneModel.selectionRotation.stop()
+            }
+            await sceneModel.selectionRotation.finishPendingSwitch()
+            if mutation != "unchanged" {
+                check(!player.isActive && !fm.fileExists(atPath: sceneMarker.path) && !sceneModel.selectionRotation.active,
+                      "a scene \(mutation) during an awaited commit cannot start a child late")
+            }
+            await sceneModel.stopScene()
+            check(!player.isActive && fm.fileExists(atPath: scenePackage.path),
+                  "scene \(mutation) race cleans its child and preserves the temporary package")
+        }
         print("\(count) library batch checks passed")
     }
 }
@@ -168,5 +299,49 @@ private actor BatchBackend: WallpaperBackend {
     }
     func importFiles(_ urls: [URL]) async -> [String] { [] }
     func trash(_ url: URL) async throws {}
+    func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
+}
+
+@MainActor private final class BatchCommandGate {
+    private(set) var entered = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func enter() async {
+        entered = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { continuation?.resume(); continuation = nil }
+}
+
+private actor GatedBatchBackend: WallpaperBackend {
+    nonisolated let capabilities = BackendCapabilities(name: "gated batch fixture")
+    private let gate: BatchCommandGate
+    private let heldCommand: String
+    private var held = false
+    private var value = PlaybackState()
+    private(set) var events: [String] = []
+    init(gate: BatchCommandGate, heldCommand: String) { self.gate = gate; self.heldCommand = heldCommand }
+    private func hold(_ command: String) async {
+        guard command == heldCommand, !held else { return }
+        held = true
+        await gate.enter()
+    }
+    func library() async throws -> [Wallpaper] { [] }
+    func state() async -> PlaybackState { value }
+    func perform(_ action: Action) async throws {
+        switch action {
+        case .play(let path):
+            await hold("play")
+            events.append("play"); value.running = true; value.lastPath = path
+        case .stopRotation:
+            await hold("stopRotation")
+            events.append("stopRotation"); value.rotating = false
+        case .off:
+            await hold("off")
+            events.append("off"); value = .init()
+        default: break
+        }
+    }
+    func importFiles(_ urls: [URL]) async -> [String] { [] }
+    func trash(_ url: URL) async throws { }
     func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
 }

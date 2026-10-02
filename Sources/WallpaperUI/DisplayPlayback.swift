@@ -39,7 +39,7 @@ import Foundation
         selectedUUID = displays.first?.uuid ?? ""
         library.beforeMaterialRemoval = { [weak self] target in
             guard let self else { return }
-            for session in self.sessions.values { try await session.stopLocalPlaybackForRemoval(target) }
+            for session in self.sessions.values { try await self.stopSessionPlaybackForRemoval(session, target: target) }
         }
         observers.append(library.$items.sink { [weak self] items in
             for session in self?.sessions.values ?? [:].values where session.items != items { session.items = items }
@@ -71,11 +71,22 @@ import Foundation
         session.beforeMaterialRemoval = { [weak self, weak session] target in
             guard let self else { return }
             for other in self.sessions.values where other !== session {
-                try await other.stopLocalPlaybackForRemoval(target)
+                try await self.stopSessionPlaybackForRemoval(other, target: target)
             }
         }
         observers.append(session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() })
         observers.append(session.scenePlayer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() })
+    }
+
+    private func stopSessionPlaybackForRemoval(_ session: LibraryModel, target: URL) async throws {
+        // The caller already blocks new operations through library.busy or its
+        // own session.busy. Finish another display's existing command first.
+        while session.busy {
+            guard !shuttingDown else { throw CancellationError() }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        guard !shuttingDown else { throw CancellationError() }
+        try await session.stopLocalPlaybackForRemoval(target)
     }
 
     func start() async {
