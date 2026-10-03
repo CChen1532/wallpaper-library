@@ -1,71 +1,149 @@
-# 壁纸库
+**中文** | [English](README.en.md)
 
-当前 UI：0.2.30 应用图标预览版。新增与原生浅色界面协调的蓝色叠层壁纸图标，接入Finder、Dock和应用切换器的图标资源。详见 UI-阶段2CF-应用图标.md。
+# 壁纸库 · WallpaperUI
 
-macOS 14+ 原生 SwiftUI 壁纸前端，视频使用已有 phonto-wall，场景使用随应用打包的 Mirage Scene 运行时。打开 `dist/WallpaperUI.app` 即可使用。首次访问桌面目录时请允许系统权限请求。
+macOS 15+ 原生 SwiftUI 动态壁纸库：把视频和 Wallpaper Engine 场景放进同一个图库，选中就能设为桌面动态背景。
 
-## 构建与验证
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Status](https://img.shields.io/badge/status-0.2.73%20preview-orange)
+
+> **状态：0.2.73 预览版。** 主要功能可用，但有些能力还没做完实机验收，边界写在「已知限制」里。
+> 仓库以源码为主；已构建的应用包请到 [Releases](https://github.com/CChen1532/wallpaper-library/releases) 下载（仅 Apple 芯片，ad-hoc 签名、未公证，首次打开要右键 →「打开」）。仓库里不含壁纸素材、场景包和第三方运行时。
+> 也可以一条命令装：`brew install --cask CChen1532/tap/wallpaperui`（[homebrew-tap](https://github.com/CChen1532/homebrew-tap)）。
+
+![引力之旅 · 极致画质](Scenes/GravityJourney/01-Ultra/preview.png)
+
+## 功能
+
+- 统一图库：场景与视频合并为「全部壁纸」，可以登记多个目录、自动识别内容、统一搜索与排序，每张壁纸的设置各存一份。
+- 自动发现：应用启动时和之后每 60 秒扫一次素材目录，串行调度、增量缓存；新发现的素材不会自动播放。
+- 场景壁纸：自研 `WESceneCore` 解析 Wallpaper Engine 场景格式，渲染交给随应用打包的 Mirage Scene 运行时。它会预备首帧、后台加载、保证单实例、跟随显示器，并在停止、退出或睡眠时清理。
+- 场景播放控制：每张场景可以单独设帧率上限、音量与静音、0.25 到 2 倍动画速度、裁切模式与位置、暂停／继续（⌘⌥P）、渲染比例／MetalFX／MSAA、电池与温控节能、前台遮挡暂停、媒体信息与封面、作者自定义效果与快捷入口，以及 PNG／JSON 导出和备份后重置。改正在播放的那张壁纸时，命令走 Mirage 控制通道直接生效，不会重启渲染器。
+- 播放显示器：每张场景可以跟随当前显示器，也可以固定在某一台。屏幕断开时回退到可用屏幕，重新连上后自动返回。
+- 大场景包：解除了 UI 端 128 MiB 与桥接器 256 MiB 的准入限制，改用有界索引检查，不再复制整个包。
+- 视频壁纸：通过 `WallpaperBackend` 协议调用已有后端播放 MP4。导入会复制文件，重名跳过，删除移入废纸篓。
+- Space 过渡底图：从当前渲染画面生成一张静帧，在系统 Space 切换动画期间顶住画面（默认关闭，带 macOS 版本结构护栏）。
+- 引力之旅：内置原生 Metal 场景，一个不做交互的金色丝绸公式盘，有「极致画质」（4K 目标）和「性能优先」两版。
+- SELENE 月下观测台：另一个内置场景，NASA 原始月球地形配本地时钟、固定光照和 4096 阴影贴图，鼠标可以旋转和缩放，平时缓慢自转。
+- 动画封面：卡片直接播放素材自带的 GIF、APNG 或多帧 WebP，单张 JPG／PNG 保持静止。远程封面只取受信任的 Steam 域名，更新上限 30 Hz，滚出屏幕或开了「减少动态效果」就停下。
+- 原生界面：macOS 侧栏、工具栏、详情面板与语义色，跟随系统浅色／深色；卡片悬停、选中与重排都有短过渡，并遵守系统「减少动态效果」。
+
+## 系统要求
+
+- macOS 15.0 或更高版本
+- 构建需要 Swift 5.9+ / Apple Command Line Tools（SwiftUI 部分不依赖外部包）
+- 构建完整应用还需要可用的 Mirage Scene 运行时（GPL-3.0，见下）
+
+## 从源码构建
 
 ```sh
+git clone https://github.com/CChen1532/wallpaper-library.git
+cd WallpaperUI
+
+# 场景渲染器源码（GPL-3.0，约 700 MB），只有构建完整应用时才需要
+git submodule update --init ThirdParty/MirageWallpaper
+
+# 准备并打包应用
 bash scripts/build-app.sh
+
+# 核心自检
 bash scripts/check.sh
-bash scripts/check-scene-playback.sh
-bash scripts/check-covers.sh
-bash scripts/check-material-discovery.sh
-bash scripts/check-unified-library.sh
-bash scripts/check-gallery-navigation.sh
-python3 scripts/check-scene-input.py
-bash scripts/check.sh --live
-bash scripts/check.sh --live --media
 ```
 
-需要 Swift 5.9+ / Apple Command Line Tools，Swift UI 无外部包依赖；完整应用另需已准备好的 Mirage 运行时（GPLv3）。`--live` 读取真实素材并写入缩略图缓存，不改变播放状态。`--media` 在临时目录生成微型视频，测试导入、缓存、坏文件和移入废纸篓，不修改已有素材。构建产物与缓存不进入 Git；应用使用本地 ad-hoc 签名，尚未公证。
-
-显式执行 `bash scripts/check-live-controls.sh` 会短暂播放和切换真实壁纸，并等待一分钟轮播触发。仅允许初始未播放、轮播关闭时运行；结束时恢复未播放、轮播关闭及原路径缓存。预计两分钟，不要与其他壁纸操作同时进行。
+构建产物写入 `dist/`，中间缓存写入 `.build/`，两者都不入库。应用使用本地 ad-hoc 签名，尚未公证。
 
 ## 使用
 
-- 选中场景后，右侧详情直接显示鼠标交互、点击响应、30／60／120 Hz；展开“播放与声音”调整帧率、画面位置、跟随显示器、场景声音和音频响应。每张场景壁纸独立保存，标题相同也不会串改。鼠标总开关控制视差／粒子／脚本收到的输入，具体效果取决于场景。
-- 侧栏“设置”或 ⌘, 仅管理应用外观和关于信息。
-- 场景设置自动保存，下次播放该壁纸时生效。若选中的是当前正在播放的壁纸，修改后会出现“应用到此壁纸”；编辑其他壁纸不会更改或重启当前场景。旧全局值只作为一次迁移后的初始值，之后按场景包规范路径独立保存；移动素材目录会作为新位置读取初始值。音频响应可能需要系统录音权限。
-- 单击视频卡片，在详情区点击“设为动态壁纸”，视频将在桌面背景播放；图片仅用于列表封面。底部提供上一段、随机、下一段。
-- 界面使用 macOS 原生侧栏、工具栏和详情面板；View → 外观支持跟随系统、浅色、深色，不修改系统外观。自动轮播在侧栏独立设置页中。
-- View 菜单支持紧凑窗口（980×680）和标准窗口（1200×800）。选中卡片后使用方向键切换选择，⌘Return 将选中的视频设为桌面壁纸。
-- “停止”保留轮播，定时任务可能再次播放；“全部关闭”同时关闭轮播。
-- 导入会复制 MP4 到已有素材目录，同名文件跳过并提示，不覆盖。
-- 删除需要确认，文件移入废纸篓。若该文件正在播放或轮播开启，会先全部关闭。
-- 预览缓存位于 `~/Library/Caches/WallpaperUI/Thumbnails`。
-- 卡片展示帧率、时长和文件大小；设置页“关于 → 显示器与运行状态”按需读取诊断。
-- 导入先验证视频，再通过临时文件完成复制，成功后才加入素材列表；大写 MP4 扩展名统一转成小写以匹配现有脚本。
+- 单击视频卡片，在详情区点「设为动态壁纸」，视频就会在桌面背景播放；底部有上一段、随机、下一段。
+- 选中场景后，右侧详情直接显示鼠标交互、点击响应和 30／60／120 Hz；「播放与声音」里可以调帧率、画面位置、播放显示器（跟随或固定）、场景声音和音频响应，另外还有「画质」「自动控制与媒体」等折叠组。设置按素材分别保存。
+- 如果选中的正是当前播放的壁纸，改完会出现「应用到此壁纸」；编辑别的壁纸不会重启当前场景。
+- 侧栏「设置」或 ⌘, 只管应用外观和关于信息；自动轮播在侧栏另有一个设置页。
+- View 菜单可以在紧凑窗口（980×680）和标准窗口（1200×800）之间切换；选中卡片后用方向键切换选择，⌘Return 把选中的视频设为桌面壁纸。
+- 「停止」保留轮播（定时任务可能再次播放），「全部关闭」会连轮播一起关掉。
+- 缩略图缓存放在 `~/Library/Caches/WallpaperUI/Thumbnails`。
 
-## 界面动效
+## 目录结构
 
-卡片悬停时轻抬、封面微缩放并随局部指针移动；按下轻压，选中标记淡入。详情封面／标题、设置展开及键盘跟随滚动使用短过渡。遵循系统“减少动态效果”，关闭位移与缩放，保留短淡入。
+| 路径 | 内容 |
+| --- | --- |
+| `Sources/WallpaperUI/` | SwiftUI 界面、图库模型、后端与协调器 |
+| `Sources/WESceneCore/` | Wallpaper Engine 场景格式解析、合成与离线验收核心 |
+| `Sources/MirageSceneBridge/` | 场景运行时桥接与焦点显示器选择 |
+| `Sources/GravitySceneCore/`、`Sources/GravitySceneRenderer/` | 引力之旅场景定义与 Metal 渲染器 |
+| `Sources/WESceneVisibleProbe/`、`WESceneDesktopProbe/`、`MirageSceneBridgeProbe/` | 可见画面、桌面层级与桥接探针 |
+| `Tests/` | 独立 Swift 断言程序（本机 Command Line Tools 环境跑不了 XCTest） |
+| `scripts/` | 构建、打包与 20+ 项检查脚本 |
+| `工具/` | 场景探针、快速切换底图、性能与视差诊断等辅助工具 |
+| `Scenes/GravityJourney/` | 内置原生场景（极致／性能两版） |
+| `Resources/` | `Info.plist` 与应用图标 |
+| `patches/` | 对 Mirage 渲染器的补丁（GPL-3.0 上游） |
 
-封面在后台缩小解码并复用内存缓存；单图最长边960像素，缓存目标上限64 MiB。动效按交互触发，没有常驻动画计时器。本轮未量化逐帧流畅度，鼠标连续移动验收受自动化坐标通道限制。
+## 常用验证
 
-## 当前限制
+```sh
+bash scripts/check.sh                     # 核心与后端边界
+bash scripts/check-scene-playback.sh      # 场景播放交接
+bash scripts/check-unified-library.sh     # 统一图库与素材发现
+bash scripts/check-gallery-navigation.sh  # 图库导航与输入策略
+bash scripts/check-renderer-features.sh   # 场景渲染器功能与偏好迁移
+bash scripts/check-localization.sh        # 界面本地化覆盖
+python3 scripts/check-scene-input.py      # 场景输入接线
+bash scripts/check.sh --live              # 读取真实素材（不改变播放状态）
+```
 
-- 已修复现有脚本固定的 `--pause-on-battery`：电池供电下也播放视频。备份为 `~/.local/bin/phonto-wall.bak-before-continuous-20260923`，可恢复原文件以回滚；补丁存放于 `patches/`。这会增加电池耗电。
-- 桌面视频播放与应用内预览不同；本版没有额外的应用内播放器。
+`--live` 会读取真实素材并写入缩略图缓存，不改变播放状态；`--media` 会在临时目录里生成微型视频，用来测试导入、缓存、坏文件和删除流程。
 
-- 本机脚本的 `rotate on` 分派只传递间隔，没有传递模式，因此 UI 暂仅开放随机轮播。该分派逻辑尚未修改。
-- `start` 的返回码可能被脚本后续逻辑覆盖；前端会在完成后核对实际运行状态和路径。
-- Scene第一版支持单场景播放、菜单栏停止与退出清理。Space切换动画仍可能短暂露出系统壁纸；多屏和五分钟稳定性尚未完成验收。本轮仅验证设置接线与离线／模拟边界，未逐场景验收交互和音频效果。暂不支持开机启动。
-- 视频经 `WallpaperBackend` 协议控制；Scene由独立播放器接入统一协调，切换会先停止原引擎。
-- 配置路径与现有控制脚本保持一致。更换素材位置前需要同步后端配置。
-- 状态四秒刷新一次；首次预览生成逐个处理，避免同时解码多个 4K 视频。
-- 状态读取失败时显示“状态未知”；轮播是否开启以任务注册为准，间隔/模式来自任务 plist。外部修改 plist 后未重新注册的情况尚需进一步校验运行时参数。
-- 符号链接与素材目录外路径不可直接播放/删除。既有素材只扫描小写 `.mp4`，与控制脚本一致。
-- XCTest 在本机 Command Line Tools 环境不可用，因此使用独立 Swift 断言程序验证核心边界。
+## 已知限制
 
-## 进度入口
+- 场景能力仍不完整：自定义图片／纹理、应用与文件快捷方式、系统媒体信息已在 0.2.41 接入，但依赖素材自己的绑定，而且只做过可控输入和单个场景的验证；作者分组与条件显示仍未完整还原。多屏热插拔、Space 切换与长时稳定性都还没做实机验收。
+- Space 切换：系统动画期间仍可能短暂露出系统壁纸，当前做法是用静帧顶住过渡（默认关闭）。系统私有的墙纸结构可能随 macOS 版本变化。
+- 性能：引力极致版的 4K／120 FPS 是目标值，不是实测结果，所测机器没达到；界面设置读取做过优化，这不代表整帧渲染性能。
+- 视频后端：第三方 `phonto` / `phonto-wall`。仓库源码不含它，Releases 里的预编译包带了一份便携副本。作者本机改过它电池供电时的暂停行为，这个补丁不随本仓库发布。桌面播放和应用内预览是两回事，本版没有应用内播放器。
+- 轮播：本机脚本的 `rotate on` 只传间隔不传模式，所以 UI 只开放随机轮播。
+- 符号链接和素材目录之外的路径不能直接播放或删除；既有素材只扫描小写 `.mp4`。
+- 不支持开机启动。
 
+## 第三方与许可
 
-早期 Scene 离线实验记录（历史）：`WE场景-阶段2D离线视频帧验收.md`。核心位于 `Sources/WESceneCore`；
-用 `bash scripts/check-scene.sh` 运行自检，`bash scripts/scene-probe.sh resources /path/scene.pkg` 生成只读 JSON 报告，
-`bash scripts/scene-probe.sh still /path/scene.pkg /tmp/scene.png` 可尝试导出受限静态基础图及同名诊断 JSON。
-没有可合成静态层时只写诊断、退出 3；静态图不能代替动态 scene 桌面播放。视频后端保持原有实现。
-`bash scripts/scene-probe.sh frame /path/scene.pkg materials/name.tex 1 /tmp/scene-t1.png` 可离线查看指定视频纹理在 1 秒的基础合成帧；这同样不是连续播放或视觉等效验收。
+- 本项目源码采用 MIT 许可，见 [LICENSE](LICENSE)。
+- [MirageWallpaper](https://github.com/laobamac/MirageWallpaper)（GPL-3.0）以 Git 子模块方式引用，代码不随本仓库分发；构建完整应用时请自行获取，届时该运行时适用它的 GPL-3.0 条款。`patches/` 里放的是针对它的修改补丁。
+- 视频后端 `phonto` / `phonto-wall` 是第三方工具（GPL-3.0），本仓库源码不含；Releases 里的预编译包带便携副本，并额外带一份 CPython 运行时，好让没有开发环境的机器直接运行。
+- 场景格式实现参考公开的逆向资料与格式说明；GPL 参考实现只作黑盒对照，没有复制其代码。
+- 本仓库不含任何壁纸素材、Wallpaper Engine 场景包、字体或商业资源，与 Wallpaper Engine、Steam 及其发行方没有隶属关系。
+- 动态壁纸会持续解码视频或渲染场景，增加耗电与发热；修改桌面壁纸设置属于自担风险的操作。
 
-目录整理：历史阶段报告集中在 [阶段报告索引](文档/历史/阶段报告索引.md)；清理范围、保留文件与清单见 [2026-10-01 整理说明](文档/整理/2026-10-01-整理说明.md)。
+## 免责声明
+
+本软件按「原样」提供，不附带任何担保，使用风险自负。完整版本见 [DISCLAIMER.md](DISCLAIMER.md)。
+
+- 与 Wallpaper Engine、Steam、Valve 及其发行方没有隶属或背书关系。
+- 会读写 macOS 桌面壁纸相关设置，其中包含未公开的私有结构；系统升级或其他壁纸应用都可能让它失效，改动前请自行备份。
+- 本仓库不含任何壁纸素材、场景包、字体或商业资源，导入内容的授权由你自己确认。
+- 创意工坊下载会在本机运行 Valve 的 steamcmd，并用你自己的 Steam 账号登录；密码不保存、不上传，使用时需遵守 Steam 的条款。
+- 发布包使用本地自签名、未经过 Apple 公证，绕过 Gatekeeper 的后果由你承担。
+- 动态壁纸会持续解码视频或渲染场景，耗电与发热都会增加。
+- 请不要在 Issue 或讨论区粘贴账号、密码或含个人信息的日志。
+
+## 鸣谢
+
+这个应用能跑起来，靠的是下面这些人和项目。
+
+- [MirageWallpaper](https://github.com/laobamac/MirageWallpaper)：Wallpaper Engine 场景的渲染运行时，GPL-3.0 授权，随应用一起打包。没有它，场景壁纸就只是一堆解析出来的 JSON。
+- `phonto` / `phonto-wall`：视频壁纸的后端，桌面上的 MP4 由它播放。仓库源码不含它，预编译包里带的是便携副本；自己从源码构建时要另行准备。
+- 随包分发的开源库：FFmpeg、MoltenVK、Vulkan loader、freetype、fontconfig、libpng、lz4、dav1d、gettext，以及预编译包里的 CPython 运行时。场景运行时的许可文本在 `WallpaperUI.app/Contents/Resources/SceneRuntime/Contents/Resources/Licenses/`，便携工具与 Python 的许可文本在 `WallpaperUI.app/Contents/Resources/Licenses/`。
+- Wallpaper Engine 的场景格式，以及围绕它做逆向整理的社区。这里的格式细节是从公开资料里一点点对出来的，有错欢迎指正。
+- Apple 的 SwiftUI、Metal、MetalFX 与 AVFoundation：界面、渲染和音视频解码都建立在这些框架上。
+
+如果上面漏了谁，或者哪条署名写错了，开个 Issue 说一声。
+
+## 文档
+
+- [开发计划](开发计划.md)：当前版本状态、待办与验证入口
+- [项目精简总览](项目精简总览.md)：研发历程与已确认结论的浓缩版
+- [state.example.json](state.example.json)：脱敏后的状态样例
+
+> 研发过程中产生的 100 份阶段报告／试验记录未收录进本仓库，只在作者本地保留；上表中标注「未收录」的引用因此点不开。
+
+## 反馈
+
+欢迎通过 Issues 报告问题或提出想法。请附上 macOS 版本、素材类型（视频／场景）以及最小复现步骤。
