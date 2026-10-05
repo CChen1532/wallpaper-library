@@ -34,6 +34,7 @@ struct SceneCatalogPayload: Decodable {
     @Published private(set) var roots: [URL] = []
     private var cached: [String: (String, SceneCatalogPayload.Entry)] = [:]
     private var loop: Task<Void, Never>?
+    private var refreshJob: Task<Void, Never>?
     private var rescanRequested = false
     private let model: LibraryModel
     private let rootProvider: () -> [URL]
@@ -57,10 +58,10 @@ struct SceneCatalogPayload: Decodable {
         roots = rootProvider()
     }
 
-    func addFolder(_ url: URL) {
+    func addFolder(_ url: URL, refreshImmediately: Bool = true) {
         MaterialDiscovery.setIncluded(true, folder: url, defaults: defaults)
         updateRoots()
-        Task { await refresh() }
+        if refreshImmediately { Task { await refresh() } }
     }
     func removeFolder(_ url: URL) async {
         guard roots.contains(where: { $0.path == url.path }), !MaterialRemoval.isBundled(url),
@@ -96,9 +97,23 @@ struct SceneCatalogPayload: Decodable {
     func stop() { loop?.cancel(); loop = nil }
 
     func refresh() async {
-        guard !scanning else { rescanRequested = true; return }
+        if let refreshJob {
+            rescanRequested = true
+            await refreshJob.value
+            return
+        }
         scanning = true
-        defer { scanning = false }
+        // A caller's cancellation must not discard a committed import's scan.
+        // Callers joining an existing scan await its complete follow-up passes.
+        let job = Task {
+            defer { refreshJob = nil; scanning = false }
+            await scanRoots()
+        }
+        refreshJob = job
+        await job.value
+    }
+
+    private func scanRoots() async {
         repeat {
             rescanRequested = false
             updateRoots()

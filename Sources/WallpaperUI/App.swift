@@ -20,7 +20,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         let candidates = catalog.scenes.map(\.folder) + model.items.map { $0.url.deletingLastPathComponent() }
         return candidates.first { $0.lastPathComponent == id && FileManager.default.fileExists(atPath: $0.appendingPathComponent("project.json").path) }
     }, libraryBusy: { playback.busy }, onImported: { folder in
-        catalog.addFolder(folder)
+        catalog.addFolder(folder, refreshImmediately: false)
         await catalog.refresh()
     })
 }

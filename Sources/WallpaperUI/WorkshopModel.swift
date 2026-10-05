@@ -17,6 +17,7 @@ import Combine
     @Published private(set) var component: URL?
     @Published private(set) var importedURL: URL?
     @Published private(set) var cancelling = false
+    @Published private(set) var publishingImports = false
     @Published var searchText = ""
     @Published private(set) var searchPage: WorkshopBrowse.Page?
     @Published private(set) var searchedText = ""
@@ -53,6 +54,8 @@ import Combine
     let storage: WorkshopStorage
     private var job: Task<Void, Never>?
     private var queueResumeJob: Task<Void, Never>?
+    private var publicationJob: Task<Void, Never>?
+    private var publicationPending = false
     private var browseJob: Task<Void, Never>?
     private var browseToken: UUID?
     private var shuttingDown = false
@@ -68,7 +71,8 @@ import Combine
     private let browse: (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page
     var taskBusy: Bool { activity != .idle }
     var browseBusy: Bool { browseActivity != .idle }
-    var busy: Bool { taskBusy || browseBusy }
+    var busy: Bool { taskBusy || browseBusy || publishingImports }
+    var canQueueDownload: Bool { !shuttingDown && !libraryBusy() }
     var browseLocked: Bool { browseBusy || activity == .component || activity == .subscriptions || shuttingDown }
     var waitingForGuard: Bool {
         (connecting && connectionEvent == .guardCode) || (event == .guardCode && activity == .download && !cancelling)
@@ -172,7 +176,7 @@ import Combine
 
     /// Card action is a download request, not a detail selection.
     func downloadFromCard(_ value: WorkshopItem) {
-        guard !shuttingDown, !libraryBusy(), WorkshopFilters.supportsPlayback(tags: value.tags),
+        guard canQueueDownload, WorkshopFilters.supportsPlayback(tags: value.tags),
               !downloadedIDs.contains(value.id), !queuedIDs.contains(value.id), activeDownloadID != value.id else { return }
         failedDownloads.removeValue(forKey: value.id)
         downloadQueue.append(value)
@@ -507,11 +511,27 @@ import Combine
             let imported = try await withTaskCancellationHandler(operation: { try await importer.value }, onCancel: { importer.cancel() })
             markDownloaded(item.id); authenticationRequired = false
             // Publish complete imports even when cancellation arrives just after the atomic rename.
-            await onImported(storage.library)
+            publishImportedLibrary()
             return imported
         } catch {
             await discardSession()
             throw error
+        }
+    }
+
+    /// Network transfers do not wait for a full library scan. Imports arriving
+    /// during a scan request one follow-up pass; callbacks never overlap. This
+    /// owned task is drained, not cancelled, after an atomic project commit.
+    private func publishImportedLibrary() {
+        publicationPending = true
+        guard publicationJob == nil else { return }
+        publishingImports = true
+        publicationJob = Task {
+            defer { publicationJob = nil; publishingImports = false }
+            while publicationPending {
+                publicationPending = false
+                await onImported(storage.library)
+            }
         }
     }
 
@@ -535,6 +555,7 @@ import Combine
         cancelConnection(); cancel(); cancelBrowsing(); installedJob?.cancel(); subscriptionCacheJob?.cancel()
         await pendingResume?.value; await pendingCache?.value
         await connectionJob?.value; await job?.value; await browseJob?.value; await installedJob?.value
+        await publicationJob?.value
         await discardSession()
     }
     func cancelBrowsing() { browseJob?.cancel() }

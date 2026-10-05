@@ -3,7 +3,18 @@ import Foundation
 actor InventoryCounter {
     var reads = 0
     var sideEffects = 0
-    func read() { reads += 1 }
+    private var holdNext = false
+    private var readGate: CheckedContinuation<Void, Never>?
+    var waiting: Bool { readGate != nil }
+    func holdNextRead() { holdNext = true }
+    func releaseRead() { readGate?.resume(); readGate = nil }
+    func read() async {
+        reads += 1
+        if holdNext {
+            holdNext = false
+            await withCheckedContinuation { readGate = $0 }
+        }
+    }
     func effect() { sideEffects += 1 }
 }
 final class RemovalLog: @unchecked Sendable {
@@ -96,6 +107,23 @@ struct InventoryBackend: WallpaperBackend {
         let oldReads = await counter.reads
         try await Task.sleep(for: .seconds(1))
         check(await counter.reads == oldReads, "停止调度不重复扫描")
+        let joinedCounter = InventoryCounter()
+        await joinedCounter.holdNextRead()
+        let joinedModel = LibraryModel(backend: InventoryBackend(counter: joinedCounter), backdropConfiguration: { nil })
+        let joinedCatalog = UnifiedLibrary(model: joinedModel, roots: { [] })
+        joinedCatalog.start()
+        while !(await joinedCounter.waiting) { try await Task.sleep(for: .milliseconds(10)) }
+        var joinedCompleted = false
+        let joining = Task { await joinedCatalog.refresh(); joinedCompleted = true }
+        try await Task.sleep(for: .milliseconds(100))
+        check(!joinedCompleted, "刷新调用等待在途扫描，不提前报告导入已登记")
+        joinedCatalog.stop()
+        await joinedCounter.releaseRead()
+        await joining.value
+        check(joinedCompleted && joinedCatalog.lastScan != nil && !joinedCatalog.scanning,
+              "停止周期任务仍完成已承诺的在途扫描与导入登记")
+        check(await joinedCounter.reads == 2, "扫描中多个请求合并为一个后续检查")
+
         try Data([0,1]).write(to: root.appendingPathComponent("two/scene.pkg"))
         await catalog.refresh()
         check(catalog.scenes.count == 1 && !catalog.issues.isEmpty, "损坏场景隔离并报告，下次仍可重试")
@@ -107,6 +135,15 @@ struct InventoryBackend: WallpaperBackend {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         MaterialDiscovery.setIncluded(true, folder: root, defaults: defaults)
+        let singleCounter = InventoryCounter()
+        let singleModel = LibraryModel(backend: InventoryBackend(counter: singleCounter), backdropConfiguration: { nil })
+        let singleCatalog = UnifiedLibrary(model: singleModel, roots: {
+            MaterialDiscovery.roots(home: root, defaults: defaults).filter { $0.path == root.path }
+        }, defaults: defaults)
+        singleCatalog.addFolder(root, refreshImmediately: false)
+        await singleCatalog.refresh()
+        check(await singleCounter.reads == 1, "导入注册和显式刷新只执行一次资料库扫描")
+
         let removable = UnifiedLibrary(model: model, roots: {
             MaterialDiscovery.roots(home: root, defaults: defaults).filter { $0.path == root.path }
         }, defaults: defaults)

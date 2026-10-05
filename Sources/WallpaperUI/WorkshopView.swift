@@ -90,7 +90,7 @@ struct WorkshopView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 230), spacing: 14)], spacing: 14) {
                         ForEach(page.items) { item in
                             WorkshopCard(item: item, state: workshop.cardState(item),
-                                         locked: model.isWorking, detailsLocked: workshop.browseLocked,
+                                         locked: !workshop.canQueueDownload, detailsLocked: workshop.browseLocked,
                                          classification: classification(item), progress: workshop.cardProgress(item),
                                          showDetails: { openDownloadDetails(item) },
                                          download: { workshop.downloadFromCard(item) })
@@ -140,7 +140,7 @@ struct WorkshopView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         if !workshop.downloadTitle.isEmpty { Text(workshop.downloadTitle).font(.caption).lineLimit(1) }
-                        if workshop.cancelling || workshop.activity == .download || workshop.activity == .importing {
+                        if workshop.cancelling || workshop.activity == .download || workshop.activity == .importing || workshop.publishingImports {
                             downloadStatus
                         } else if workshop.activity == .component {
                             WorkshopStageProgressView(title: "正在准备…")
@@ -149,7 +149,7 @@ struct WorkshopView: View {
                         }
                         if workshop.syncing { Text(String(format: AppStrings.text("正在同步 %d / %d", locale: locale), workshop.syncPosition, workshop.syncTotal)).font(.caption) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
+                    Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling || (!workshop.taskBusy && !workshop.browseBusy))
                 }.padding(12).background(.bar)
             }
         }
@@ -211,7 +211,7 @@ struct WorkshopView: View {
                             }
                         }
                         Spacer()
-                        Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
+                        Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling || (!workshop.taskBusy && !workshop.browseBusy))
                     }.padding(12)
                 }
             }.frame(width: 620, height: 540)
@@ -446,7 +446,7 @@ struct WorkshopView: View {
                     Button(LocalizedStringKey(detailDownloadTitle(item))) {
                         workshop.download(password: password); password = ""
                     }.buttonStyle(.borderedProminent)
-                        .disabled(workshop.browseLocked || model.isWorking || workshop.component == nil || workshop.account.isEmpty || ![.available, .failed].contains(workshop.cardState(item)))
+                        .disabled(workshop.browseLocked || !workshop.canQueueDownload || workshop.component == nil || workshop.account.isEmpty || ![.available, .failed].contains(workshop.cardState(item)))
                         .accessibilityIdentifier("workshop.download")
                 }
             }
@@ -537,6 +537,7 @@ struct WorkshopView: View {
     @ViewBuilder private var downloadStatus: some View {
         if workshop.cancelling { WorkshopStageProgressView(title: "正在取消…") }
         else if workshop.activity == .importing { WorkshopStageProgressView(title: "正在校验并加入资料库…") }
+        else if workshop.activity == .idle && workshop.publishingImports { WorkshopStageProgressView(title: "正在检查素材…") }
         else if workshop.activity == .download || workshop.connecting {
             switch workshop.connecting ? workshop.connectionEvent : workshop.event {
             case .preparing: WorkshopStageProgressView(title: "正在启动下载组件…")
