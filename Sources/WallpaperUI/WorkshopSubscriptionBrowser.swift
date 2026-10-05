@@ -121,7 +121,9 @@ struct WorkshopSubscriptionSheet: View {
             WorkshopSteamWebView(browser: browser)
             if let error = browser.error { Text(AppStrings.text(error, locale: locale)).foregroundStyle(.orange).font(.callout) }
             HStack {
-                if browser.reading { ProgressView().controlSize(.small); Text(String(format: AppStrings.text("正在读取第 %d 页…", locale: locale), browser.page)).font(.caption) }
+                if browser.reading {
+                    WorkshopStageProgressView(title: LocalizedStringKey(String(format: AppStrings.text("正在读取第 %d 页…", locale: locale), browser.page)))
+                }
                 Spacer()
                 Button("读取订阅") { browser.readSubscriptions() }.buttonStyle(.borderedProminent).disabled(browser.reading)
             }

@@ -24,14 +24,10 @@ struct WorkshopTransferView: View {
                 if let fraction = progress.fraction {
                     if progress.estimated { Text("估算").foregroundStyle(.secondary) }
                     Text(fraction, format: .percent.precision(.fractionLength(0)))
-                        .contentTransition(.numericText())
-                        .animation(motion, value: fraction)
                 } else { Text("正在下载…") }
                 Spacer(minLength: 0)
                 if let speed = progress.bytesPerSecond, speed.isFinite, speed >= 0 {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(min(speed, Double(Int64.max / 2))), countStyle: .file) + "/s")
-                        .contentTransition(.numericText())
-                        .animation(motion, value: speed)
                 } else { Text("正在测速…") }
             }.font(compact ? .caption2 : .caption).monospacedDigit().foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -43,10 +39,11 @@ struct WorkshopTransferView: View {
 }
 
 /// Only the fill scales: progress updates never animate card or scroll geometry.
-private struct WorkshopProgressTrack: View {
+struct WorkshopProgressTrack: View {
     let fraction: Double?
-    let motion: Animation?
+    var motion: Animation? = nil
     @Environment(\.accessibilityReduceMotion) private var reduced
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -59,11 +56,28 @@ private struct WorkshopProgressTrack: View {
                             .animation(motion, value: value)
                     }
                     .clipShape(Capsule())
-            } else if reduced {
+            } else if reduced || scenePhase != .active {
                 Capsule().fill(Color.primary.opacity(0.10))
             } else {
                 ProgressView().progressViewStyle(.linear)
             }
         }.frame(height: 6)
+    }
+}
+
+/// Stages without a measurable total use a linear bar and a status label.
+struct WorkshopStageProgressView: View {
+    let title: LocalizedStringKey
+    var waiting = false
+    var compact = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            WorkshopProgressTrack(fraction: waiting ? 0 : nil)
+                .accessibilityHidden(true)
+            Text(title).font(compact ? .caption2 : .caption).foregroundStyle(.secondary).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(title))
     }
 }

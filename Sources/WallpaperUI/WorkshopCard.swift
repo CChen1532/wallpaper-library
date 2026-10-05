@@ -11,7 +11,6 @@ struct WorkshopCard: View, Equatable {
     let showDetails: () -> Void
     let download: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduced
-    @Environment(\.scenePhase) private var scenePhase
     @State private var hovered = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -35,6 +34,9 @@ struct WorkshopCard: View, Equatable {
                         WorkshopTransferView(progress: progress ?? .init(fraction: nil), compact: true)
                             .accessibilityIdentifier("workshop.card.progress." + item.id)
                             .accessibilityLabel(Text(item.title) + Text(", ") + Text("Steam 下载进度与速度"))
+                    } else if state == .queued || state == .waiting || state == .importing {
+                        WorkshopStageProgressView(title: LocalizedStringKey(buttonTitle), waiting: state == .queued, compact: true)
+                            .accessibilityIdentifier("workshop.card.progress." + item.id)
                     } else {
                         Text(classification).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -56,13 +58,8 @@ struct WorkshopCard: View, Equatable {
             Button(action: download) {
                 HStack(spacing: 6) {
                     Image(systemName: symbol)
-                        .contentTransition(.symbolEffect(.replace))
-                        // Finite feedback on actual byte samples; no perpetual animation timer.
-                        .symbolEffect(.pulse, options: .nonRepeating, value: progress?.receivedBytes ?? 0)
-                        .symbolEffectsRemoved(reduced || scenePhase != .active || state != .downloading)
                     Text(LocalizedStringKey(buttonTitle))
                 }.font(.callout.weight(.medium)).frame(maxWidth: .infinity).frame(height: 30)
-                    .animation(reduced ? nil : .easeOut(duration: 0.18), value: state)
             }.buttonStyle(WorkshopDownloadStyle(completed: state == .downloaded, active: state == .downloading || state == .waiting || state == .importing))
                 .disabled(locked || (state != .available && state != .failed))
                 .accessibilityIdentifier("workshop.card.download." + item.id)

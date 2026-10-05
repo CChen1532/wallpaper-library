@@ -45,7 +45,7 @@ struct WorkshopView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     if workshop.browseActivity == .search {
                         HStack {
-                            ProgressView("正在搜索…").controlSize(.small)
+                            WorkshopStageProgressView(title: "正在搜索…")
                             Button("取消浏览请求") { workshop.cancelBrowsing() }
                         }
                     }
@@ -61,7 +61,7 @@ struct WorkshopView: View {
                 } else { subscriptionSection }
                 if workshop.browseActivity == .lookup {
                     HStack {
-                        ProgressView("正在读取项目…").controlSize(.small)
+                        WorkshopStageProgressView(title: "正在读取项目…")
                         Button("取消浏览请求") { workshop.cancelBrowsing() }
                     }
                 }
@@ -137,19 +137,18 @@ struct WorkshopView: View {
                 }.padding(12).background(.bar)
             }
             if workshop.busy {
-                HStack {
-                    if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
-                    else if workshop.activity != .download && workshop.activity != .importing {
-                        ProgressView().controlSize(.small)
-                    }
-                    if workshop.activity == .download || workshop.activity == .importing {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(workshop.downloadTitle).font(.caption).lineLimit(1)
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if !workshop.downloadTitle.isEmpty { Text(workshop.downloadTitle).font(.caption).lineLimit(1) }
+                        if workshop.cancelling || workshop.activity == .download || workshop.activity == .importing {
                             downloadStatus
+                        } else if workshop.activity == .component {
+                            WorkshopStageProgressView(title: "正在准备…")
+                        } else {
+                            WorkshopStageProgressView(title: "正在读取项目…")
                         }
-                    }
-                    if workshop.syncing { Text(String(format: AppStrings.text("正在同步 %d / %d", locale: locale), workshop.syncPosition, workshop.syncTotal)).font(.caption) }
-                    Spacer()
+                        if workshop.syncing { Text(String(format: AppStrings.text("正在同步 %d / %d", locale: locale), workshop.syncPosition, workshop.syncTotal)).font(.caption) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                     Button("取消任务") { workshop.cancel() }.disabled(workshop.cancelling)
                 }.padding(12).background(.bar)
             }
@@ -204,10 +203,10 @@ struct WorkshopView: View {
                 if workshop.busy {
                     Divider()
                     HStack {
-                        if workshop.cancelling { ProgressView("正在取消…").controlSize(.small) }
+                        if workshop.cancelling { WorkshopStageProgressView(title: "正在取消…") }
                         else if workshop.browseActivity == .lookup {
                             HStack {
-                                ProgressView("正在读取项目…").controlSize(.small)
+                                WorkshopStageProgressView(title: "正在读取项目…")
                                 Button("取消浏览请求") { workshop.cancelBrowsing() }
                             }
                         }
@@ -249,7 +248,10 @@ struct WorkshopView: View {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(workshop.downloadQueue) { item in
                         HStack {
-                            Text(item.title).font(.callout).lineLimit(2)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.title).font(.callout).lineLimit(2)
+                                WorkshopStageProgressView(title: "排队中", waiting: true, compact: true)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
                             Spacer()
                             Button { workshop.removeQueuedDownload(item.id) } label: {
                                 Image(systemName: "xmark.circle")
@@ -278,15 +280,21 @@ struct WorkshopView: View {
     }
 
     private var connectionBar: some View {
-        HStack(spacing: 10) {
-            if workshop.connecting { ProgressView().controlSize(.small) }
-            else { Image(systemName: workshop.connectionReady ? "checkmark.circle.fill" : "network") }
-            Text(AppStrings.text(connectionLabel, locale: locale)).font(.callout)
-                .accessibilityIdentifier("workshop.connectionStatus")
-            Spacer()
-            Button("Steam 连接") { showConnectionDetails = true }
-                .disabled(workshop.activity == .download || workshop.activity == .importing)
-                .accessibilityIdentifier("workshop.connectionDetails")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: workshop.connectionReady ? "checkmark.circle.fill" : "network")
+                Text(AppStrings.text(connectionLabel, locale: locale)).font(.callout)
+                    .accessibilityIdentifier("workshop.connectionStatus")
+                Spacer()
+                Button("Steam 连接") { showConnectionDetails = true }
+                    .disabled(workshop.activity == .download || workshop.activity == .importing)
+                    .accessibilityIdentifier("workshop.connectionDetails")
+            }
+            if workshop.connecting {
+                WorkshopProgressTrack(fraction: workshop.waitingForGuard || workshop.connectionEvent == .mobileApproval ? 0 : nil)
+                    .accessibilityLabel(Text(AppStrings.text(connectionLabel, locale: locale)))
+                    .accessibilityIdentifier("workshop.connection.progress")
+            }
         }.padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
     }
     private var connectionLabel: String {
@@ -490,7 +498,7 @@ struct WorkshopView: View {
                 }.disabled(workshop.busy)
                     .accessibilityIdentifier("workshop.readSubscriptions")
                 if let date = workshop.subscriptionReadAt { Text(date, style: .time).font(.caption).foregroundStyle(.secondary) }
-                if workshop.activity == .subscriptions { ProgressView("正在读取项目…").controlSize(.small) }
+                if workshop.activity == .subscriptions { WorkshopStageProgressView(title: "正在读取项目…") }
             }
             if workshop.subscriptionReadAt != nil {
                 if workshop.subscriptionCacheLoaded {
@@ -527,13 +535,14 @@ struct WorkshopView: View {
     }
 
     @ViewBuilder private var downloadStatus: some View {
-        if workshop.activity == .importing { ProgressView("正在校验并加入资料库…").controlSize(.small) }
+        if workshop.cancelling { WorkshopStageProgressView(title: "正在取消…") }
+        else if workshop.activity == .importing { WorkshopStageProgressView(title: "正在校验并加入资料库…") }
         else if workshop.activity == .download || workshop.connecting {
             switch workshop.connecting ? workshop.connectionEvent : workshop.event {
-            case .preparing: ProgressView("正在启动下载组件…").controlSize(.small)
-            case .signingIn: ProgressView("正在登录 Steam…").controlSize(.small)
-            case .guardCode: EmptyView()
-            case .mobileApproval: Label("请在手机 Steam 中确认登录。", systemImage: "iphone")
+            case .preparing: WorkshopStageProgressView(title: "正在启动下载组件…")
+            case .signingIn: WorkshopStageProgressView(title: "正在登录 Steam…")
+            case .guardCode: WorkshopStageProgressView(title: "Steam 需要验证码", waiting: true)
+            case .mobileApproval: WorkshopStageProgressView(title: "请在手机 Steam 中确认登录。", waiting: true)
             case .downloading(let progress):
                 WorkshopTransferView(progress: .init(fraction: progress))
                     .accessibilityIdentifier("workshop.download.progress")
@@ -569,7 +578,7 @@ struct WorkshopView: View {
                         Button("准备下载组件") { workshop.installComponent() }.disabled(workshop.busy || workshop.connecting)
                             .accessibilityIdentifier("workshop.install")
                         Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy || workshop.connecting)
-                        if workshop.activity == .component { ProgressView("正在准备…").controlSize(.small) }
+                        if workshop.activity == .component { WorkshopStageProgressView(title: "正在准备…") }
                     }
                 }
             }
