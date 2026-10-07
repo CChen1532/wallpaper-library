@@ -1,10 +1,15 @@
 .build/
 dist/
-.DS_Store
 .swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+
+# 本机探针二进制与素材样本
 /工具/we-scene-probe/we-scene-probe
 样本/
-/Scenes/LunarObservatory/**/assets/*.glb
 
-# 可逆本地归档：二进制、备份和已核对副本不进入 Git
-/_归档/
+# Python 辅助脚本缓存
+__pycache__/
+*.pyc
