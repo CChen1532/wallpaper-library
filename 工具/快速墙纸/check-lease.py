@@ -145,6 +145,11 @@ with (root/'crash.log').open('wb') as output:
         raise AssertionError('unknown wallpaper schema accepted')
     except m.CompatibilityMismatch:
         assert store.read_bytes() == before and restored()
+    try:
+        m.check_compatibility(state, original, release=('15.8.2', '24H99'))
+        raise AssertionError('unverified point release accepted')
+    except m.CompatibilityMismatch:
+        assert store.read_bytes() == before and restored()
     print('PASS: unknown OS and private schema refuse automatic writes')
 
     tool = m.Switcher(store=store, state=state, refresh=lambda: None)
@@ -152,7 +157,7 @@ with (root/'crash.log').open('wb') as output:
            'spaces': [{'uuid': 'a', 'number': 1}]}
     tool.apply(image, inv, inv['spaces'], all_spaces_visible=True)
     evidence = plistlib.loads((state / 'compatibility.plist').read_bytes())
-    assert evidence['macOS'] == m.SUPPORTED_MACOS[0]
+    assert (evidence['macOS'], evidence['build']) in m.SUPPORTED_RELEASES
     assert evidence['wallpaperSchemaSHA256'] == m.SUPPORTED_SCHEMA
     tool.restore()
     assert restored() and plistlib.loads(store.read_bytes()) == original
