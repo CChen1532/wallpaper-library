@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import CryptoKit
 import ImageIO
+import CoreImage
 
 /// Visual building blocks for the immersive gallery: a blurred ambient
 /// backdrop, a hero spotlight, poster cards and floating glass surfaces.
@@ -17,8 +18,7 @@ struct GlassSurface: ViewModifier {
             .background(material, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.14), radius: 18, x: 0, y: 8)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
     }
 }
 
@@ -28,29 +28,65 @@ extension View {
     }
 }
 
-/// Full-bleed, heavily blurred copy of the spotlighted wallpaper. A window
-/// colored wash on top keeps text legible in both light and dark appearance.
+/// Blurs are rendered once into small cached bitmaps. Live SwiftUI blurs of
+/// full-window layers are re-evaluated while content scrolls above them.
+actor BlurredArtworkCache {
+    static let shared = BlurredArtworkCache()
+    private let cache = NSCache<NSString, HeroImageBox>()
+    private let context = CIContext(options: [.cacheIntermediates: false])
+    init() { cache.countLimit = 24 }
+
+    func blurred(_ image: CGImage, key: String, saturation: Double = 1) -> CGImage? {
+        let cacheKey = key + "|\(saturation)" as NSString
+        if let cached = cache.object(forKey: cacheKey) { return cached.image }
+        // 256 px is plenty once blurred; the result is scaled up smoothly on screen.
+        let scale = min(1, 256 / CGFloat(max(image.width, image.height)))
+        var input = CIImage(cgImage: image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let extent = input.extent
+        input = input.clampedToExtent()
+            .applyingGaussianBlur(sigma: 10)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: saturation])
+            .cropped(to: extent)
+        guard let output = context.createCGImage(input, from: extent) else { return nil }
+        cache.setObject(HeroImageBox(output), forKey: cacheKey)
+        return output
+    }
+}
+
+/// Full-bleed blurred copy of the spotlighted wallpaper. A window colored wash
+/// on top keeps text legible in both light and dark appearance.
 struct AmbientBackdrop: View {
     let source: CoverSource?
     let identity: String
+    @State private var image: CGImage?
+    @State private var shownIdentity = ""
     @Environment(\.accessibilityReduceMotion) private var reduced
     var body: some View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
-            if let source {
-                LibraryCover(source: source, symbol: "photo", size: .inspector)
-                    .id(identity)
-                    .transition(.opacity)
-                    .blur(radius: 70, opaque: true)
-                    .saturation(1.35)
+            if let image {
+                Image(decorative: image, scale: 1).resizable().interpolation(.medium)
+                    .aspectRatio(contentMode: .fill)
                     .opacity(0.55)
+                    .id(shownIdentity)
+                    .transition(.opacity)
             }
             Color(nsColor: .windowBackgroundColor).opacity(0.45)
         }
-        .animation(.easeInOut(duration: reduced ? 0.1 : 0.6), value: identity)
+        .animation(.easeInOut(duration: reduced ? 0.1 : 0.45), value: shownIdentity)
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .task(id: identity) {
+            guard let source else { return }
+            let requested = identity
+            // The card-sized cover is usually already cached by the grid.
+            guard let cover = await CoverImageLoader.shared.image(for: source, size: .card)?.image,
+                  let blurred = await BlurredArtworkCache.shared.blurred(cover, key: "ambient|" + requested, saturation: 1.35),
+                  !Task.isCancelled else { return }
+            image = blurred
+            shownIdentity = requested
+        }
     }
 }
 
@@ -61,17 +97,18 @@ enum HeroArtworkSource: Hashable, Sendable {
     case video(URL)
 }
 
-private final class HeroImageBox: @unchecked Sendable {
+final class HeroImageBox: @unchecked Sendable {
     let image: CGImage
     init(_ image: CGImage) { self.image = image }
 }
 
 actor HeroArtworkLoader {
     static let shared = HeroArtworkLoader()
-    static let maximumPixels = 3200
+    /// Enough for a full-width hero on a Retina display, small enough to upload quickly.
+    static let maximumPixels = 2400
     private let cache = NSCache<NSString, HeroImageBox>()
     private var pending: [String: Task<CGImage?, Never>] = [:]
-    init() { cache.countLimit = 8; cache.totalCostLimit = 256 * 1024 * 1024 }
+    init() { cache.countLimit = 8; cache.totalCostLimit = 192 * 1024 * 1024 }
 
     func image(for source: HeroArtworkSource) async -> CGImage? {
         let key: String
@@ -137,12 +174,13 @@ actor HeroArtworkLoader {
 }
 
 /// Sharp hero image. Keeps the previous picture until the next one is decoded,
-/// and never stretches a small preview: those are framed over their own blur.
+/// and never stretches a small preview: those are framed over a cached blur.
 struct HeroArtwork: View {
     let source: HeroArtworkSource?
     let fallback: CoverSource
     let identity: String
     @State private var image: CGImage?
+    @State private var backdrop: CGImage?
     @State private var shownIdentity = ""
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduced
@@ -154,15 +192,19 @@ struct HeroArtwork: View {
                 if let image {
                     let sharp = CGFloat(image.width) >= geometry.size.width * displayScale * 0.7
                     ZStack {
-                        Image(decorative: image, scale: 1).resizable().interpolation(.high)
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                            .blur(radius: sharp ? 0 : 36, opaque: true)
-                        if !sharp {
+                        if sharp {
+                            Image(decorative: image, scale: 1).resizable().interpolation(.high)
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                        } else {
+                            if let backdrop {
+                                Image(decorative: backdrop, scale: 1).resizable().interpolation(.medium)
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                            }
                             Image(decorative: image, scale: 1).resizable().interpolation(.high)
                                 .aspectRatio(contentMode: .fit)
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
                                 .padding(.vertical, 18)
                         }
                     }
@@ -173,7 +215,7 @@ struct HeroArtwork: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
-        .animation(.easeInOut(duration: reduced ? 0.1 : 0.35), value: shownIdentity)
+        .animation(.easeInOut(duration: reduced ? 0.1 : 0.3), value: shownIdentity)
         .accessibilityHidden(true)
         .task(id: identity) {
             let requested = identity
@@ -181,7 +223,10 @@ struct HeroArtwork: View {
             if let source { loaded = await HeroArtworkLoader.shared.image(for: source) }
             if loaded == nil { loaded = await CoverImageLoader.shared.image(for: fallback, size: .hero)?.image }
             guard !Task.isCancelled, let loaded else { return }
+            let blurred = await BlurredArtworkCache.shared.blurred(loaded, key: "hero|" + requested)
+            guard !Task.isCancelled else { return }
             image = loaded
+            backdrop = blurred
             shownIdentity = requested
         }
     }
@@ -269,7 +314,10 @@ struct HeroBanner: View {
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
             .strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.22), radius: 24, x: 0, y: 12)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.black)
+                .shadow(color: .black.opacity(0.22), radius: 20, x: 0, y: 10)
+        }
         .accessibilityElement(children: .contain)
     }
 }
@@ -350,8 +398,7 @@ struct PosterCard<Cover: View>: View {
                 Label(LocalizedStringKey(badgeText), systemImage: badgeIcon)
                     .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(playing ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.ultraThinMaterial.opacity(0.9)), in: Capsule())
-                    .environment(\.colorScheme, .dark)
+                    .background(playing ? Color.accentColor : Color.black.opacity(0.42), in: Capsule())
                     .padding(10)
             }
             .overlay(alignment: .topTrailing) { selectionMark.padding(10) }
@@ -362,8 +409,13 @@ struct PosterCard<Cover: View>: View {
                     .strokeBorder(selected ? Color.accentColor : .white.opacity(hovered ? 0.22 : 0.08),
                                   lineWidth: selected ? 2.5 : 0.5)
             }
-            .shadow(color: Color.accentColor.opacity(selected ? 0.35 : 0), radius: selected ? 12 : 0)
-            .shadow(color: .black.opacity(hovered ? 0.28 : 0.12), radius: hovered ? 16 : 6, x: 0, y: hovered ? 10 : 3)
+            .background {
+                // Shape shadow is rasterized once; a view shadow would re-render the artwork every frame.
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(selected ? Color.accentColor : .black)
+                    .shadow(color: selected ? Color.accentColor.opacity(0.4) : .black.opacity(hovered ? 0.3 : 0.14),
+                            radius: hovered || selected ? 12 : 4, x: 0, y: hovered ? 8 : 2)
+            }
             .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 
@@ -383,7 +435,6 @@ struct PosterCard<Cover: View>: View {
     private var caption: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
             HStack(spacing: 4) {
                 Text(subtitle).opacity(0.75)
                 if warning { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
