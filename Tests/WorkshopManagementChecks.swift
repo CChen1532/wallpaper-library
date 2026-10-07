@@ -27,6 +27,22 @@ import Darwin
         for html in ["<html>please login</html>", "window.SSR.renderContext=JSON.parse(", "window.SSR.renderContext=JSON.parse(\"broken"] {
             rejects("challenge or malformed HTML is not an empty search") { _ = try WorkshopBrowse.decode(html, query: "", page: 1) }
         }
+        // Steam's 2026 layout: render state as plain JSON in a data script tag.
+        func dataScriptHTML() throws -> String {
+            let items: [[String: Any]] = [["publishedfileid": "123", "consumer_appid": 431960, "title": "Snow </b> Peak", "file_size": "1024"]]
+            let data: [String: Any] = ["eresult": 1, "current_page": 1, "total_count": 1, "total_pages": 1, "results": items]
+            let key: [String: Any] = ["appid": 431960, "page": 1, "search_text": "mountain", "browse_sort": "textsearch", "search_text_target": 0,
+                                      "admin_view": false, "childpublishedfileid": "", "num_per_page": 30, "section": "readytouseitems", "trend_days": 7]
+            let queries: [String: Any] = ["queries": [["queryKey": ["workshop_browse", key, 1], "state": ["data": data]]]]
+            let q = String(decoding: try JSONSerialization.data(withJSONObject: queries), as: UTF8.self)
+            let payload = String(decoding: try JSONSerialization.data(withJSONObject: ["loaderData": [], "renderContext": ["queryData": q]], options: .withoutEscapingSlashes), as: UTF8.self)
+                .replacingOccurrences(of: "</", with: "<\\/")
+            return "<script type=\"application/json\" id=\"valve-ssr-data\" nonce=\"x\">\(payload)</script><script>window.SSR={}</script>"
+        }
+        let current = try WorkshopBrowse.decode(dataScriptHTML(), query: "mountain", page: 1)
+        check(current.items.first?.title == "Snow </b> Peak" && current.total == 1, "valve-ssr-data JSON script decoded")
+        rejects("valve-ssr-data still rejects stale query") { _ = try WorkshopBrowse.decode(dataScriptHTML(), query: "sea", page: 1) }
+        rejects("truncated valve-ssr-data rejected") { _ = try WorkshopBrowse.decode("<script type=\"application/json\" id=\"valve-ssr-data\">{\"renderContext\":", query: "", page: 1) }
         check(try WorkshopBrowse.decode(browseHTML(total: 0, pages: 0, results: []), query: "mountain", page: 1).items.isEmpty, "verified zero results accepted")
         let blocked: [[String: Any]] = [["publishedfileid": "1", "consumer_appid": 730], ["publishedfileid": "2", "consumer_appid": 431960, "banned": true], ["publishedfileid": "3", "consumer_appid": 431960, "visibility": 2], ["publishedfileid": "4", "consumer_appid": 431960, "file_type": 2]]
         check(try WorkshopBrowse.decode(browseHTML(results: blocked), query: "mountain", page: 1).items.isEmpty, "filter wrong application, banned, private and collection results")
@@ -39,6 +55,7 @@ import Darwin
         let subscriptions = try WorkshopSubscriptionPage.decode(html, url: subscriptionURL, page: 1)
         check(subscriptions.ids == ["123"] && subscriptions.hasNext && subscriptions.total == 2, "subscription anchors deduplicated with escaped pagination")
         check(try WorkshopSubscriptionPage.decode("<div id='no_items'></div>", url: subscriptionURL, page: 1).total == 0, "explicit empty subscription page accepted")
+        check(try WorkshopSubscriptionPage.decode(html.replacingOccurrences(of: "1-1 of 2", with: "1\u{2013}1 of 2"), url: subscriptionURL, page: 1).total == 2, "en dash pagination range accepted")
         rejects("login URL is not an empty subscription list") { _ = try WorkshopSubscriptionPage.decode(html, url: URL(string: "https://steamcommunity.com/login")!, page: 1) }
         rejects("missing pagination evidence rejected") { _ = try WorkshopSubscriptionPage.decode("<a href='https://steamcommunity.com/sharedfiles/filedetails/?id=123'>x</a>", url: subscriptionURL, page: 1) }
         rejects("stale subscription page rejected") { _ = try WorkshopSubscriptionPage.decode(html, url: subscriptionURL, page: 2) }
