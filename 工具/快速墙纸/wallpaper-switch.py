@@ -26,6 +26,9 @@ ROOT = Path(__file__).resolve().parents[2]
 STORE = Path.home() / 'Library/Application Support/com.apple.wallpaper/Store/Index.plist'
 STATE = ROOT / 'dist/WallpaperQuickSwitch'
 SUPPORTED_MACOS = ('15.8', '24H23')
+# Each build is added only after its wallpaper store produced SUPPORTED_SCHEMA.
+# 15.8.1 (24H32): schema fingerprint re-verified identical on 2026-10-07.
+SUPPORTED_RELEASES = {SUPPORTED_MACOS, ('15.8.1', '24H32')}
 # Schema observed on the supported macOS build. UUIDs, Space counts, image
 # choices and timestamps are excluded; structural keys and node types are not.
 SUPPORTED_SCHEMA = '8c5d6761ee52272e7952fbfdd0ff3d2782d90cd051d0e78f0bdc983a3db2d53d'
@@ -75,7 +78,7 @@ def check_compatibility(state, document, release=None, expected_schema=None):
     release = release or macos_release()
     fingerprint = schema_fingerprint(document)
     accepted = {expected_schema} if expected_schema else {SUPPORTED_SCHEMA, SUPPORTED_SHARED_SCHEMA}
-    if release != SUPPORTED_MACOS or fingerprint not in accepted:
+    if release not in SUPPORTED_RELEASES or fingerprint not in accepted:
         raise CompatibilityMismatch('此 macOS 版本或墙纸配置结构未经验证，已停止自动过渡底图')
     # Diagnostic evidence only. The bundled constants, not this writable file,
     # authorize future writes. Restoration never depends on this check.
