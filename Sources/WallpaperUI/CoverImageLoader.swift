@@ -12,6 +12,7 @@ enum CoverSource: Hashable, Sendable {
 enum CoverSize: Int, Sendable {
     case card = 512
     case inspector = 960
+    case hero = 2560
 }
 
 struct CoverRequest: Hashable, Sendable {

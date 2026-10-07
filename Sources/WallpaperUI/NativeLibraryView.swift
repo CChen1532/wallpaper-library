@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 import WESceneCore
 
 enum LibraryPage: String, Hashable { case library, videos, scenes, workshop, rotation, settings }
+enum LibraryKindFilter: String, CaseIterable, Identifiable {
+    case all, scenes, videos
+    var id: String { rawValue }
+    var label: String { switch self { case .all: return "全部"; case .scenes: return "场景"; case .videos: return "视频" } }
+}
 struct NativeLibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
@@ -46,6 +51,11 @@ struct NativeLibraryView: View {
     @State private var keyboardScrollTarget: String?
     @State private var galleryIndex = GalleryIndex<GalleryEntry>()
     @State private var showPlaybackNotes = false
+    @AppStorage("libraryKindFilter") private var kindFilter = LibraryKindFilter.all
+    @AppStorage("galleryCardScale") private var cardScale = 1.0
+    /// Wallpaper the hero shows when nothing is selected ("换一张").
+    @State private var spotlightID: String?
+    @State private var toast: (id: UUID, text: String)?
     private var query: String { GalleryNavigation.normalizedQuery(search) }
     private var filtered: [Wallpaper] { model.items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) } }
     private var selectedVideo: Wallpaper? {
@@ -222,7 +232,10 @@ struct NativeLibraryView: View {
         }
     }
     private var galleryEntries: [GalleryEntry] {
-        galleryIndex.matching(query).filter { collection.hiddenIDs.contains($0.visibilityID) == showHidden }
+        galleryIndex.matching(query).filter {
+            collection.hiddenIDs.contains($0.visibilityID) == showHidden
+                && (kindFilter == .all || (kindFilter == .scenes) == ($0.scene != nil))
+        }
     }
     private var batchEntries: [GalleryEntry] { galleryEntries.filter { batchSelection.ids.contains($0.id) } }
     private var showsHero: Bool { query.isEmpty && !isSelecting }
@@ -230,6 +243,7 @@ struct NativeLibraryView: View {
     private var heroEntry: GalleryEntry? {
         let entries = galleryEntries
         if let id = selectedSceneName ?? model.selected, let entry = entries.first(where: { $0.id == id }) { return entry }
+        if let spotlightID, let entry = entries.first(where: { $0.id == spotlightID }) { return entry }
         return entries.first(where: isPlaying) ?? entries.first
     }
     private func isPlaying(_ entry: GalleryEntry) -> Bool {
@@ -248,10 +262,36 @@ struct NativeLibraryView: View {
         return entry.video?.playable == true
     }
     private func play(_ entry: GalleryEntry) {
-        if let scene = entry.scene {
-            Task { await model.playScene(root: scene.root, name: scene.name, title: scene.title ?? scene.name, expectedBytes: scene.packageBytes) }
-        } else if let video = entry.video {
-            Task { await model.perform(.play(video.id)) }
+        guard canPlay(entry) else { return }
+        Task {
+            if let scene = entry.scene {
+                await model.playScene(root: scene.root, name: scene.name, title: scene.title ?? scene.name, expectedBytes: scene.packageBytes)
+            } else if let video = entry.video {
+                await model.perform(.play(video.id))
+            }
+            if model.error == nil { showToast(AppStrings.text("已设为壁纸", locale: locale) + " · " + entry.title) }
+        }
+    }
+    private func showToast(_ text: String) {
+        let id = UUID()
+        withAnimation(LibraryMotion.expansion(reduceMotion)) { toast = (id, text) }
+        Task {
+            try? await Task.sleep(for: .seconds(2.6))
+            if toast?.id == id { withAnimation(LibraryMotion.expansion(reduceMotion)) { toast = nil } }
+        }
+    }
+    private func shuffleSpotlight() {
+        let current = heroEntry?.id
+        guard let next = galleryEntries.filter({ $0.id != current }).randomElement() else { return }
+        selectedSceneName = nil; model.selected = nil; focusedWallpaper = nil
+        spotlightID = next.id
+    }
+    private var greeting: String {
+        switch Calendar.current.component(.hour, from: Date()) {
+        case 5..<11: return "早上好"
+        case 11..<18: return "下午好"
+        case 18..<23: return "晚上好"
+        default: return "夜深了"
         }
     }
     private func heroBanner(_ entry: GalleryEntry) -> some View {
@@ -263,14 +303,18 @@ struct NativeLibraryView: View {
         } else {
             detail = ByteCountFormatter.string(fromByteCount: entry.scene?.packageBytes ?? 0, countStyle: .file)
         }
-        return HeroBanner(identity: entry.id, eyebrow: playing ? "正在桌面播放" : selected ? "已选择" : nil,
+        let artwork: HeroArtworkSource? = entry.scene.map { .scene(package: URL(fileURLWithPath: $0.packagePath)) }
+            ?? entry.video.flatMap { $0.playable ? .video($0.url) : nil }
+        return HeroBanner(identity: entry.id,
+                          eyebrow: playing ? "正在桌面播放" : selected ? "已选择" : greeting,
+                          eyebrowSymbol: playing ? "waveform" : selected ? "checkmark.circle.fill" : "sparkles",
                           title: entry.title, kind: entry.scene != nil ? "动态场景" : "动态视频",
                           kindSymbol: entry.scene != nil ? "square.3.layers.3d" : "play.rectangle",
                           detail: detail, playing: playing, canPlay: canPlay(entry), showsDetailsButton: !selected,
+                          artwork: artwork, fallback: coverSource(entry),
                           play: { play(entry) },
-                          showDetails: { selectGalleryItem(id: entry.id, isScene: entry.scene != nil) }) {
-            LibraryCover(source: coverSource(entry), symbol: entry.scene != nil ? "square.3.layers.3d" : "film", size: .inspector)
-        }
+                          showDetails: { selectGalleryItem(id: entry.id, isScene: entry.scene != nil) },
+                          shuffle: galleryEntries.count > 1 ? shuffleSpotlight : nil)
     }
     /// Floating filter bar; pinned while the grid scrolls under it.
     private func libraryHeader(_ entries: [GalleryEntry]) -> some View {
@@ -281,15 +325,26 @@ struct NativeLibraryView: View {
                     Text("已隐藏").tag(true)
                 }.pickerStyle(.segmented).frame(width: 200).labelsHidden()
                     .accessibilityIdentifier("library.visibilityFilter")
+                Picker("类型", selection: $kindFilter.animation(LibraryMotion.expansion(reduceMotion))) {
+                    ForEach(LibraryKindFilter.allCases) { Text(LocalizedStringKey($0.label)).tag($0) }
+                }.pickerStyle(.segmented).fixedSize().labelsHidden()
+                    .accessibilityIdentifier("library.kindFilter")
                 Text("\(entries.count) " + AppStrings.text("项", locale: locale)).foregroundStyle(.secondary).monospacedDigit()
+                    .contentTransition(.numericText())
                 if !query.isEmpty {
                     Button("清除搜索") { search = "" }.buttonStyle(.link)
                         .accessibilityIdentifier("library.clearSearch")
                 }
-                Spacer()
-                if catalog.scanning { ProgressView("正在检查素材…").controlSize(.small) }
-                else if !isSelecting && selectedScene == nil && selectedVideo == nil && !entries.isEmpty {
-                    Text("选择壁纸，查看详情与播放设置").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 8)
+                if catalog.scanning { ProgressView().controlSize(.small).help(AppStrings.text("正在检查素材…", locale: locale)) }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.grid.3x3").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Slider(value: $cardScale, in: 0.8...1.4).frame(width: 90).controlSize(.mini)
+                            .accessibilityLabel(AppStrings.text("卡片大小", locale: locale))
+                        Image(systemName: "square.grid.2x2").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }.help(AppStrings.text("卡片大小", locale: locale))
+                    EmptyView()
                 }
                 Button(LocalizedStringKey(isSelecting ? "完成选择" : "批量管理")) {
                     isSelecting.toggle(); batchSelection.clear()
@@ -352,14 +407,17 @@ struct NativeLibraryView: View {
                             } else if !query.isEmpty {
                                 Button("清除搜索") { search = "" }
                             }
+                            if kindFilter != .all {
+                                Button("显示全部类型") { kindFilter = .all }
+                            }
                         }
                     }
                 } else {
                     GeometryReader { geometry in
                         // Reserve space for a non-overlay macOS scroll bar as well.
                         let usableWidth = max(1, geometry.size.width - galleryInset * 2 - 16)
-                        let columnCount = max(1, Int((usableWidth + galleryGap) / (galleryCardWidth + galleryGap)))
-                        let cardWidth = min(galleryMaximumCardWidth, (usableWidth - CGFloat(columnCount - 1) * galleryGap) / CGFloat(columnCount))
+                        let columnCount = max(1, Int((usableWidth + galleryGap) / (galleryCardWidth * cardScale + galleryGap)))
+                        let cardWidth = min(galleryMaximumCardWidth * cardScale, (usableWidth - CGFloat(columnCount - 1) * galleryGap) / CGFloat(columnCount))
                         let gridWidth = cardWidth * CGFloat(columnCount) + CGFloat(columnCount - 1) * galleryGap
                         let columns = Array(repeating: GridItem(.fixed(cardWidth), spacing: galleryGap, alignment: .top), count: columnCount)
                         let heroHeight = min(360, max(220, geometry.size.width * 0.38))
@@ -378,7 +436,8 @@ struct NativeLibraryView: View {
                                                     if let scene = entry.scene { sceneCard(scene) }
                                                     else if let video = entry.video {
                                                         VideoCard(item: video, selected: isSelecting ? batchSelection.ids.contains(video.id) : selectedSceneName == nil && model.selected == video.id,
-                                                            playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id, selecting: isSelecting) {
+                                                            playing: model.stateIssue == nil && model.state.running && model.state.currentPath == video.id, selecting: isSelecting,
+                                                            quickAction: canPlay(entry) ? { play(entry) } : nil) {
                                                             selectGalleryItem(id: video.id, isScene: false)
                                                         }
                                                     }
@@ -428,6 +487,19 @@ struct NativeLibraryView: View {
             }
         }
         .animation(LibraryMotion.expansion(reduceMotion), value: inspectorID == nil)
+        .overlay(alignment: .top) {
+            if let toast {
+                Label(toast.text, systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    .symbolRenderingMode(.multicolor)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .glassSurface(cornerRadius: 999)
+                    .padding(.top, 12)
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                    .id(toast.id)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
     }
     private func selectGalleryItem(id: String, isScene: Bool) {
         keyboardScrollTarget = nil
@@ -501,6 +573,7 @@ struct NativeLibraryView: View {
     }
 
     private func sceneCard(_ item: SceneCatalogPayload.Entry) -> some View {
+        let entry = GalleryEntry(id: item.id, title: item.title ?? item.name, scene: item, video: nil)
         let playing = scenePlayer.isActive && scenePlayer.package == URL(fileURLWithPath: item.packagePath)
         let title = item.title ?? item.name
         return PosterCard(title: title,
@@ -508,7 +581,8 @@ struct NativeLibraryView: View {
                            badge: "场景", selected: isSelecting ? batchSelection.ids.contains(item.id) : selectedSceneName == item.id,
                            playing: playing, warning: item.error != nil || item.capability?.resourceInspectionAvailable == false,
                            accessibilityKind: "场景壁纸",
-                           playbackStatus: playing ? scenePlayer.statusText : nil, selecting: isSelecting) {
+                           playbackStatus: playing ? scenePlayer.statusText : nil, selecting: isSelecting,
+                           quickAction: canPlay(entry) ? { play(entry) } : nil) {
             selectGalleryItem(id: item.id, isScene: true)
         } cover: {
             SceneCover(folder: item.folder)
@@ -962,13 +1036,14 @@ private struct VideoCard: View {
     let selected: Bool
     let playing: Bool
     let selecting: Bool
+    let quickAction: (() -> Void)?
     let action: () -> Void
     var body: some View {
         PosterCard(title: item.title, subtitle: "\(item.width) × \(item.height)",
                     badge: String(format: AppStrings.text("%.0f 秒", locale: locale), item.duration), selected: selected,
                     playing: playing, warning: item.warning != nil || item.decodeWarning,
                     accessibilityKind: "视频壁纸", playbackStatus: playing ? "正在桌面播放" : nil,
-                    selecting: selecting,
+                    selecting: selecting, quickAction: quickAction,
                     action: action) {
             VideoCover(item: item)
         }
