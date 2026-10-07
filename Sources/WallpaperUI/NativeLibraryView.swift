@@ -390,7 +390,6 @@ struct NativeLibraryView: View {
     private var unifiedLibrary: some View {
         let entries = galleryEntries
         let hero = showsHero ? heroEntry : nil
-        let inspectorID = isSelecting ? nil : selectedSceneName ?? model.selected
         return HStack(spacing: 0) {
             Group {
                 if entries.isEmpty && !catalog.scanning {
@@ -478,15 +477,12 @@ struct NativeLibraryView: View {
                 sceneDetails(scene).id(scene.id).frame(width: 340)
                     .glassSurface(cornerRadius: 18)
                     .padding(.trailing, 14).padding(.vertical, 12)
-                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
             } else if let video = selectedVideo {
                 videoDetails(video).id(video.id).frame(width: 340)
                     .glassSurface(cornerRadius: 18)
                     .padding(.trailing, 14).padding(.vertical, 12)
-                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(LibraryMotion.expansion(reduceMotion), value: inspectorID == nil)
         .overlay(alignment: .top) {
             if let toast {
                 Label(toast.text, systemImage: "checkmark.circle.fill")
