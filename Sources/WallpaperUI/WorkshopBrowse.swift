@@ -53,21 +53,12 @@ enum WorkshopBrowse {
         try decode(html, request: Request(query: query), page: page)
     }
     static func decode(_ html: String, request: Request, page: Int) throws -> Page {
-        guard html.utf8.count <= 8 * 1024 * 1024,
-              let start = html.range(of: "window.SSR.renderContext=JSON.parse(")?.upperBound, start < html.endIndex,
-              html[start] == "\"" else { throw WorkshopFailure.pageChanged }
-        var end = html.index(after: start)
-        while end < html.endIndex {
-            if html[end] == "\\" { end = html.index(end, offsetBy: 2, limitedBy: html.endIndex) ?? html.endIndex }
-            else if html[end] == "\"" { break }
-            else { end = html.index(after: end) }
-        }
-        guard end < html.endIndex,
-              let text = try? JSONSerialization.jsonObject(with: Data(html[start...end].utf8), options: .fragmentsAllowed) as? String,
-              let context = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-              let queryData = context["queryData"] as? String,
-              let root = try? JSONSerialization.jsonObject(with: Data(queryData.utf8)) as? [String: Any],
-              let queries = root["queries"] as? [[String: Any]] else { throw WorkshopFailure.pageChanged }
+        guard html.utf8.count <= 8 * 1024 * 1024, let context = renderContext(html) else { throw WorkshopFailure.pageChanged }
+        let root: [String: Any]?
+        if let queryData = context["queryData"] as? String {
+            root = try? JSONSerialization.jsonObject(with: Data(queryData.utf8)) as? [String: Any]
+        } else { root = context["queryData"] as? [String: Any] }
+        guard let queries = root?["queries"] as? [[String: Any]] else { throw WorkshopFailure.pageChanged }
         for entry in queries {
             guard let key = entry["queryKey"] as? [Any], key.count > 1, key[0] as? String == "workshop_browse",
                   let identity = key[1] as? [String: Any], identity["appid"] as? Int == 431960,
@@ -96,6 +87,33 @@ enum WorkshopBrowse {
             return Page(items: items, number: page, pages: pages, total: total, candidateCount: request.needsLocalMatch)
         }
         throw WorkshopFailure.pageChanged
+    }
+    /// Steam embeds the server render state as JSON. Current pages use
+    /// `<script type="application/json" id="valve-ssr-data">`; older pages used
+    /// `window.SSR.renderContext=JSON.parse("…")`. Both are parsed as data only.
+    static func renderContext(_ html: String) -> [String: Any]? {
+        if let marker = html.range(of: "id=\"valve-ssr-data\""),
+           let tagStart = html[..<marker.lowerBound].range(of: "<script", options: .backwards),
+           !html[tagStart.upperBound..<marker.lowerBound].contains(">"),
+           html[tagStart.upperBound..<marker.lowerBound].contains("application/json")
+            || html[marker.upperBound...].prefix(80).contains("application/json"),
+           let open = html[marker.upperBound...].range(of: ">"),
+           let close = html[open.upperBound...].range(of: "</script>"),
+           let root = try? JSONSerialization.jsonObject(with: Data(html[open.upperBound..<close.lowerBound].utf8)) as? [String: Any],
+           let context = root["renderContext"] as? [String: Any] {
+            return context
+        }
+        guard let start = html.range(of: "window.SSR.renderContext=JSON.parse(")?.upperBound, start < html.endIndex,
+              html[start] == "\"" else { return nil }
+        var end = html.index(after: start)
+        while end < html.endIndex {
+            if html[end] == "\\" { end = html.index(end, offsetBy: 2, limitedBy: html.endIndex) ?? html.endIndex }
+            else if html[end] == "\"" { break }
+            else { end = html.index(after: end) }
+        }
+        guard end < html.endIndex,
+              let text = try? JSONSerialization.jsonObject(with: Data(html[start...end].utf8), options: .fragmentsAllowed) as? String else { return nil }
+        return try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
     }
     private static func matchesDates(_ identity: [String: Any], request: Request) -> Bool {
         // A stale or ignored filter must not be presented as a matching search.
@@ -128,7 +146,7 @@ enum WorkshopSubscriptionPage {
         }
         // A login/challenge/error page must never replace a valid list with an empty one.
         guard !ids.isEmpty || html.contains("id=\"no_items\"") || html.contains("id='no_items'") else { throw WorkshopFailure.pageChanged }
-        let totals = captures(#"Showing\s+[\d,]+\s*[--]\s*[\d,]+\s+of\s+([\d,]+)\s+entries"#, in: html)
+        let totals = captures(#"Showing\s+[\d,]+\s*[\-\x{2013}]\s*[\d,]+\s+of\s+([\d,]+)\s+entries"#, in: html)
         guard let total = totals.first.flatMap({ Int($0.replacingOccurrences(of: ",", with: "")) }) ?? (ids.isEmpty ? 0 : nil) else { throw WorkshopFailure.pageChanged }
         let hasNext = hrefs.contains { href in
             guard let link = URL(string: href.replacingOccurrences(of: "&amp;", with: "&"), relativeTo: url)?.absoluteURL,
