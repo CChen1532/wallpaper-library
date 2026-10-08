@@ -85,7 +85,7 @@ def check_compatibility(state, document, release=None, expected_schema=None):
     atomic(state / 'compatibility.plist', encoded({
         'schema': 1, 'macOS': release[0], 'build': release[1],
         'wallpaperSchemaSHA256': fingerprint,
-        'checkedAt': datetime.datetime.utcnow(),
+        'checkedAt': utc_now(),
     }))
     return fingerprint
 
@@ -158,8 +158,13 @@ def put(node, selection, field='Desktop'):
         node.pop(field, None)
 
 
+def utc_now():
+    # Naive UTC, as plistlib writes it; utcnow() warns on Python 3.12+.
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
 def image_desktop(image):
-    now = datetime.datetime.utcnow()
+    now = utc_now()
     # Matches the image provider's Files/placement form observed locally.
     return {'LastSet': now, 'LastUse': now, 'Content': {
         'Choices': [{'Provider': 'com.apple.wallpaper.choice.image',
@@ -471,6 +476,10 @@ def resolve_spaces(inv, spec):
     return selected_rows
 
 
+class RestorationRaced(ValueError):
+    """WallpaperAgent rewrote a restored field during confirmation."""
+
+
 def verify_restoration(store, expected, patches, clock=time.monotonic, sleep=time.sleep):
     """Observe the affected fields after the agent reload, not just our write."""
     started = clock()
@@ -480,17 +489,24 @@ def verify_restoration(store, expected, patches, clock=time.monotonic, sleep=tim
             field = patch.get('field', 'Desktop')
             if semantic(selected(entry(current, patch['path']), field)) != semantic(
                     selected(entry(expected, patch['path']), field)):
-                raise ValueError('系统在恢复后再次改变墙纸配置，恢复记录仍保留')
+                raise RestorationRaced('系统在恢复后再次改变墙纸配置，恢复记录仍保留')
         if clock() - started >= 3:
             return
         sleep(.2)
 
 
 class Switcher:
-    def __init__(self, store=STORE, state=STATE, refresh=reload_agent, verify=verify_restoration):
+    # A display reconnect or Space registration can make WallpaperAgent rewrite
+    # the store while a restore is being confirmed. Re-merge from the verified
+    # backup a bounded number of times before leaving the journal pending.
+    RESTORE_ATTEMPTS = 3
+    RESTORE_SETTLE_SECONDS = 1.5
+
+    def __init__(self, store=STORE, state=STATE, refresh=reload_agent, verify=verify_restoration, settle=time.sleep):
         self.store, self.state, self.refresh = store, state, refresh
         self.session = state / 'session.plist'
         self.verify = verify
+        self.settle = settle
 
     def read_session(self):
         if not self.session.exists():
@@ -626,23 +642,30 @@ class Switcher:
         backup = Path(session['backup']).read_bytes()
         if digest(backup) != session['backup_sha256']:
             raise ValueError('原始备份校验失败，拒绝复原')
-        raw, document = load_store(self.store)
-        restored = merge(document, session['patches'], restore=True,
-                         original=plistlib.loads(backup),
-                         known_spaces={row['uuid'] for row in session['spaces']},
-                         display=session['display'])
-        needs_write = semantic(restored) != semantic(document)
-        if needs_write and only_if_already_restored:
-            raise ValueError('系统壁纸仍需恢复，未改写配置或结清记录')
-        session['state'] = 'pending_restore'
-        self.save(session)
-        # The agent may already have restored every affected selection while
-        # filling sparse historical Space records. Do not rewrite an already
-        # equivalent system configuration just to close the journal.
-        if needs_write:
-            commit_store(self.store, raw, restored)
-            self.refresh()
-        self.verify(self.store, restored, session['patches'])
+        for attempt in range(self.RESTORE_ATTEMPTS):
+            raw, document = load_store(self.store)
+            restored = merge(document, session['patches'], restore=True,
+                             original=plistlib.loads(backup),
+                             known_spaces={row['uuid'] for row in session['spaces']},
+                             display=session['display'])
+            needs_write = semantic(restored) != semantic(document)
+            if needs_write and only_if_already_restored:
+                raise ValueError('系统壁纸仍需恢复，未改写配置或结清记录')
+            session['state'] = 'pending_restore'
+            self.save(session)
+            # The agent may already have restored every affected selection while
+            # filling sparse historical Space records. Do not rewrite an already
+            # equivalent system configuration just to close the journal.
+            if needs_write:
+                commit_store(self.store, raw, restored)
+                self.refresh()
+            try:
+                self.verify(self.store, restored, session['patches'])
+                break
+            except RestorationRaced:
+                if attempt == self.RESTORE_ATTEMPTS - 1:
+                    raise
+                self.settle(self.RESTORE_SETTLE_SECONDS)
         session['state'] = 'restored'
         self.save(session)
         print('原壁纸配置已复原并稳定确认（包括原航拍选择）；未改动屏保。', flush=True)

@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory() as folder:
     active = store.read_bytes()
     def revert():
         store.write_bytes(active)
-    unstable = m.Switcher(store, state, revert)
+    unstable = m.Switcher(store, state, revert, settle=lambda _: None)
     try:
         unstable.restore()
         raise AssertionError('late agent rewrite accepted')
@@ -95,6 +95,22 @@ with tempfile.TemporaryDirectory() as folder:
     tool.restore()
     assert tool.read_session()['state'] == 'restored'
     print('PASS: post-reload reversion preserves a retryable recovery record')
+
+    # A single agent rewrite (e.g. a display reconnect) is re-merged and confirmed.
+    store.write_bytes(m.encoded(original))
+    tool.apply(image, inv, inv['spaces'], all_spaces_visible=True)
+    active = store.read_bytes()
+    rewrites = []
+    def revert_once():
+        if not rewrites:
+            rewrites.append(True)
+            store.write_bytes(active)
+    settles = []
+    racing = m.Switcher(store, state, revert_once, settle=settles.append)
+    racing.restore()
+    assert racing.read_session()['state'] == 'restored' and len(settles) == 1
+    assert m.semantic(m.load_store(store)[1]) == m.semantic(original)
+    print('PASS: one transient agent rewrite is re-merged instead of left pending')
 
     ticks = [0.0]
     m.verify_restoration(store, original, tool.read_session()['patches'],
@@ -242,4 +258,4 @@ with tempfile.TemporaryDirectory() as folder:
     assert tool.read_session()['state'] == 'restored'
     assert store.read_bytes() == original_store_bytes and not refreshes
 print('PASS: newly registered original Spaces allow journal-only settlement without system writes')
-print('20 stale-recovery checks passed; no system settings accessed')
+print('21 stale-recovery checks passed; no system settings accessed')

@@ -386,6 +386,14 @@ struct NativeLibraryView: View {
         .padding(.horizontal, 14).padding(.vertical, 10)
         .glassSurface(cornerRadius: 14, material: .bar)
         .padding(.horizontal, galleryInset).padding(.top, 10).padding(.bottom, 14)
+        // Cards scrolling under the pinned bar fade out instead of peeking above it.
+        .background {
+            LinearGradient(stops: [.init(color: Color(nsColor: .windowBackgroundColor).opacity(0.96), location: 0),
+                                   .init(color: Color(nsColor: .windowBackgroundColor).opacity(0.85), location: 0.7),
+                                   .init(color: Color(nsColor: .windowBackgroundColor).opacity(0), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+        }
     }
     private var unifiedLibrary: some View {
         let entries = galleryEntries
@@ -993,6 +1001,7 @@ struct NativeLibraryView: View {
     }
     private func issueBanner(_ text: String) -> some View {
         Label(text, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+            .lineLimit(3).truncationMode(.tail).textSelection(.enabled).help(text)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))

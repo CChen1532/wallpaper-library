@@ -44,7 +44,7 @@ struct SpaceBackdropCompatibilityFailure: LocalizedError, Sendable {
 /// immediately before the first system write; restore never uses this gate.
 enum SpaceBackdropCompatibility {
     static func check(_ settings: SceneBackdropConfiguration, displayID: UInt32) async throws {
-        let result = try await CommandRunner().run(RuntimeTools.executable("python3").path, ["-I", "-B",
+        let result = try await CommandRunner().run(RuntimeTools.executable("python3").path, ["-I", "-B", "-W", "ignore::DeprecationWarning",
             settings.helper.path, "--state-dir", settings.state.path,
             "--inventory", settings.inventory.path,
             "check-compatibility", "--display", String(displayID)
@@ -92,6 +92,21 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return String(decoding: messages, as: UTF8.self)
     }
+    /// Helper output for people: protocol markers, interpreter warnings and
+    /// the source lines they quote are dropped; the last few messages remain.
+    private var summary: String {
+        var lines: [String] = []
+        var skipQuotedSource = false
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.contains("Warning:") { skipQuotedSource = true; continue }
+            if skipQuotedSource && raw.first?.isWhitespace == true { continue }
+            skipQuotedSource = false
+            if line.isEmpty || line == "BACKDROP_READY" || line.hasPrefix("timezone-aware") { continue }
+            lines.append(line)
+        }
+        return lines.suffix(3).joined(separator: "\n")
+    }
     private func append(_ data: Data) {
         lock.lock(); defer { lock.unlock() }
         messages.append(data)
@@ -102,7 +117,7 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
         lock.lock(); messages.removeAll(); lock.unlock()
         let child = Process(), stdin = Pipe(), stdout = Pipe()
         child.executableURL = RuntimeTools.executable("python3")
-        child.arguments = ["-I", "-B", configuration.helper.path, "--state-dir", configuration.state.path,
+        child.arguments = ["-I", "-B", "-W", "ignore::DeprecationWarning", configuration.helper.path, "--state-dir", configuration.state.path,
                            "--inventory", configuration.inventory.path] + arguments
         child.standardInput = stdin
         child.standardOutput = stdout
@@ -165,7 +180,7 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
             if process?.terminationStatus == 3 {
                 throw SpaceBackdropCompatibilityFailure(reason: text)
             }
-            throw BackendError.message("自动底图进程已退出。\(text)")
+            throw BackendError.message("自动底图进程已退出。\(summary)")
         }
     }
 
@@ -186,7 +201,7 @@ final class SceneBackdropLease: SceneBackdropControlling, @unchecked Sendable {
         if let data = try? output?.fileHandleForReading.readToEnd() { append(data) }
         process = nil; input = nil; output = nil
         guard !configuration.recoveryPending, child.terminationStatus == 0 else {
-            throw BackendError.message("自动底图操作未完成。\(text)")
+            throw BackendError.message("自动底图操作未完成。\(summary)")
         }
     }
 

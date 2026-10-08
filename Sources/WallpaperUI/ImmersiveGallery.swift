@@ -356,6 +356,9 @@ struct PosterCard<Cover: View>: View {
             Button(action: action) { surface }
                 .buttonStyle(GalleryPressStyle())
                 .focusable()
+                // The system ring is drawn outside the card and over the pinned bar;
+                // selection already shows the accent outline.
+                .focusEffectDisabled()
                 .simultaneousGesture(TapGesture(count: 2).onEnded {
                     if !selecting, !playing { quickAction?() }
                 })
