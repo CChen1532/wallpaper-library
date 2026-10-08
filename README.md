@@ -46,6 +46,9 @@ git submodule update --init ThirdParty/MirageWallpaper
 # 准备并打包应用
 bash scripts/build-app.sh
 
+# 只更新已安装应用的主程序（固定签名，保留已授予的权限）
+bash scripts/install-app.sh
+
 # 核心自检
 bash scripts/check.sh
 ```
