@@ -245,6 +245,59 @@ class DisplayControlTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, 'access denied'):
                 c.state(A)
 
+    def test_record_write_failure_preserves_old_video_and_cleans_partial_file(self):
+        self.start(); self.start(B, 'Monitor B')
+        original_jobs = dict(self.jobs)
+        original_write = Path.write_text
+        temporary = c.ROOT / (A + '.tmp')
+        def write(path, value, *args, **kwargs):
+            if path == temporary:
+                path.write_bytes(b'partial')
+                raise OSError('disk full')
+            return original_write(path, value, *args, **kwargs)
+        with patch.object(Path, 'write_text', write):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.start()
+        self.assertEqual(self.jobs, original_jobs)
+        self.assertTrue(c.state(A)['running'] and c.state(B)['running'])
+        self.assertFalse(temporary.exists())
+
+    def test_record_commit_failure_preserves_old_and_other_display(self):
+        self.start(); self.start(B, 'Monitor B')
+        original_jobs = dict(self.jobs)
+        original_replace = Path.replace
+        temporary = c.ROOT / (A + '.tmp')
+        def replace(path, target):
+            if path == temporary:
+                raise OSError('commit denied')
+            return original_replace(path, target)
+        with patch.object(Path, 'replace', replace):
+            with self.assertRaisesRegex(OSError, 'commit denied'):
+                self.start()
+        self.assertEqual(self.jobs, original_jobs)
+        self.assertFalse(temporary.exists())
+
+    def test_old_retirement_failure_keeps_confirmed_new_window_and_reports_ambiguity(self):
+        self.start(); self.start(B, 'Monitor B')
+        old, new = c.labels(A)
+        other = dict(self.jobs[c.labels(B)[0]])
+        original = self.command
+        def command(args, timeout=8):
+            if args[:2] == ['/bin/launchctl', 'remove'] and args[2] == old:
+                return subprocess.CompletedProcess(args, 1, '', 'permission denied')
+            return original(args, timeout)
+        with patch.object(c, 'command', command):
+            with self.assertRaises(RuntimeError):
+                self.start()
+        self.assertIn(new, self.jobs)
+        self.assertEqual(c.record(A)['label'], new)
+        self.assertEqual(self.jobs[c.labels(B)[0]], other)
+        with self.assertRaisesRegex(RuntimeError, '播放记录不一致'):
+            c.state(A)
+        c.stop(A)
+        self.assertFalse(c.state(A)['running'])
+        self.assertTrue(c.state(B)['running'])
+
 
 if __name__ == '__main__':
     unittest.main()

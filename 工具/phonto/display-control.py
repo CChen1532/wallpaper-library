@@ -175,6 +175,8 @@ def start(key, display, path):
         raise RuntimeError('此显示器有未完成的切换，请停止此屏幕后重试')
     new = pair[1] if existing == [pair[0]] else pair[0]
     remove(new)
+    temporary = ROOT / (key + '.tmp')
+    published = False
     try:
         result = command(['/bin/launchctl', 'submit', '-l', new, '--', str(PHONTO), '--display', display, path])
         if result.returncode:
@@ -194,14 +196,20 @@ def start(key, display, path):
         time.sleep(.35)
         if pid(new) != child:
             raise RuntimeError('视频进程提前退出')
-        for old in existing:
-            remove(old)
-        temporary = ROOT / (key + '.tmp')
         temporary.write_text(json.dumps({'path': path, 'label': new, 'display': display}, ensure_ascii=False))
         temporary.replace(ROOT / (key + '.json'))
+        published = True
+        for old in existing:
+            remove(old)
     except BaseException:
-        remove(new)
+        # A failed metadata commit leaves the original window untouched. Once
+        # published, retain the confirmed new window if retiring the old one
+        # fails; state() reports both live slots until the owner is stopped.
+        if not published:
+            remove(new)
         raise
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main(args):
