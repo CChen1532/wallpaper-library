@@ -144,6 +144,21 @@ import Foundation
         await playback.shutdown()
         let finalA = await backends[a.uuid]!.state(), finalB = await backends[b.uuid]!.state()
         check(!finalA.running && !finalB.running, "quit cleans both videos even without backdrop leases")
+        let cleanupBackend = DisplayBackend()
+        let cleanupInventory = LibraryModel(backend: cleanupBackend, collection: collection, backdropConfiguration: { nil })
+        let cleanupPlayback = DisplayPlayback(library: cleanupInventory, displayProvider: { [] }, recover: { true })
+        await cleanupPlayback.start()
+        await cleanupBackend.failNextStop()
+        await cleanupPlayback.stopAll()
+        check(cleanupPlayback.issue == "fixture cleanup failed", "all-stop reports a failed global cleanup")
+        await cleanupPlayback.stopAll()
+        check(cleanupPlayback.issue == nil, "successful all-stop retry clears the previous cleanup error")
+        let recoveryInventory = LibraryModel(backend: DisplayBackend(), collection: collection, backdropConfiguration: { nil })
+        let recoveryPlayback = DisplayPlayback(library: recoveryInventory, displayProvider: { [] }, recover: { false })
+        await recoveryPlayback.start()
+        await recoveryPlayback.stopAll()
+        check(recoveryPlayback.needsRecovery && recoveryPlayback.issue != nil,
+              "successful process cleanup does not clear an unresolved wallpaper recovery warning")
         print("\(count) display playback checks passed")
     }
     @MainActor static func waitAsync(_ condition: () async -> Bool) async throws {
@@ -169,9 +184,11 @@ private actor DisplayBackend: WallpaperBackend {
     nonisolated let capabilities = BackendCapabilities(name: "fixture", canTrash: true)
     var value = PlaybackState()
     private var shouldHoldPlay = false
+    private var shouldFailStop = false
     private var heldPlay: CheckedContinuation<Void, Never>?
     var playHeld: Bool { heldPlay != nil }
     func holdNextPlay() { shouldHoldPlay = true }
+    func failNextStop() { shouldFailStop = true }
     func releasePlay() { heldPlay?.resume(); heldPlay = nil }
     func library() async throws -> [Wallpaper] { [] }
     func state() async -> PlaybackState { value }
@@ -183,7 +200,9 @@ private actor DisplayBackend: WallpaperBackend {
                 await withCheckedContinuation { heldPlay = $0 }
             }
             value = PlaybackState(running: true, lastPath: path)
-        case .off, .stop: value = .init()
+        case .off, .stop:
+            if shouldFailStop { shouldFailStop = false; throw BackendError.message("fixture cleanup failed") }
+            value = .init()
         default: break
         }
     }

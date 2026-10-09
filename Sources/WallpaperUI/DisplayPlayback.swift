@@ -150,7 +150,10 @@ import Foundation
         lifecycleBusy = true
         defer { lifecycleBusy = false }
         for session in sessions.values { await session.disconnectDisplay() }
-        do { try await library.backend.perform(.off) }
+        do {
+            try await library.backend.perform(.off)
+            issue = needsRecovery ? "原壁纸尚未恢复，请在设置中点击“恢复原壁纸”后再播放" : nil
+        }
         catch { issue = error.localizedDescription }
     }
 
