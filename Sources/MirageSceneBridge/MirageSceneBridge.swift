@@ -138,6 +138,7 @@ public final class MirageSceneChild: @unchecked Sendable {
     private var lastMovedDisplayID: UInt32?
     private var exitCode: Int32?
     private var errorTail = ""
+    private var reportedError: String?
     private var started = false
 
     public init(executable: URL, arguments: [String], environment: [String: String]? = nil) {
@@ -194,13 +195,9 @@ public final class MirageSceneChild: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
         defer { condition.unlock() }
-        while !observed.contains(event) {
-            if observed.contains("activation-failed") {
-                throw MirageSceneBridgeError.failed("Mirage Scene 显示激活失败：\(errorTail)")
-            }
-            if let exitCode {
-                throw MirageSceneBridgeError.failed("Mirage Scene 提前退出（\(exitCode)）：\(errorTail)")
-            }
+        while true {
+            try checkLiveEventState()
+            if observed.contains(event) { return }
             if !condition.wait(until: deadline) {
                 throw MirageSceneBridgeError.failed("等待 Mirage Scene 事件超时：\(event)；\(errorTail)")
             }
@@ -345,6 +342,7 @@ public final class MirageSceneChild: @unchecked Sendable {
     }
 
     private func checkLiveEventState() throws {
+        if let reportedError { throw MirageSceneBridgeError.failed(reportedError) }
         if let exitCode {
             throw MirageSceneBridgeError.failed("场景渲染器已退出（\(exitCode)）：\(errorTail)")
         }
@@ -377,9 +375,7 @@ public final class MirageSceneChild: @unchecked Sendable {
         defer { snapshotResponses.removeValue(forKey: token); condition.unlock() }
         while snapshotResponses[token] == nil {
             try Task.checkCancellation()
-            if let exitCode {
-                throw MirageSceneBridgeError.failed("渲染器在静帧请求期间退出（\(exitCode)）：\(errorTail)")
-            }
+            try checkLiveEventState()
             if Date() >= deadline {
                 throw MirageSceneBridgeError.failed("等待 Mirage Scene 静帧超时：\(errorTail)")
             }
@@ -394,11 +390,9 @@ public final class MirageSceneChild: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         while lastMovedDisplayID != displayID {
+            try checkLiveEventState()
             if observed.contains("display-move-failed") {
                 throw MirageSceneBridgeError.failed("渲染窗口跨屏移动失败：\(errorTail)")
-            }
-            if let exitCode {
-                throw MirageSceneBridgeError.failed("渲染器在跨屏移动时退出（\(exitCode)）：\(errorTail)")
             }
             if !condition.wait(until: deadline) {
                 throw MirageSceneBridgeError.failed("等待渲染窗口跨屏移动超时：\(displayID)")
@@ -464,6 +458,12 @@ public final class MirageSceneChild: @unchecked Sendable {
             if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                let event = object["event"] as? String, event.count <= 80 {
                 observed.insert(event)
+                if event == "error", reportedError == nil {
+                    let message = (object["message"] as? String ?? "")
+                        .components(separatedBy: .controlCharacters).joined(separator: " ")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    reportedError = message.isEmpty ? "场景渲染器报告错误" : String(message.prefix(2048))
+                }
                 if event == "script-storage", let token = object["token"] as? String,
                    let values = object["values"] as? [String: String], values.count <= 1024,
                    let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]),

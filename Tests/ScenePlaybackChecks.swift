@@ -172,7 +172,9 @@ import UniformTypeIdentifiers
         mode="$2"
         printf '%s\n' "pid=$$" >> "$log"
         if [ "$mode" = stubborn ]; then trap '' TERM; fi
-        if [ "$mode" != stalled ]; then
+        if [ "$mode" = reported-error ]; then
+          printf '%s\n' '{"event":"error","message":"fixture model asset missing"}'
+        elif [ "$mode" != stalled ]; then
           printf '%s\n' '{"event":"scene-ready"}' '{"event":"first-frame-presented"}'
         fi
         while IFS= read -r command; do
@@ -180,7 +182,11 @@ import UniformTypeIdentifiers
           case "$command" in
             '{"cmd":"activate"}')
               if [ "$mode" = crash ]; then exit 7; fi
-              printf '%s\n' '{"event":"activated"}' ;;
+              printf '%s\n' '{"event":"activated"}'
+              if [ "$mode" = late-error ]; then
+                sleep 0.7
+                printf '%s\n' '{"event":"error","message":"fixture graphics context lost"}'
+              fi ;;
             '{"cmd":"deactivate"}') printf '%s\n' '{"event":"deactivated"}' ;;
             '{"cmd":"moveDisplay","displayID":3}') printf '%s\n' '{"event":"display-moved","display_id":3}' ;;
             '{"cmd":"moveDisplay","displayID":1}') printf '%s\n' '{"event":"display-moved","display_id":1}' ;;
@@ -229,6 +235,19 @@ import UniformTypeIdentifiers
         let failedRequest = player.playbackRequestID
         try await wait { player.phase == .failed }
         check(!player.hasActivated(requestID: failedRequest), "渲染器激活失败不产生成功确认")
+        await player.stop()
+        let reportedBegan = ContinuousClock.now
+        try player.start(configuration("reported-error", mode: "reported-error"))
+        try await wait { player.phase == .failed }
+        check(player.error?.contains("fixture model asset missing") == true &&
+              ContinuousClock.now - reportedBegan < .seconds(3) && !hasLivePID("reported-error"),
+              "渲染器报告模型错误后立即失败并保留实际原因，不再等待一分钟就绪超时")
+        await player.stop()
+        try player.start(configuration("late-error", mode: "late-error"))
+        try await wait { player.phase == .playing }
+        try await wait { player.phase == .failed }
+        check(player.error?.contains("fixture graphics context lost") == true && !hasLivePID("late-error"),
+              "正在播放的渲染器报告致命错误后停止，不继续误报播放中")
         await player.stop()
 
         let focus = FocusFixture()

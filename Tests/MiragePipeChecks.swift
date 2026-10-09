@@ -89,6 +89,33 @@ import Foundation
         reader.stop()
         precondition(reader.terminationStatus == 0, "chunked writes must preserve ordered complete UTF-8 JSON commands")
         print("PASS: 64 large UTF-8 commands arrive complete and in order")
-        print("3 renderer pipe checks passed")
+
+        let errorScript = root.appendingPathComponent("error.py")
+        try """
+        import sys
+        print('{"event":"error","message":"fixture model could not be loaded"}', flush=True)
+        sys.exit(7)
+        """.write(to: errorScript, atomically: true, encoding: .utf8)
+        for _ in 0..<20 {
+            let failed = MirageSceneChild(executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: ["-u", errorScript.path])
+            try failed.start()
+            var reason = ""
+            do { try failed.wait(for: "scene-ready", timeout: 2) }
+            catch { reason = error.localizedDescription }
+            failed.stop()
+            precondition(reason.contains("fixture model could not be loaded"), "immediate exit must retain the reported renderer error")
+        }
+        print("PASS: 20 immediate error/exit lifecycles retain the actual failure reason")
+        try "print('{\"event\":\"error\"}', flush=True)\n"
+            .write(to: errorScript, atomically: true, encoding: .utf8)
+        let noMessage = MirageSceneChild(executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: ["-u", errorScript.path])
+        try noMessage.start()
+        var fallback = ""
+        do { try noMessage.wait(for: "scene-ready", timeout: 2) }
+        catch { fallback = error.localizedDescription }
+        noMessage.stop()
+        precondition(fallback == "场景渲染器报告错误", "an error without a message must still fail clearly")
+        print("PASS: an error without a message still ends the ready wait")
+        print("5 renderer pipe/error checks passed")
     }
 }
