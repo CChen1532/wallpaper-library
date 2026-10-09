@@ -1005,7 +1005,7 @@ struct NativeLibraryView: View {
                 .disabled(model.busy || scenePlayer.phase == .stopping || (!scenePlayer.isActive && !model.state.running && !model.selectionRotation.active && !scenePlayer.restorationPending && !model.videoBackdrop.restorationPending && model.stateIssue == nil))
             Button("停止所有壁纸") { Task { await playback.stopAll() } }
                 .font(.system(size: 11, weight: .medium)).help(AppStrings.text("停止场景和视频，并关闭轮播", locale: locale))
-                .disabled(playback.busy)
+                .disabled(playback.lifecycleBusy)
         }
         .controlSize(.regular)
         .padding(.horizontal, 16).padding(.vertical, 10)

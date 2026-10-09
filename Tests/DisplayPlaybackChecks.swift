@@ -104,6 +104,26 @@ import Foundation
         await first.perform(.play(video.path)); await second.perform(.play(video.path))
         await playback.stopAll()
         check(!first.state.running && !second.state.running, "all-stop clears both videos")
+        let preparingScript = root.appendingPathComponent("preparing-renderer.sh")
+        try #"""
+        while IFS= read -r command; do
+          case "$command" in
+            '{"cmd":"deactivate"}') printf '%s\n' '{"event":"deactivated"}' ;;
+            '{"cmd":"quit"}') exit 0 ;;
+          esac
+        done
+        """#.write(to: preparingScript, atomically: true, encoding: .utf8)
+        await first.playPreparedScene(configuration(a))
+        try await waitUntil { first.scenePlayer.phase == .playing }
+        let preparing = SceneLaunchConfiguration(executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [preparingScript.path], environment: nil, package: root.appendingPathComponent("preparing/scene.pkg"),
+            title: "Preparing", displayID: second.scenePlayer.preferredDisplayID()!)
+        await second.playPreparedScene(preparing)
+        check(second.scenePlayer.phase == .starting && playback.busy && !playback.lifecycleBusy,
+              "preparing scene does not block the all-stop entry points")
+        await playback.stopAll()
+        check(!first.scenePlayer.isActive && !second.scenePlayer.isActive && !playback.lifecycleBusy,
+              "all-stop cancels a preparing renderer and the other display's active renderer together")
         let p1 = try SceneScriptStorage.prepare(package: video, root: root.appendingPathComponent("storage"), displayUUID: a.uuid)
         let p2 = try SceneScriptStorage.prepare(package: video, root: root.appendingPathComponent("storage"), displayUUID: b.uuid)
         check(p1 != p2, "same scene script storage is isolated by display")

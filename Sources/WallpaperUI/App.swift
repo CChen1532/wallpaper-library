@@ -113,6 +113,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
                         .keyboardShortcut("p", modifiers: [.command, .option]).disabled(!model.scenePlayer.supportsControls)
                     Button(AppStrings.text("停止所有壁纸", language: language)) { Task { await playback.stopAll() } }
                         .keyboardShortcut(".", modifiers: [.command, .option])
+                        .disabled(playback.lifecycleBusy)
                 }
             }
         MenuBarExtra(AppStrings.text("壁纸", language: language), systemImage: "desktopcomputer") {
@@ -143,7 +144,7 @@ private struct WallpaperMenu: View {
             Button(LocalizedStringKey(scenePlayer.manualPause ? "继续场景" : "暂停场景")) { scenePlayer.togglePause() }
         }
         Button("停止所有壁纸") { Task { await playback.stopAll() } }
-            .disabled(model.busy || scenePlayer.phase == .stopping)
+            .disabled(playback.lifecycleBusy)
         if playback.needsRecovery {
             Button("恢复原壁纸") { Task { await playback.recoverBackdrops() } }
                 .disabled(playback.busy || playback.hasPlayback)
