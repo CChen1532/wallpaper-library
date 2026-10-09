@@ -29,6 +29,21 @@ import Foundation
         check(args.first { $0.name == "browsesort" }?.value == "totaluniquesubscribers", "most subscribed uses Steam global sort")
         check(args.first { $0.name == "created_date_range_filter_start" }?.value == String(request.dates!.start), "date bounds sent to server")
         check(request.dates!.end - request.dates!.start + 1 == 23 * 3600, "custom date includes entire DST-short day")
+        let invalidDate = Date(timeIntervalSince1970: 1e100)
+        let invalidDates = WorkshopFilters(period: .custom, startDate: invalidDate, endDate: invalidDate)
+        check(!invalidDates.validDates, "invalid restored dates cannot enable a search")
+        check(invalidDates.dateRange(now: date, calendar: calendar) == nil,
+              "out-of-range dates cannot reach integer timestamp conversion")
+        for value in [Double.nan, .infinity, -.infinity] {
+            let broken = WorkshopFilters(period: .custom, startDate: Date(timeIntervalSince1970: value), endDate: date)
+            check(!broken.validDates && broken.dateRange(now: date, calendar: calendar) == nil,
+                  "non-finite dates are rejected before Calendar arithmetic")
+        }
+        let restoredDates = try JSONDecoder().decode(WorkshopFilters.self, from:
+            Data(#"{"ages":["Everyone"],"period":"custom","startDate":1e100,"endDate":1e100}"#.utf8))
+        check(restoredDates.validDates && restoredDates.dateRange(now: date, calendar: calendar) != nil &&
+              restoredDates.ages == [.everyone],
+              "invalid persisted dates recover without losing other filter choices")
         check(try WorkshopBrowse.decode(html(request, tags: request.tags.reversed()), request: request, page: 1).total == 0, "tag ordering irrelevant when validating response")
         rejects("ignored age filter cannot pass as filtered result") { _ = try WorkshopBrowse.decode(html(request, tags: ["Scene", "Nature"]), request: request, page: 1) }
         rejects("stale sort rejected") { _ = try WorkshopBrowse.decode(html(request, sort: "mostrecent"), request: request, page: 1) }

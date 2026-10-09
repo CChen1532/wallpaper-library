@@ -71,23 +71,34 @@ struct WorkshopFilters: Codable, Equatable, Sendable {
     }
     var needsLocalMatch: Bool { selectedAges.count > 1 || selectedKinds.count > 1 }
     var isDefault: Bool { selectedAges.isEmpty && selectedKinds.isEmpty && selectedGenres.isEmpty && sort == .relevance && period == .all }
-    var validDates: Bool { period != .custom || Calendar.current.startOfDay(for: startDate) <= Calendar.current.startOfDay(for: endDate) }
+    private static func supportedDate(_ date: Date) -> Bool {
+        date.timeIntervalSince1970.isFinite && date >= Date(timeIntervalSince1970: 0) && date <= .distantFuture
+    }
+    var validDates: Bool {
+        period != .custom || (Self.supportedDate(startDate) && Self.supportedDate(endDate)
+            && Calendar.current.startOfDay(for: startDate) <= Calendar.current.startOfDay(for: endDate))
+    }
     func browseSort(query: String) -> String { sort == .relevance && query.isEmpty ? Sort.popular.rawValue : sort.rawValue }
 
     struct DateRange: Equatable, Sendable { let start: Int; let end: Int }
     func dateRange(now: Date, calendar: Calendar = .current) -> DateRange? {
         guard period != .all else { return nil }
-        let start: Date
-        let end = calendar.startOfDay(for: period == .custom ? endDate : now)
+        let endInput = period == .custom ? endDate : now
+        guard Self.supportedDate(endInput), period != .custom || Self.supportedDate(startDate) else { return nil }
+        let start: Date?
+        let end = calendar.startOfDay(for: endInput)
         switch period {
-        case .week: start = calendar.date(byAdding: .day, value: -6, to: end)!
-        case .month: start = calendar.date(byAdding: .month, value: -1, to: end)!
-        case .year: start = calendar.date(byAdding: .year, value: -1, to: end)!
+        case .week: start = calendar.date(byAdding: .day, value: -6, to: end)
+        case .month: start = calendar.date(byAdding: .month, value: -1, to: end)
+        case .year: start = calendar.date(byAdding: .year, value: -1, to: end)
         case .custom: start = calendar.startOfDay(for: startDate)
         case .all: return nil
         }
         // Calendar arithmetic includes the full end date, including DST transitions.
-        return DateRange(start: Int(start.timeIntervalSince1970), end: Int(calendar.date(byAdding: .day, value: 1, to: end)!.timeIntervalSince1970) - 1)
+        guard let start, start <= end, let nextDay = calendar.date(byAdding: .day, value: 1, to: end),
+              let first = Int(exactly: start.timeIntervalSince1970),
+              let next = Int(exactly: nextDay.timeIntervalSince1970), next > Int.min else { return nil }
+        return DateRange(start: first, end: next - 1)
     }
 
     static func classification(tags: [String]) -> [String] {
@@ -117,6 +128,9 @@ extension WorkshopFilters {
         period = try values.decodeIfPresent(Period.self, forKey: .period) ?? .all
         startDate = try values.decodeIfPresent(Date.self, forKey: .startDate) ?? startDate
         endDate = try values.decodeIfPresent(Date.self, forKey: .endDate) ?? endDate
+        let today = Calendar.current.startOfDay(for: Date())
+        if !Self.supportedDate(startDate) { startDate = today }
+        if !Self.supportedDate(endDate) { endDate = today }
         // The new empty array deliberately overrides a retained legacy single value.
         let raw = try values.decodeIfPresent([String].self, forKey: .genres)
             ?? values.decodeIfPresent(String.self, forKey: .genre).map { [$0] } ?? []
