@@ -41,6 +41,8 @@ bash 工具/快速墙纸/build.sh
 mkdir -p "$app/Contents/Resources/WallpaperSwitch"
 cp 工具/快速墙纸/wallpaper-switch.py "$app/Contents/Resources/WallpaperSwitch/"
 cp dist/WallpaperQuickSwitch/space-inventory "$app/Contents/Resources/WallpaperSwitch/"
+# Finder metadata can arrive with a reused offline runtime; it is not an app resource.
+find "$app" -type f -name .DS_Store -delete
 # 固定签名身份：让 macOS 辅助功能授权在重新构建后依然有效。
 # 原理：ad-hoc 签名的「指定要求」是 cdhash（二进制哈希），每次重建都会变，系统因此把新构建当成全新应用；
 # 用固定证书签名后，指定要求变为 identifier + certificate root，重建不再影响已授予的权限。
