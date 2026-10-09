@@ -102,8 +102,8 @@ struct NativeLibraryView: View {
         } detail: {
             VStack(spacing: 0) {
                 if let issue = playback.issue { issueBanner(AppStrings.text(issue, locale: locale)) }
-                if let issue = model.stateIssue { issueBanner(AppStrings.text("状态暂不可用：", locale: locale) + issue) }
-                if let issue = model.libraryIssue { issueBanner(AppStrings.text("素材读取失败：", locale: locale) + issue) }
+                if let issue = model.stateIssue { issueBanner(AppStrings.text("状态暂不可用：", locale: locale) + AppStrings.text(issue, locale: locale)) }
+                if let issue = model.libraryIssue { issueBanner(AppStrings.text("素材读取失败：", locale: locale) + AppStrings.text(issue, locale: locale)) }
                 if page != .settings, let issue = model.videoBackdropIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
                 if let issue = model.backdropCompatibilityIssue { issueBanner(AppStrings.text(issue, locale: locale)) }
                 if scenePlayer.isActive, let notice = scenePlayer.notice { issueBanner(AppStrings.text(notice, locale: locale)) }

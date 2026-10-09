@@ -865,3 +865,17 @@
 "无法配置渲染器控制管道" = "Unable to configure the renderer control pipe.";
 "向场景渲染器发送命令超时，请停止后重试" = "Sending commands to the scene renderer timed out. Stop the wallpaper, then try again.";
 "场景渲染器报告错误" = "The scene renderer reported an error.";
+
+/* Display playback helper errors. */
+"无法读取视频播放任务" = "Could not read video playback tasks.";
+"停止视频任务失败：" = "Could not stop the video task: ";
+"视频任务尚未退出：" = "The video task has not exited: ";
+"此显示器的播放记录不一致，请停止此屏幕后重试" = "Playback records for this display are inconsistent. Stop playback on this display and try again.";
+"请选择有效的 MP4 文件" = "Choose a valid MP4 file.";
+"目标显示器已断开或无法区分同名显示器" = "The target display is disconnected, or displays with the same name cannot be distinguished.";
+"此显示器有未完成的切换，请停止此屏幕后重试" = "This display has an unfinished switch. Stop playback on this display and try again.";
+"视频启动失败" = "The video could not start.";
+"视频进程未启动" = "The video process did not start.";
+"缺少视频窗口确认工具 phonto-winwait" = "The video window confirmation tool phonto-winwait is missing.";
+"未确认视频窗口，已保留此屏幕原播放" = "The video window could not be confirmed. Previous playback on this display was kept.";
+"视频进程提前退出" = "The video process exited early.";

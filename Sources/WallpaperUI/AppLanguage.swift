@@ -27,6 +27,10 @@ enum AppStrings {
     static func text(_ source: String, language: AppLanguage) -> String {
         guard language == .english, !source.isEmpty else { return source }
         if let exact = englishTable[source] { return exact }
+        // Subprocess errors commonly have a trailing newline. Only normalize
+        // a known message, preserving whitespace in unknown author content.
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed != source, let exact = englishTable[trimmed] { return exact }
         if let formatted = unitFormatted(source) { return formatted }
         if let match = longestPrefixMatch(for: source) {
             return match.value + String(source.dropFirst(match.key.count))

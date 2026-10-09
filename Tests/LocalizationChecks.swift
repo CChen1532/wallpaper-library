@@ -20,6 +20,17 @@ import Foundation
         check(AppStrings.text("关于", language: .chinese) == "关于", "中文界面原样返回")
         check(AppStrings.text("未收录的自定义文案", language: .english) == "未收录的自定义文案", "未收录文案原样返回而不是空串")
         check(AppStrings.text("", language: .english).isEmpty, "空串不触发查找")
+        let displayFailure = "此显示器的播放记录不一致，请停止此屏幕后重试"
+        let translatedDisplayFailure = "Playback records for this display are inconsistent. Stop playback on this display and try again."
+        check(AppStrings.text(displayFailure, language: .english) == translatedDisplayFailure,
+              "视频控制脚本的已知错误可翻译")
+        check(AppStrings.text(displayFailure + "\n", language: .english) == translatedDisplayFailure,
+              "子进程末尾换行不阻断已知错误的精确翻译")
+        let ownedLabel = "local.wallpaper.phonto.fixture.a"
+        check(AppStrings.text("停止视频任务失败：" + ownedLabel, language: .english)
+              == "Could not stop the video task: " + ownedLabel, "错误前缀翻译后保留运行时任务标识")
+        check(AppStrings.text("  未收录的作者原文\n", language: .english) == "  未收录的作者原文\n",
+              "未知作者内容的原始空白保持不变")
 
         print("本地化运行时检查通过：\(count) 项")
     }
