@@ -1,5 +1,5 @@
 #!/bin/bash
-# 快速更新已安装的应用：只替换主程序、版本信息、界面文案和墙纸切换脚本，其余组件沿用已安装版本。
+# 快速更新已安装的应用：替换主程序、版本信息、界面文案及播放控制脚本，其余组件沿用已安装版本。
 # 始终使用固定签名身份重签（与 build-app.sh 相同），让辅助功能、文件夹访问等授权在更新后保留。
 # 用法：bash scripts/install-app.sh [/Applications/WallpaperUI.app]
 set -euo pipefail
@@ -22,17 +22,14 @@ fi
 
 swift build -c release --product WallpaperUI
 if pgrep -f "$app/Contents/MacOS/WallpaperUI" >/dev/null; then
-    osascript -e "tell application \"$app\" to quit"
-    for _ in $(seq 1 20); do pgrep -f "$app/Contents/MacOS/WallpaperUI" >/dev/null || break; sleep 1; done
-    if pgrep -f "$app/Contents/MacOS/WallpaperUI" >/dev/null; then
-        echo "应用仍在退出（可能正在恢复原壁纸），请稍后重试。" >&2
-        exit 1
-    fi
+    echo "请先退出壁纸应用，等待原壁纸恢复后重试。" >&2
+    exit 1
 fi
 cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp -R Resources/en.lproj Resources/zh-Hans.lproj "$app/Contents/Resources/"
 cp 工具/快速墙纸/wallpaper-switch.py "$app/Contents/Resources/WallpaperSwitch/wallpaper-switch.py"
+cp 工具/phonto/phonto-wall 工具/phonto/display-control.py "$app/Contents/Resources/Phonto/"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library "$app"
 codesign --verify --deep --strict "$app"
 requirement="$(codesign -d -r- "$app" 2>&1 | grep 'designated =>')"

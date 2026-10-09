@@ -30,6 +30,12 @@ import UniformTypeIdentifiers
         let manifestData = Data(#"{"format":"wallpaperui.gravity.v1","preset":"efficient"}"#.utf8)
         try manifestData.write(to: manifest)
         check((try GravityScene.load(manifest))?.preset == .efficient, "原生引力包仅接受声明式预设")
+        for whitespace in [" ", "\n\t", "\r\n  "] {
+            try Data((whitespace + String(decoding: manifestData, as: UTF8.self) + "\n").utf8).write(to: manifest)
+            check((try GravityScene.load(manifest))?.preset == .efficient,
+                  "声明式引力 JSON 允许合法的前导和末尾空白")
+        }
+        try manifestData.write(to: manifest)
         let nativeRenderer = nativeRoot.appendingPathComponent("GravitySceneRenderer")
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: nativeRenderer)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: nativeRenderer.path)
