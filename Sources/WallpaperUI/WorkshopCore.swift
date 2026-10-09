@@ -4,7 +4,7 @@ enum WorkshopFailure: Error, LocalizedError {
     case invalidLink, unavailable, wrongApp, network, responseTooLarge, unsupportedProject
     case invalidProject, unsafeFiles, componentMissing, componentInvalid, componentChanged
     case invalidAccount, passwordRequired, loginFailed, downloadFailed, timedOut, launchFailed, busy
-    case pageChanged, subscriptionLogin, subscriptionLimit
+    case pageChanged, subscriptionLogin, subscriptionLimit, incompatibleArchitecture
     var errorDescription: String? {
         switch self {
         case .invalidLink: return "请输入有效的创意工坊链接或数字 ID。"
@@ -23,12 +23,28 @@ enum WorkshopFailure: Error, LocalizedError {
         case .loginFailed: return "Steam 登录失败，请检查账号、密码或 Steam Guard 验证。"
         case .downloadFailed: return "下载未完成。请确认账号拥有 Wallpaper Engine，并检查网络和项目访问权限。"
         case .timedOut: return "Steam 长时间没有响应，已停止任务，可以重试。"
-        case .launchFailed: return "SteamCMD 无法启动。Apple 芯片 Mac 可能需要 Rosetta，请检查组件是否可运行。"
+        case .launchFailed: return "SteamCMD 无法启动，请检查组件是否完整并有执行权限。"
+        case .incompatibleArchitecture: return "SteamCMD 的处理器架构无法在当前系统运行。请重新准备官方组件；旧版 Intel 组件需要可用的 Rosetta。"
         case .busy: return "请等待当前任务完成或取消后重试。"
         case .pageChanged: return "无法识别 Steam 返回的页面，请刷新后重试。原有列表与文件已保留。"
         case .subscriptionLogin: return "请先在此窗口登录 Steam，再打开自己的订阅页面。"
         case .subscriptionLimit: return "订阅列表过大或分页异常，已停止读取，未替换原有列表。"
         }
+    }
+
+    static func launchFailure(for error: Error) -> Self {
+        var current = error as NSError
+        // Process.run may wrap EBADARCH in a Cocoa launch error. Keep this
+        // bounded because NSError's underlying-error graph is untrusted.
+        for _ in 0..<8 {
+            if (current.domain == NSCocoaErrorDomain && current.code == CocoaError.Code.executableArchitectureMismatch.rawValue) ||
+                (current.domain == NSPOSIXErrorDomain && current.code == Int(POSIXErrorCode.EBADARCH.rawValue)) {
+                return .incompatibleArchitecture
+            }
+            guard let underlying = current.userInfo[NSUnderlyingErrorKey] as? Error else { break }
+            current = underlying as NSError
+        }
+        return .launchFailed
     }
 }
 

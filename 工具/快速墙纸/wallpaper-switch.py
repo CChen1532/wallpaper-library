@@ -47,6 +47,13 @@ def macos_release():
         raise CompatibilityMismatch('无法确认 macOS 版本，已停止自动过渡底图') from error
 
 
+def require_supported_release(release=None):
+    release = release or macos_release()
+    if release not in SUPPORTED_RELEASES:
+        raise CompatibilityMismatch('此 macOS 版本或墙纸配置结构未经验证，已停止自动过渡底图')
+    return release
+
+
 def schema_fingerprint(document):
     """Fingerprint only the private nodes edited by an all-Spaces lease."""
     try:
@@ -75,10 +82,10 @@ def schema_fingerprint(document):
 
 
 def check_compatibility(state, document, release=None, expected_schema=None):
-    release = release or macos_release()
+    release = require_supported_release(release)
     fingerprint = schema_fingerprint(document)
     accepted = {expected_schema} if expected_schema else {SUPPORTED_SCHEMA, SUPPORTED_SHARED_SCHEMA}
-    if release not in SUPPORTED_RELEASES or fingerprint not in accepted:
+    if fingerprint not in accepted:
         raise CompatibilityMismatch('此 macOS 版本或墙纸配置结构未经验证，已停止自动过渡底图')
     # Diagnostic evidence only. The bundled constants, not this writable file,
     # authorize future writes. Restoration never depends on this check.
@@ -727,14 +734,18 @@ def main():
         elif args.command == 'restore':
             switcher.restore(only_if_already_restored=args.only_if_already_restored)
         elif args.command == 'check-compatibility':
-            inv = inventory(args.display, args.inventory)
+            # New OS releases must not query private Space APIs or assume the
+            # old store exists before the read-only compatibility rejection.
+            release = require_supported_release()
             _, document = load_store(switcher.store)
-            check_compatibility(state, document)
+            check_compatibility(state, document, release=release)
+            inv = inventory(args.display, args.inventory)
             if inv.get('screen_count') != 1:
                 raise CompatibilityMismatch('自动全空间底图需要单屏并覆盖全部普通桌面')
             validate_all_spaces(document, inv['display_uuid'], [row['uuid'] for row in inv['spaces']])
             print('WALLPAPER_COMPATIBILITY_OK', flush=True)
         else:
+            require_supported_release()
             if args.command == 'timed' and not 0 < args.seconds <= 86400:
                 raise ValueError('自动复原时长必须在 0 到 86400 秒之间')
             if args.display is not None and args.display <= 0:

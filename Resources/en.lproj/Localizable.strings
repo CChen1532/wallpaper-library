@@ -437,7 +437,7 @@
 "正在下载素材…" = "Downloading wallpaper…";
 "下载组件" = "Download Component";
 "已就绪" = "Ready";
-"首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。" = "Downloads require SteamCMD. The component is downloaded from Valve and verified. Apple silicon Macs may need Rosetta.";
+"首次下载需要 SteamCMD。组件从 Valve 获取并校验。" = "Downloads require SteamCMD. The component is downloaded from Valve and verified.";
 "准备下载组件" = "Prepare Download Component";
 "选择已有组件…" = "Choose Existing Component…";
 "正在准备…" = "Preparing…";
@@ -457,7 +457,7 @@
 "Steam 登录失败，请检查账号、密码或 Steam Guard 验证。" = "Steam sign-in failed. Check your account name, password, or Steam Guard verification.";
 "下载未完成。请确认账号拥有 Wallpaper Engine，并检查网络和项目访问权限。" = "The download did not complete. Make sure the account owns Wallpaper Engine, and check the network and item access.";
 "Steam 长时间没有响应，已停止任务，可以重试。" = "Steam stopped responding. The task was stopped; you can try again.";
-"SteamCMD 无法启动。Apple 芯片 Mac 可能需要 Rosetta，请检查组件是否可运行。" = "SteamCMD could not start. Apple silicon Macs may need Rosetta. Check that the component can run.";
+"SteamCMD 无法启动，请检查组件是否完整并有执行权限。" = "SteamCMD could not start. Check that the component is complete and executable.";
 "请等待当前任务完成或取消后重试。" = "Wait for the current task to finish, or cancel it before trying again.";
 "无法完成文件操作，请检查磁盘空间与文件夹权限。" = "The file operation could not be completed. Check free disk space and folder permissions.";
 "通过链接下载场景或 MP4 视频，完成后自动加入资料库。" = "Download scenes or MP4 videos by link and add them to your library automatically.";
@@ -860,3 +860,4 @@
 "显示全部类型" = "Show All Types";
 "晚上好" = "Good evening";
 "类型" = "Type";
+"SteamCMD 的处理器架构无法在当前系统运行。请重新准备官方组件；旧版 Intel 组件需要可用的 Rosetta。" = "SteamCMD cannot run with its current processor architecture. Prepare the official component again. Older Intel components need a working Rosetta installation.";

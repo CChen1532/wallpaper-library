@@ -27,6 +27,23 @@ final class WorkshopEventLog: @unchecked Sendable {
         }
         check(WorkshopURLParser.parseAll("123,123\nhttps://steamcommunity.com/sharedfiles/filedetails/?id=123").count == 1, "deduplicate IDs across URL forms")
 
+        let badArchitecture = NSError(domain: NSPOSIXErrorDomain, code: Int(EBADARCH))
+        for error in [badArchitecture,
+                      NSError(domain: NSCocoaErrorDomain, code: CocoaError.Code.executableArchitectureMismatch.rawValue),
+                      NSError(domain: NSCocoaErrorDomain, code: CocoaError.Code.executableLoad.rawValue,
+                              userInfo: [NSUnderlyingErrorKey: badArchitecture])] {
+            if case .incompatibleArchitecture = WorkshopFailure.launchFailure(for: error) {
+                check(true, "native and wrapped architecture launch errors explain the component runtime requirement")
+            } else { preconditionFailure("architecture mismatch treated as a generic launch failure") }
+        }
+        for error in [NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)),
+                      NSError(domain: NSCocoaErrorDomain, code: CocoaError.Code.fileNoSuchFile.rawValue),
+                      NSError(domain: "fixture.other", code: Int(EBADARCH))] {
+            if case .launchFailed = WorkshopFailure.launchFailure(for: error) {
+                check(true, "unrelated launch errors do not ask for Rosetta")
+            } else { preconditionFailure("ordinary launch failure treated as an architecture mismatch") }
+        }
+
         func payload(_ fields: [String: Any] = [:]) throws -> Data {
             var detail: [String: Any] = ["publishedfileid": "123", "result": 1, "consumer_app_id": 431960, "title": "  Test\nWallpaper  ", "file_size": "4096", "file_type": 0, "preview_url": "https://steamusercontent.com/preview.png"]
             fields.forEach { detail[$0] = $1 }

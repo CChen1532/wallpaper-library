@@ -36,6 +36,7 @@ import Combine
     let sceneRuntimeURL: URL
     let scenePreferences: ScenePreferencesStore
     let sceneUserProperties: SceneUserPropertiesStore
+    private let sceneScriptStorageRoot: URL?
     let scenePreparation: ScenePreparationCache
     let videoBackdropPreferences: VideoBackdropPreferencesStore
     let videoBackdrop: VideoBackdropController
@@ -79,6 +80,7 @@ import Combine
          targetDisplayUUID: String? = nil,
          sceneRuntimeURL: URL? = nil, scenePreferences: ScenePreferencesStore? = nil,
          sceneUserProperties: SceneUserPropertiesStore? = nil,
+         sceneScriptStorageRoot: URL? = nil,
          scenePreparation: ScenePreparationCache? = nil,
          videoBackdropPreferences: VideoBackdropPreferencesStore? = nil,
          videoBackdrop: VideoBackdropController? = nil,
@@ -94,6 +96,7 @@ import Combine
         self.backdropConfiguration = backdropConfiguration
         self.scenePreferences = scenePreferences ?? ScenePreferencesStore()
         self.sceneUserProperties = sceneUserProperties ?? SceneUserPropertiesStore()
+        self.sceneScriptStorageRoot = sceneScriptStorageRoot
         self.scenePreparation = scenePreparation ?? ScenePreparationCache()
         self.videoBackdropPreferences = videoBackdropPreferences ?? VideoBackdropPreferencesStore()
         self.videoBackdrop = videoBackdrop ?? VideoBackdropController()
@@ -144,8 +147,9 @@ import Combine
             if configuration.supportsLiveProperties {
                 let storagePackage = configuration.package
                 let storageDisplay = targetDisplayUUID
+                let storageRoot = sceneScriptStorageRoot
                 let storage = try await Task.detached(priority: .utility) {
-                    try SceneScriptStorage.prepare(package: storagePackage, displayUUID: storageDisplay)
+                    try SceneScriptStorage.prepare(package: storagePackage, root: storageRoot, displayUUID: storageDisplay)
                 }.value
                 configuration.arguments.insert(contentsOf: ["--script-storage-dir", storage.path], at: configuration.arguments.count - 2)
             }
@@ -227,7 +231,7 @@ import Combine
                 try await SpaceBackdropCompatibility.check(backdrop, displayID: configuration.displayID)
                 backdropCompatibilityIssue = nil
             } catch let mismatch as SpaceBackdropCompatibilityFailure {
-                backdropCompatibilityIssue = "场景过渡底图未就绪：" + mismatch.localizedDescription
+                backdropCompatibilityIssue = "已自动关闭场景过渡底图：" + mismatch.localizedDescription
                 // Read-only preflight has made no system writes; playback remains available.
                 configuration.backdrop = nil
             }
@@ -433,7 +437,7 @@ import Combine
         } catch is CancellationError { return }
         catch let mismatch as SpaceBackdropCompatibilityFailure {
             guard revision == stateRevision, !shuttingDown else { return }
-            backdropCompatibilityIssue = "此视频的过渡底图未就绪：" + mismatch.localizedDescription
+            backdropCompatibilityIssue = "已自动关闭此视频的过渡底图：" + mismatch.localizedDescription
             videoBackdropIssue = backdropCompatibilityIssue
             lastVideoBackdropCompatibilityIssue = backdropCompatibilityIssue
         } catch {

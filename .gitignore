@@ -13,3 +13,6 @@ xcuserdata/
 # Python 辅助脚本缓存
 __pycache__/
 *.pyc
+
+# 校验后复制到本机的 NASA GLB 打包输入，不入库
+/Scenes/LunarObservatory/01-Selene/assets/moon.glb

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 快速更新已安装的应用：只替换主程序、界面文案和墙纸切换脚本，其余组件沿用已安装版本。
+# 快速更新已安装的应用：只替换主程序、版本信息、界面文案和墙纸切换脚本，其余组件沿用已安装版本。
 # 始终使用固定签名身份重签（与 build-app.sh 相同），让辅助功能、文件夹访问等授权在更新后保留。
 # 用法：bash scripts/install-app.sh [/Applications/WallpaperUI.app]
 set -euo pipefail
@@ -30,6 +30,7 @@ if pgrep -f "$app/Contents/MacOS/WallpaperUI" >/dev/null; then
     fi
 fi
 cp .build/release/WallpaperUI "$app/Contents/MacOS/WallpaperUI"
+cp Resources/Info.plist "$app/Contents/Info.plist"
 cp -R Resources/en.lproj Resources/zh-Hans.lproj "$app/Contents/Resources/"
 cp 工具/快速墙纸/wallpaper-switch.py "$app/Contents/Resources/WallpaperSwitch/wallpaper-switch.py"
 codesign --force --sign "$SIGN_ID" --identifier local.wallpaper.library "$app"

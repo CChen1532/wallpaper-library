@@ -573,7 +573,7 @@ struct WorkshopView: View {
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("下载组件").font(.headline)
-                    Text("首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。")
+                    Text("首次下载需要 SteamCMD。组件从 Valve 获取并校验。")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button("准备下载组件") { workshop.installComponent() }.disabled(workshop.busy || workshop.connecting)

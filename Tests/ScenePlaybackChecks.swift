@@ -262,6 +262,34 @@ import UniformTypeIdentifiers
         check(mismatchPlayer.isActive && mismatchModel.backdropCompatibilityIssue != nil,
               "只读底图兼容预检失败后仍可播放并保留提示")
         await mismatchPlayer.stop()
+        for (code, output) in [(1, "private Space API unavailable"), (0, "NOT_WALLPAPER_COMPATIBILITY_OK")] {
+            let helper = root.appendingPathComponent("probe-failure-\(code).py")
+            try "import sys; print('\(output)'); sys.exit(\(code))\n"
+                .write(to: helper, atomically: true, encoding: .utf8)
+            let settings = SceneBackdropConfiguration(helper: helper, inventory: root,
+                state: root.appendingPathComponent("probe-failure-\(code)"))
+            let fallbackPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
+            let fallbackModel = LibraryModel(backend: SceneTestBackend(), scenePlayer: fallbackPlayer)
+            var fallbackConfig = configuration("probe-failure-\(code)")
+            fallbackConfig.backdrop = settings
+            await fallbackModel.playPreparedScene(fallbackConfig)
+            try await wait { fallbackPlayer.phase == .playing }
+            check(fallbackPlayer.isActive && !fallbackPlayer.automaticBackdropActive &&
+                  fallbackModel.backdropCompatibilityIssue?.contains(output) == true,
+                  "只读预检失败或无有效确认时，停用底图但继续场景播放")
+            await fallbackPlayer.stop()
+        }
+        for cancelled in [false, true] {
+            do {
+                try await SpaceBackdropCompatibility.check(incompatibleSettings, displayID: 1,
+                    runner: CompatibilityProbeErrorRunner(cancelled: cancelled))
+                preconditionFailure("failed probe accepted")
+            } catch is CancellationError {
+                check(cancelled, "取消兼容性预检继续传播取消，不转成播放降级")
+            } catch is SpaceBackdropCompatibilityFailure {
+                check(!cancelled, "只读预检无法执行或超时仅停用可选底图")
+            }
+        }
         let backend = SceneTestBackend()
         let model = LibraryModel(backend: backend, scenePlayer: coordinated,
                                  sceneRuntimeURL: root.appendingPathComponent("missing-runtime"))
@@ -686,11 +714,13 @@ import UniformTypeIdentifiers
         let settingsPlayer = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
         let settingsModel = LibraryModel(backend: settingsBackend, scenePlayer: settingsPlayer,
             sceneRuntimeURL: runtimeRoot, scenePreferences: store, sceneUserProperties: playbackProperties,
+            sceneScriptStorageRoot: root.appendingPathComponent("script-storage"),
             collection: LibraryCollectionStore(defaults: perItemDefaults),
             backdropConfiguration: { nil })
         await settingsModel.applyScenePreferences(for: packageA)
         check(await settingsBackend.actions.isEmpty, "未播放时应用设置不会启动壁纸")
         await settingsModel.playScene(root: root, name: "1000000001", title: "clock", expectedBytes: 3)
+        if let issue = settingsModel.error { preconditionFailure("Scene settings fixture: \(issue)") }
         try await wait { settingsPlayer.phase == .playing }
         check(settingsPlayer.activePreferences == ScenePreferences(), "播放入口读取选中壁纸自己的配置")
         let firstSceneLog = try String(contentsOf: settingsLog, encoding: .utf8)
@@ -1278,4 +1308,12 @@ private actor VideoCompatibilityBackend: WallpaperBackend {
     func importFiles(_ urls: [URL]) async -> [String] { [] }
     func trash(_ url: URL) async throws { }
     func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
+}
+
+private struct CompatibilityProbeErrorRunner: CommandExecuting {
+    let cancelled: Bool
+    func run(_ executable: String, _ args: [String], timeout: Double) async throws -> CommandResult {
+        if cancelled { throw CancellationError() }
+        throw BackendError.message("fixture read-only compatibility probe timed out")
+    }
 }

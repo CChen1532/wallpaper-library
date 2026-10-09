@@ -43,17 +43,28 @@ struct SpaceBackdropCompatibilityFailure: LocalizedError, Sendable {
 /// structure without changing the desktop. It checks again inside the lease
 /// immediately before the first system write; restore never uses this gate.
 enum SpaceBackdropCompatibility {
-    static func check(_ settings: SceneBackdropConfiguration, displayID: UInt32) async throws {
-        let result = try await CommandRunner().run(RuntimeTools.executable("python3").path, ["-I", "-B", "-W", "ignore::DeprecationWarning",
-            settings.helper.path, "--state-dir", settings.state.path,
-            "--inventory", settings.inventory.path,
-            "check-compatibility", "--display", String(displayID)
-        ], timeout: 10)
-        if result.code == 3 {
-            throw SpaceBackdropCompatibilityFailure(reason: result.message)
+    static func check(_ settings: SceneBackdropConfiguration, displayID: UInt32,
+                      runner: any CommandExecuting = CommandRunner()) async throws {
+        let result: CommandResult
+        do {
+            result = try await runner.run(RuntimeTools.executable("python3").path, ["-I", "-B", "-W", "ignore::DeprecationWarning",
+                settings.helper.path, "--state-dir", settings.state.path,
+                "--inventory", settings.inventory.path,
+                "check-compatibility", "--display", String(displayID)
+            ], timeout: 10)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // This is a read-only probe. A missing private API, helper launch
+            // failure or timeout must disable only the optional backdrop.
+            throw SpaceBackdropCompatibilityFailure(reason: error.localizedDescription)
         }
-        guard result.code == 0, result.text.contains("WALLPAPER_COMPATIBILITY_OK") else {
-            throw BackendError.message(result.message.isEmpty
+        try Task.checkCancellation()
+        let acknowledged = result.text.split(whereSeparator: \.isNewline).contains {
+            $0.trimmingCharacters(in: .whitespaces) == "WALLPAPER_COMPATIBILITY_OK"
+        }
+        guard result.code == 0, acknowledged else {
+            throw SpaceBackdropCompatibilityFailure(reason: result.message.isEmpty
                 ? "无法完成系统墙纸兼容性检查" : result.message)
         }
     }

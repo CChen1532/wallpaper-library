@@ -179,7 +179,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
             try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             process.environment = ["HOME": profile.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8", "TERM": "dumb"]
             process.standardInput = terminal; process.standardOutput = terminal; process.standardError = terminal
-            do { try process.run() } catch { throw WorkshopFailure.launchFailed }
+            do { try process.run() } catch { throw WorkshopFailure.launchFailure(for: error) }
             close(slave); ownsSlave = false
             ownsMaster = false
             session = Session(process: process, master: master, account: account, binary: binary, staging: staging)
