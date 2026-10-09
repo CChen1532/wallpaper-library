@@ -89,18 +89,32 @@ def registered_display_keys():
 
 def record(key):
     try:
-        return json.loads((ROOT / (key + '.json')).read_text())
+        with (ROOT / (key + '.json')).open('rb') as stream:
+            data = stream.read(16_385)
+        if len(data) > 16_384:
+            raise ValueError('视频播放记录过大')
+        return json.loads(data.decode('utf-8'))
     except FileNotFoundError:
         return {}
 
 
 def state(key):
-    value = record(key)
     live = [label for label in labels(key) if pid(label) is not None]
+    try:
+        value = record(key)
+    except (ValueError, UnicodeError):
+        value = None
+    if not isinstance(value, dict):
+        value = {}
+    path = value.get('path')
+    valid_path = (isinstance(path, str) and '\0' not in path and
+                  Path(path).is_absolute() and Path(path).suffix.lower() == '.mp4')
     # Never infer a path from another monitor's global cache.
-    if live and (len(live) != 1 or value.get('label') != live[0]):
+    if live and (len(live) != 1 or value.get('label') != live[0] or not valid_path):
         raise RuntimeError('此显示器的播放记录不一致，请停止此屏幕后重试')
-    return {'running': bool(live), 'lastPath': value.get('path')}
+    # A corrupt last-path cache must not keep a stopped display in an error loop.
+    # Permission/I/O failures still surface; no metadata file is overwritten here.
+    return {'running': bool(live), 'lastPath': path if valid_path else None}
 
 
 def retire_legacy():
@@ -213,8 +227,14 @@ def main(args):
         elif action == 'start' and len(args) == 5:
             start(key, args[3], args[4])
         elif action == 'off' and len(args) == 3:
-            retire_legacy()
-            stop(key)
+            errors = []
+            for cleanup in (retire_legacy, lambda: stop(key)):
+                try:
+                    cleanup()
+                except Exception as error:
+                    errors.append(str(error))
+            if errors:
+                raise RuntimeError('; '.join(errors))
         elif action == 'stop-rotation' and len(args) == 3:
             remove('com.local.phonto-rotate')
         else:

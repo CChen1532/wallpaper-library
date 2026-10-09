@@ -209,6 +209,42 @@ class DisplayControlTests(unittest.TestCase):
                 c.main(['off'])
         self.assertEqual(set(self.jobs), {blocked})
 
+    def test_scoped_off_stops_owner_when_legacy_stop_fails(self):
+        self.start(); self.start(B, 'Monitor B')
+        blocked = 'com.local.phonto-rotate'
+        self.jobs[blocked] = {'pid': 405}
+        original = self.command
+        def command(args, timeout=8):
+            if args[:2] == ['/bin/launchctl', 'remove'] and args[2] == blocked:
+                return subprocess.CompletedProcess(args, 1, '', 'permission denied')
+            return original(args, timeout)
+        with patch.object(c, 'command', command):
+            with self.assertRaises(RuntimeError):
+                c.main(['display', A, 'off'])
+        self.assertEqual(set(self.jobs), {blocked, c.labels(B)[0]})
+
+    def test_idle_corrupt_metadata_does_not_block_playback_recovery(self):
+        for invalid in [b'{', b'[]', b'null', b'0', b'"text"', b'{"path":99}', b'\xff', b'x' * 20_000]:
+            with self.subTest(invalid=invalid[:30]):
+                (c.ROOT / (A + '.json')).write_bytes(invalid)
+                self.assertEqual(c.state(A), {'running': False, 'lastPath': None})
+
+    def test_live_corrupt_metadata_requires_stop_then_recovers(self):
+        for invalid in [b'{', b'[]', b'{"path":99}']:
+            with self.subTest(invalid=invalid):
+                self.start()
+                path = c.ROOT / (A + '.json')
+                path.write_bytes(invalid)
+                with self.assertRaisesRegex(RuntimeError, '播放记录不一致'):
+                    c.state(A)
+                c.main(['display', A, 'off'])
+                self.assertEqual(c.state(A), {'running': False, 'lastPath': None})
+
+    def test_state_permission_failure_still_surfaces(self):
+        with patch.object(c, 'record', side_effect=PermissionError('record access denied')):
+            with self.assertRaisesRegex(PermissionError, 'access denied'):
+                c.state(A)
+
 
 if __name__ == '__main__':
     unittest.main()
