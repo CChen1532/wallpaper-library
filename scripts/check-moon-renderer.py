@@ -21,7 +21,11 @@ def state():send({'cmd':'diagnostics'});return wait('diagnostics')
 def shot(name):
  path=out/(name+'.png');send({'cmd':'snapshot','path':str(path),'token':name});assert wait('snapshot-done')['ok'];assert path.read_bytes()[:8]==b'\x89PNG\r\n\x1a\n';return path
 try:
- ready=wait('scene-ready');assert ready['triangles']>1000000;wait('first-frame-presented');time.sleep(1.2)
+ ready=wait('scene-ready');assert ready['triangles']>1000000;wait('first-frame-presented')
+ first=shot('00-first-frame')
+ quality=pathlib.Path(__file__).resolve().parents[1]/'Tests/MoonFirstFrameChecks.swift'
+ check_env=dict(os.environ, CLANG_MODULE_CACHE_PATH=str(out/'.module-cache'), SWIFT_MODULECACHE_PATH=str(out/'.module-cache'))
+ subprocess.run(['/usr/bin/swift',str(quality),str(first)],env=check_env,check=True)
  a=state();time.sleep(1.2);b=state();assert b['yaw']>a['yaw'] and b['seconds']!=a['seconds'];shot('01-rotating')
  send({'cmd':'power','state':'pause','fps':15});time.sleep(.2);a=state();time.sleep(.6);b=state();assert b['renderedFrames']==a['renderedFrames'] and b['paused']
  assert b['mouseFollow'] is False and b['modeControls']==0
@@ -34,7 +38,7 @@ try:
  send({'cmd':'scroll','delta':-150});time.sleep(.8);assert state()['zoom']>1.05
  send({'cmd':'reset'});time.sleep(.8)
  send({'cmd':'reset'});time.sleep(1);shot('00-preview')
- report={'ready':ready,'state':state(),'checks':['NASA geometry loaded','clock advances','Moon rotates','pause stops rendered frames','resume','drag rotates','wheel zooms','fixed lighting','no mode controls','no pointer following','rotation continues after dragging','PNG capture']}
+ report={'ready':ready,'state':state(),'checks':['NASA geometry loaded','first frame contains Moon without loading overlay','clock advances','Moon rotates','pause stops rendered frames','resume','drag rotates','wheel zooms','fixed lighting','no mode controls','no pointer following','rotation continues after dragging','PNG capture']}
  p.stdin.close();assert p.wait(timeout=8)==0;report['checks'].append('parent EOF cleanup')
  (out/'verification.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
 finally:

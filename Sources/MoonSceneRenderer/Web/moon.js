@@ -125,7 +125,10 @@ new GLTFLoader().load('./assets/moon.glb',gltf=>{
  }});
  const box=new THREE.Box3().setFromObject(source),center=box.getCenter(new THREE.Vector3()),size=box.getSize(new THREE.Vector3());
  const scale=3.9/Math.max(size.x,size.y,size.z);source.position.copy(center).multiplyScalar(-scale);source.scale.setScalar(scale);moon.add(source);
- ready=true;resize();render(0);$('loading').classList.add('done');
+ ready=true;resize();render(0);
+ // A snapshot can be requested as soon as first-frame-presented arrives.
+ // Remove the opaque loader before confirming a composited frame.
+ $('loading').style.display='none';
  native({event:'scene-ready',renderWidth:renderer.domElement.width,renderHeight:renderer.domElement.height,targetFPS:fps,triangles:renderer.info.render.triangles});
- requestAnimationFrame(()=>{native({event:'first-frame-presented'});startLoop();});
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{native({event:'first-frame-presented'});startLoop();}));
 },event=>{if(event.total)$('loading-text').textContent=`正在展开月面 · ${Math.round(event.loaded/event.total*100)}%`;},error=>fail('NASA 模型加载失败：'+error.message));
