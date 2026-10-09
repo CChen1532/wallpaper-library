@@ -49,6 +49,7 @@ import Combine
     @Published private(set) var authenticationRequired = false
     @Published private(set) var activeDownloadID: String?
     private var installedJob: Task<Void, Never>?
+    private var inventoryObservation: AnyCancellable?
     private var subscriptionCacheJob: Task<Void, Never>?
     private var installedRevision = UUID()
     let storage: WorkshopStorage
@@ -246,6 +247,7 @@ import Combine
          component: URL? = nil, metadata: @escaping ([String]) async throws -> [WorkshopItem] = { try await WorkshopMetadata.fetch(ids: $0) },
          browse: @escaping (WorkshopBrowse.Request, Int) async throws -> WorkshopBrowse.Page = { try await WorkshopBrowse.fetch(request: $0, page: $1) },
          subscriptionCache: (() async -> WorkshopSubscriptionSnapshot?)? = nil,
+         inventoryChanges: AnyPublisher<Void, Never>? = nil,
          onImported: @escaping (URL) async -> Void = { _ in }) {
         self.storage = storage; self.defaults = defaults; self.onImported = onImported
         self.findExisting = findExisting
@@ -255,6 +257,12 @@ import Combine
         filters = defaults.data(forKey: "workshopBrowseFilters").flatMap { try? JSONDecoder().decode(WorkshopFilters.self, from: $0) } ?? .init()
         account = defaults.string(forKey: "workshopAccount") ?? ""
         self.component = component ?? WorkshopComponent.locate(storage: storage, custom: defaults.string(forKey: "workshopSteamCMD"))
+        // The Workshop can appear before the first shared-library scan ends.
+        // Refresh the page's cached status when that inventory is published.
+        inventoryObservation = inventoryChanges?.sink { [weak self] in
+            guard let self, !self.shuttingDown else { return }
+            self.refreshDownloadedStatus()
+        }
         subscriptionCacheJob = Task { [weak self] in
             let cached: WorkshopSubscriptionSnapshot?
             if let subscriptionCache {

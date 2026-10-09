@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Combine
 
 @main struct WorkshopManagementChecks {
     @MainActor static func main() async throws {
@@ -186,6 +187,43 @@ import Darwin
         check(!model.connectionReady && model.connectionError == WorkshopFailure.passwordRequired.localizedDescription, "automatic auth failure asks user to sign in")
         await model.shutdown()
         check(try fm.contentsOfDirectory(atPath: root.appendingPathComponent("App/Staging").path).isEmpty, "preconnect shutdown removes temporary staging")
+
+        let inventoryChanged = PassthroughSubject<Void, Never>()
+        var externalAvailable = false, externalLookups = 0
+        let externalCard = WorkshopItem(id: "860", title: "External library", previewURL: nil, bytes: 1, tags: ["Video"])
+        let externalCards = WorkshopModel(storage: storage, defaults: defaults, findExisting: { _ in
+            externalLookups += 1
+            return externalAvailable ? library.appendingPathComponent("860") : nil
+        }, browse: { _, page in
+            .init(items: [externalCard], number: page, pages: 1, total: 1)
+        }, inventoryChanges: inventoryChanged.eraseToAnyPublisher())
+        externalCards.search()
+        let initialInventoryDeadline = Date().addingTimeInterval(3)
+        while externalCards.browseBusy || externalLookups == 0, Date() < initialInventoryDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        check(!externalCards.browseBusy && externalLookups > 0 && externalCards.cardState(externalCard) == .available,
+              "Workshop may finish browsing before an external library is discovered")
+        externalAvailable = true
+        inventoryChanged.send()
+        let discoveredDeadline = Date().addingTimeInterval(3)
+        while externalCards.cardState(externalCard) != .downloaded, Date() < discoveredDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        check(externalCards.cardState(externalCard) == .downloaded,
+              "completed inventory scan updates downloaded marks without reopening the Workshop")
+        externalCards.downloadFromCard(externalCard)
+        check(externalCards.pendingDownload == nil && externalCards.activeDownloadID == nil && !externalCards.taskBusy,
+              "newly discovered external projects cannot enter the download queue")
+        externalAvailable = false
+        inventoryChanged.send()
+        let removedDeadline = Date().addingTimeInterval(3)
+        while externalCards.cardState(externalCard) != .available, Date() < removedDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        check(externalCards.cardState(externalCard) == .available,
+              "removed external projects clear their downloaded marks on the next inventory publication")
+        await externalCards.shutdown()
 
         let existingCard = WorkshopItem(id: "401", title: "Existing", previewURL: nil, bytes: 1, tags: ["Video"])
         let directCard = WorkshopItem(id: "501", title: "Direct", previewURL: nil, bytes: 1, tags: ["Video"])

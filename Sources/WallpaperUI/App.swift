@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
@@ -19,7 +20,8 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     static let workshop = WorkshopModel(findExisting: { id in
         let candidates = catalog.scenes.map(\.folder) + model.items.map { $0.url.deletingLastPathComponent() }
         return candidates.first { $0.lastPathComponent == id && FileManager.default.fileExists(atPath: $0.appendingPathComponent("project.json").path) }
-    }, libraryBusy: { playback.busy }, onImported: { folder in
+    }, libraryBusy: { playback.busy },
+       inventoryChanges: catalog.$lastScan.dropFirst().map { _ in () }.eraseToAnyPublisher(), onImported: { folder in
         catalog.addFolder(folder, refreshImmediately: false)
         await catalog.refresh()
     })
