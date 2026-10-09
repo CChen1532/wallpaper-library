@@ -157,9 +157,12 @@ public final class MirageSceneChild: @unchecked Sendable {
         }
         // A renderer may close stdin while Process still reports it running.
         // EPIPE must reach Swift as an error instead of terminating the host.
-        guard Darwin.fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+        let descriptor = input.fileHandleForWriting.fileDescriptor
+        let flags = Darwin.fcntl(descriptor, F_GETFL)
+        guard Darwin.fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0, flags >= 0,
+              Darwin.fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
             condition.unlock()
-            throw MirageSceneBridgeError.failed("无法为渲染器控制管道禁用 SIGPIPE")
+            throw MirageSceneBridgeError.failed("无法配置渲染器控制管道")
         }
         started = true
         condition.unlock()
@@ -209,7 +212,8 @@ public final class MirageSceneChild: @unchecked Sendable {
             throw MirageSceneBridgeError.invalid("命令无效或渲染进程已退出")
         }
         let data = Data("{\"cmd\":\"\(command)\"}\n".utf8)
-        try input.fileHandleForWriting.write(contentsOf: data)
+        try writeControl(data, timeout: command == "activate" ? 5 : 0.2,
+                         cancellable: command == "activate")
     }
 
     public func move(to displayID: UInt32) throws {
@@ -221,7 +225,7 @@ public final class MirageSceneChild: @unchecked Sendable {
         observed.remove("display-move-failed")
         condition.unlock()
         let data = Data("{\"cmd\":\"moveDisplay\",\"displayID\":\(displayID)}\n".utf8)
-        try input.fileHandleForWriting.write(contentsOf: data)
+        try writeControl(data)
     }
 
     /// The owning worker serializes these with snapshots, moves and shutdown.
@@ -249,7 +253,7 @@ public final class MirageSceneChild: @unchecked Sendable {
         }
         for line in lines {
             try Task.checkCancellation()
-            try input.fileHandleForWriting.write(contentsOf: line)
+            try writeControl(line)
         }
     }
 
@@ -271,7 +275,33 @@ public final class MirageSceneChild: @unchecked Sendable {
         let data = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys])
         guard data.count <= 65_536 else { throw MirageSceneBridgeError.invalid("场景控制请求过大") }
         try Task.checkCancellation()
-        try input.fileHandleForWriting.write(contentsOf: data + Data([10]))
+        try writeControl(data + Data([10]))
+    }
+
+    /// A stalled renderer can stop draining stdin. Never let a blocking pipe
+    /// write prevent the worker from noticing Stop, Quit or a timed-out child.
+    /// The owning worker still serializes complete JSON lines.
+    private func writeControl(_ data: Data, timeout: TimeInterval = 5, cancellable: Bool = true) throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+        let descriptor = input.fileHandleForWriting.fileDescriptor
+        try data.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                if cancellable { try Task.checkCancellation() }
+                guard ContinuousClock.now < deadline else {
+                    throw MirageSceneBridgeError.failed("向场景渲染器发送命令超时，请停止后重试")
+                }
+                let count = Darwin.write(descriptor, base.advanced(by: offset), buffer.count - offset)
+                if count > 0 { offset += count; continue }
+                let code = count < 0 ? errno : EIO
+                if count < 0 && code == EINTR { continue }
+                guard count < 0 && (code == EAGAIN || code == EWOULDBLOCK) else {
+                    throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
     }
 
     public func takeShortcuts() -> [(String, String)] {
@@ -340,7 +370,7 @@ public final class MirageSceneChild: @unchecked Sendable {
         condition.lock()
         snapshotResponses.removeValue(forKey: token)
         condition.unlock()
-        try input.fileHandleForWriting.write(contentsOf: data + Data([10]))
+        try writeControl(data + Data([10]))
 
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
