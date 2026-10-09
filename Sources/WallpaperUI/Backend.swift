@@ -67,6 +67,10 @@ struct PhontoBackend: WallpaperBackend {
     var directoryOverride: URL?
     var displayUUID: String?
     var displayCommand: String?
+    var discoveryDefaultsSuite: String?
+    private var discoveryDefaults: UserDefaults {
+        discoveryDefaultsSuite.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+    }
     var directory: URL {
         if let directoryOverride { return directoryOverride }
         let legacy = home.appendingPathComponent("Movies/Wallpapers")
@@ -80,7 +84,7 @@ struct PhontoBackend: WallpaperBackend {
         }
         return RuntimeTools.executable("phonto-wall", home: home).path
     }
-    var materialRoots: [URL] { directoryOverride != nil ? [directory] : MaterialDiscovery.roots(home: home) }
+    var materialRoots: [URL] { directoryOverride != nil ? [directory] : MaterialDiscovery.roots(home: home, defaults: discoveryDefaults) }
     func library() async throws -> [Wallpaper] {
         let roots = materialRoots
         let candidates = try await Task.detached(priority: .utility) {
@@ -265,14 +269,19 @@ struct PhontoBackend: WallpaperBackend {
                 let probe = try await runner.run(RuntimeTools.executable("ffprobe", home: home).path, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source.path])
                 guard probe.code == 0, let parsed = try? JSONDecoder().decode(Probe.self, from: Data(probe.text.utf8)), let first = parsed.streams.first, (first.width ?? 0) > 0 else { throw BackendError.message("视频无法读取，未导入") }
                 // The CLI glob is lowercase *.mp4; normalize imported extensions to match it.
-                let destination = directory.appendingPathComponent(source.deletingPathExtension().lastPathComponent + ".mp4")
+                let stem = String(source.deletingPathExtension().lastPathComponent.drop(while: { $0 == "." }))
+                let destination = directory.appendingPathComponent((stem.isEmpty ? "Wallpaper" : stem) + ".mp4")
                 guard !FileManager.default.fileExists(atPath: destination.path) else { throw BackendError.message("同名文件已存在，已跳过") }
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let staged = directory.appendingPathComponent(".import-" + UUID().uuidString)
                 defer { try? FileManager.default.removeItem(at: staged) }
                 try await Task.detached(priority: .utility) { try FileManager.default.copyItem(at: source, to: staged) }.value
                 try Task.checkCancellation()
+                var visibility = URLResourceValues(); visibility.isHidden = false
+                var visibleStaged = staged
+                try visibleStaged.setResourceValues(visibility)
                 try FileManager.default.moveItem(at: staged, to: destination)
+                if directoryOverride == nil { MaterialDiscovery.setIncluded(true, folder: directory, defaults: discoveryDefaults) }
             } catch { problems.append(source.lastPathComponent + ": " + error.localizedDescription) }
         }
         return problems

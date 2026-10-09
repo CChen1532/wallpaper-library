@@ -1036,7 +1036,10 @@ struct NativeLibraryView: View {
     }
     private func importVideos() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType.mpeg4Movie]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
-        if panel.runModal() == .OK { Task { await model.importFiles(panel.urls) } }
+        if panel.runModal() == .OK {
+            let importer = model, urls = panel.urls
+            Task { await catalog.importVideos(urls, using: importer) }
+        }
     }
     private func syncRotationFields() {
         rotationDraft.sync(interval: model.state.interval, mode: model.state.mode, supportedModes: model.capabilities.rotationModes)

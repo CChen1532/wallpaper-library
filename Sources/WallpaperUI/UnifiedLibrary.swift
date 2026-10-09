@@ -70,6 +70,12 @@ struct SceneCatalogPayload: Decodable {
         updateRoots()
         await refresh()
     }
+    /// Display sessions read the shared inventory. Publish committed imports
+    /// before a user switches screens, instead of waiting for the minute timer.
+    func importVideos(_ urls: [URL], using importer: LibraryModel) async {
+        await importer.importFiles(urls)
+        await refresh()
+    }
     func didTrash(_ target: URL) async {
         await didTrash([target])
     }

@@ -74,7 +74,7 @@ enum SpaceWallpaperSettingsController {
     @MainActor static func activate(displayID: UInt32, imageURL: URL) async throws {
         let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         guard AXIsProcessTrustedWithOptions(prompt) else {
-            throw BackendError.message("自动匹配 Space 底图需要给“视频壁纸”辅助功能权限；请在系统设置→隐私与安全性→辅助功能中允许，然后重试")
+            throw BackendError.message("自动匹配 Space 底图需要辅助功能权限；请在系统设置→隐私与安全性→辅助功能中允许此应用，然后重试")
         }
         guard let screen = NSScreen.screens.first(where: {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID

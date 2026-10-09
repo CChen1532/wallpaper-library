@@ -56,6 +56,21 @@ struct InventoryBackend: WallpaperBackend {
     func trash(_ url: URL) async throws {}
     func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
 }
+struct ImportInventoryBackend: WallpaperBackend {
+    let destination: URL
+    var capabilities: BackendCapabilities { .init(name: "import-fixture", libraryDirectory: destination, canImport: true) }
+    func library() async throws -> [Wallpaper] {
+        try MaterialDiscovery.scan(destination).filter { $0.kind == .video }.map { Wallpaper(url: $0.url) }
+    }
+    func state() async throws -> PlaybackState { .init() }
+    func perform(_ action: Action) async throws {}
+    func importFiles(_ urls: [URL]) async -> [String] {
+        do { for url in urls { try FileManager.default.copyItem(at: url, to: destination.appendingPathComponent(url.lastPathComponent)) }; return [] }
+        catch { return [error.localizedDescription] }
+    }
+    func trash(_ url: URL) async throws {}
+    func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
+}
 @main struct UnifiedLibraryChecks {
     @MainActor static func main() async throws {
         let fm = FileManager.default
@@ -143,6 +158,23 @@ struct InventoryBackend: WallpaperBackend {
         singleCatalog.addFolder(root, refreshImmediately: false)
         await singleCatalog.refresh()
         check(await singleCounter.reads == 1, "导入注册和显式刷新只执行一次资料库扫描")
+
+        let importedVideos = root.appendingPathComponent("imported-videos")
+        try fm.createDirectory(at: importedVideos, withIntermediateDirectories: true)
+        let externalVideo = root.appendingPathComponent("to-import.mp4")
+        try Data([1,2,3]).write(to: externalVideo)
+        let importingBackend = ImportInventoryBackend(destination: importedVideos)
+        let sharedInventory = LibraryModel(backend: importingBackend, collection: LibraryCollectionStore(defaults: defaults), backdropConfiguration: { nil })
+        let importScreens = [SceneDisplay(id: 1, uuid: UUID().uuidString, name: "A"), SceneDisplay(id: 2, uuid: UUID().uuidString, name: "B")]
+        let importPlayback = DisplayPlayback(library: sharedInventory, displayProvider: { importScreens }, makeSession: { _ in
+            LibraryModel(backend: importingBackend, collection: sharedInventory.collection, backdropConfiguration: { nil })
+        }, recover: { true })
+        await importPlayback.start()
+        let importCatalog = UnifiedLibrary(model: sharedInventory, roots: { [importedVideos] }, defaults: defaults)
+        let selectedImporter = importPlayback.selected
+        await importCatalog.importVideos([externalVideo], using: selectedImporter)
+        check(selectedImporter.error == nil && sharedInventory.items.count == 1 && importPlayback.sessions.values.allSatisfy { $0.items == sharedInventory.items },
+              "视频导入完成即更新共享图库和其他显示器，无需等待定时扫描")
 
         let removable = UnifiedLibrary(model: model, roots: {
             MaterialDiscovery.roots(home: root, defaults: defaults).filter { $0.path == root.path }

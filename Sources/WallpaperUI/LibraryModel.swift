@@ -643,7 +643,18 @@ import Combine
             let folder = item.url.deletingLastPathComponent()
             await playScene(root: folder.deletingLastPathComponent(), name: folder.lastPathComponent,
                             title: item.title, expectedBytes: item.expectedBytes, fromSelectionRotation: true)
-            return error == nil && isActiveScene(item.url)
+            guard error == nil, isActiveScene(item.url) else { return false }
+            let requestID = scenePlayer.playbackRequestID
+            // The interval starts after actual desktop activation. Stopping a
+            // rotation only abandons this wait; it never cancels a half-applied
+            // backend switch, and disconnect can promptly proceed to cleanup.
+            while selectionRotation.active, scenePlayer.playbackRequestID == requestID,
+                  scenePlayer.phase == .starting {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return false }
+            }
+            if selectionRotation.active, scenePlayer.playbackRequestID == requestID,
+               scenePlayer.phase == .failed { error = scenePlayer.error }
+            return error == nil && scenePlayer.hasActivated(requestID: requestID)
         case .video:
             await perform(.play(item.url.path), fromSelectionRotation: true)
             return error == nil && state.currentPath.map { LibraryCollectionStore.identity(URL(fileURLWithPath: $0)) == item.id } == true

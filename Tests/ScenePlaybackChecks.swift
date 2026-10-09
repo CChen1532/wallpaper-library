@@ -657,10 +657,14 @@ import UniformTypeIdentifiers
         log="$(dirname "$0")/settings.log"
         printf 'start\n' >> "$log"
         printf '%s\n' "$@" >> "$log"
-        printf '%s\n' '{"event":"scene-ready"}' '{"event":"first-frame-presented"}'
+        printf '%s\n' '{"event":"scene-ready"}'
+        while [ -f "$(dirname "$0")/wait-first-frame" ]; do /bin/sleep 0.02; done
+        printf '%s\n' '{"event":"first-frame-presented"}'
         while IFS= read -r command; do
           case "$command" in
-            '{"cmd":"activate"}') printf '%s\n' '{"event":"activated"}' ;;
+            '{"cmd":"activate"}')
+              if [ -f "$(dirname "$0")/fail-activation" ]; then exit 7; fi
+              printf '%s\n' '{"event":"activated"}' ;;
             '{"cmd":"deactivate"}') printf '%s\n' '{"event":"deactivated"}' ;;
             '{"cmd":"quit"}') exit 0 ;;
           esac
@@ -799,6 +803,34 @@ import UniformTypeIdentifiers
         await settingsModel.perform(.off)
         check(!settingsModel.selectionRotation.active && !settingsPlayer.isActive && !settingsModel.state.running,
               "全部关闭同时停止所选轮播与当前引擎")
+        let frameGate = renderer.deletingLastPathComponent().appendingPathComponent("wait-first-frame")
+        try Data([1]).write(to: frameGate)
+        settingsModel.startSelectedRotation(interval: 60, mode: "next")
+        try await wait { settingsPlayer.phase == .starting && !settingsModel.busy }
+        try await Task.sleep(for: .milliseconds(150))
+        check(settingsModel.selectionRotation.switching && settingsModel.selectionRotation.currentID == nil,
+              "轮播等待首帧激活后才确认当前项和开始间隔计时")
+        try FileManager.default.removeItem(at: frameGate)
+        try await wait { settingsPlayer.phase == .playing && settingsModel.selectionRotation.currentID == rotationScene.id && !settingsModel.selectionRotation.switching }
+        await settingsModel.perform(.off)
+        try Data([1]).write(to: frameGate)
+        settingsModel.startSelectedRotation(interval: 60, mode: "next")
+        try await wait { settingsPlayer.phase == .starting && !settingsModel.busy }
+        let stopPreparingRotation = ContinuousClock.now
+        await settingsModel.disconnectDisplay()
+        // This fixture deliberately blocks stdin before its first frame. Allow
+        // the existing graceful-stop and terminate bounds, but never its 60 s readiness timeout.
+        check(ContinuousClock.now - stopPreparingRotation < .seconds(8) && !settingsPlayer.isActive && !settingsModel.selectionRotation.switching,
+              "断开显示器及时停止等待首帧的轮播，不等待渲染器超时")
+        try FileManager.default.removeItem(at: frameGate)
+        let activationFailure = renderer.deletingLastPathComponent().appendingPathComponent("fail-activation")
+        try Data([1]).write(to: activationFailure)
+        settingsModel.startSelectedRotation(interval: 60, mode: "next")
+        try await wait { settingsPlayer.phase == .failed && !settingsModel.selectionRotation.active }
+        check(settingsModel.selectionRotation.currentID == nil && settingsModel.selectionRotation.issue == settingsPlayer.error,
+              "轮播激活失败立即停止并保留渲染器原因，不误报当前壁纸")
+        try FileManager.default.removeItem(at: activationFailure)
+        await settingsModel.perform(.off)
         // Automatic backdrop lifecycle uses an isolated fixture, never macOS settings.
         var backdropConfig = SceneBackdropConfiguration(helper: root.appendingPathComponent("fake.py"), inventory: root, state: root.appendingPathComponent("backdrop"))
         let backdrop = BackdropFixture()
@@ -1204,7 +1236,7 @@ import UniformTypeIdentifiers
         print("\(count) Scene integration checks passed")
     }
 
-    @MainActor static func wait(file: StaticString = #filePath, line: UInt = #line, _ predicate: () -> Bool) async throws {
+    @MainActor static func wait(file: StaticString = #file, line: UInt = #line, _ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !predicate() {
             precondition(ContinuousClock.now < deadline, "condition timed out", file: file, line: line)
