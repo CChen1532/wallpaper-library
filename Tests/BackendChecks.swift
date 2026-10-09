@@ -79,6 +79,30 @@ import ImageIO
         check(videoPreferences.preferences(for: firstVideo).enabled &&
               videoPreferences.preferences(for: secondVideo).frameSecond == 0,
               "用户调整截帧时间不影响其他视频")
+
+        // Corrupt MP4 duration metadata may remain finite while exceeding Int.
+        // Refresh must handle it even when automatic backdrops are disabled.
+        let durationVideo = fixture.appendingPathComponent("duration.mp4")
+        let durationBackend = DurationBackend(video: durationVideo)
+        let durationModel = LibraryModel(backend: durationBackend,
+            videoBackdropPreferences: videoPreferences, backdropConfiguration: { nil })
+        var durationItem = Wallpaper(url: durationVideo)
+        durationItem.duration = .greatestFiniteMagnitude
+        durationModel.items = [durationItem]
+        videoPreferences.save(.init(enabled: false, frameSecond: Int.max), for: durationVideo)
+        durationModel.finishDisplayStartup(recovered: true)
+        await durationModel.refreshState()
+        check(durationModel.state.currentPath == durationVideo.path && durationModel.stateIssue == nil,
+              "超大但有限的视频时长不会在状态刷新时导致整数转换崩溃")
+        check(VideoBackdropPreferences.maximumFrameSecond(duration: .greatestFiniteMagnitude) == 30 &&
+              VideoBackdropPreferences.maximumFrameSecond(duration: 31) == 30,
+              "长视频的截帧范围保持在界面支持的前30秒")
+        check(VideoBackdropPreferences.maximumFrameSecond(duration: 2.9) == 1 &&
+              VideoBackdropPreferences.maximumFrameSecond(duration: 0.5) == 0,
+              "短视频截帧不超过最后一个完整秒")
+        check([Double.nan, .infinity, -.infinity, -10].allSatisfy {
+            VideoBackdropPreferences.maximumFrameSecond(duration: $0) == 0
+        }, "非有限或负数时长安全回退到首帧")
         let fakeRunner = StateRunner()
         let backend = PhontoBackend(home: fixture, runner: fakeRunner, directoryOverride: media)
         let configDirectory = fixture.appendingPathComponent(".config/phonto")
@@ -382,4 +406,15 @@ private actor CacheMediaRunner: CommandExecuting {
         precondition(CGImageDestinationFinalize(destination))
         return .init(code: 0, text: "")
     }
+}
+
+private struct DurationBackend: WallpaperBackend {
+    let video: URL
+    var capabilities: BackendCapabilities { .init(name: "duration", libraryDirectory: video.deletingLastPathComponent()) }
+    func library() async throws -> [Wallpaper] { [] }
+    func state() async throws -> PlaybackState { .init(running: true, lastPath: video.path) }
+    func perform(_ action: Action) async throws {}
+    func importFiles(_ urls: [URL]) async -> [String] { [] }
+    func trash(_ url: URL) async throws {}
+    func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
 }

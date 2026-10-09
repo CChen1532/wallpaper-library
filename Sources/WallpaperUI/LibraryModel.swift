@@ -412,7 +412,8 @@ import Combine
               (video.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL || items.contains(where: { $0.id == path })) else { return }
         var preferences = videoBackdropPreferences.preferences(for: video)
         if let item = items.first(where: { $0.id == path }) {
-            preferences.frameSecond = min(preferences.frameSecond, max(0, Int(item.duration.rounded(.down)) - 1))
+            preferences.frameSecond = min(preferences.frameSecond,
+                VideoBackdropPreferences.maximumFrameSecond(duration: item.duration))
         }
         if videoBackdrop.matches(video: video, preferences: preferences) {
             videoBackdropIssue = nil

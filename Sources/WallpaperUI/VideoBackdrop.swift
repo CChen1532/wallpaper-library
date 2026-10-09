@@ -8,6 +8,13 @@ import UniformTypeIdentifiers
 struct VideoBackdropPreferences: Codable, Equatable, Sendable {
     var enabled = true
     var frameSecond = 0
+
+    static func maximumFrameSecond(duration: Double) -> Int {
+        guard duration.isFinite, duration >= 1 else { return 0 }
+        // Bound the floating-point value before converting it. A damaged file
+        // can report a finite duration beyond Int.max; the inspector uses 0...30.
+        return Int(min(31, duration.rounded(.down))) - 1
+    }
 }
 
 /// The canonical MP4 path is the preference identity. The decoded frame cache

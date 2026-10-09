@@ -8,7 +8,7 @@ struct VideoInspectorSettings: View {
     @ObservedObject var backdrop: VideoBackdropController
     let video: Wallpaper
 
-    private var frameLimit: Int { max(0, min(30, Int(video.duration.rounded(.down)) - 1)) }
+    private var frameLimit: Int { VideoBackdropPreferences.maximumFrameSecond(duration: video.duration) }
     private var preferences: VideoBackdropPreferences { store.preferences(for: video.url) }
 
     private func value<Value>(_ keyPath: WritableKeyPath<VideoBackdropPreferences, Value>) -> Binding<Value> {
