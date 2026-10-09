@@ -238,7 +238,9 @@ struct WorkshopStorage: Sendable {
         try Task.checkCancellation()
         try validateProject(pending)
         let projectURL = pending.appendingPathComponent("project.json")
-        var project = try JSONSerialization.jsonObject(with: Data(contentsOf: projectURL)) as! [String: Any]
+        guard var project = try JSONSerialization.jsonObject(with: Data(contentsOf: projectURL)) as? [String: Any] else {
+            throw WorkshopFailure.invalidProject
+        }
         let title = WorkshopMetadata.clean(project["title"] as? String ?? "")
         if title.isEmpty || title.allSatisfy({ $0.isASCII && $0.isNumber }) {
             project["title"] = item.title

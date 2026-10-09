@@ -861,3 +861,4 @@
 "晚上好" = "Good evening";
 "类型" = "Type";
 "SteamCMD 的处理器架构无法在当前系统运行。请重新准备官方组件；旧版 Intel 组件需要可用的 Rosetta。" = "SteamCMD cannot run with its current processor architecture. Prepare the official component again. Older Intel components need a working Rosetta installation.";
+"视频源文件在导入时发生变化，请等待写入完成后重试" = "The source video changed during import. Wait for it to finish writing, then try again.";

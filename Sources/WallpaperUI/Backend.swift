@@ -266,8 +266,9 @@ struct PhontoBackend: WallpaperBackend {
                 try Task.checkCancellation()
                 let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                 guard source.pathExtension.lowercased() == "mp4", values.isRegularFile == true, values.isSymbolicLink != true else { throw BackendError.message("仅支持 MP4 普通文件") }
+                let sourceStamp = try MaterialDiscovery.stamp(source)
                 let probe = try await runner.run(RuntimeTools.executable("ffprobe", home: home).path, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source.path])
-                guard probe.code == 0, let parsed = try? JSONDecoder().decode(Probe.self, from: Data(probe.text.utf8)), let first = parsed.streams.first, (first.width ?? 0) > 0 else { throw BackendError.message("视频无法读取，未导入") }
+                guard probe.code == 0, let parsed = try? JSONDecoder().decode(Probe.self, from: Data(probe.text.utf8)), let first = parsed.streams.first, (first.width ?? 0) > 0, (first.height ?? 0) > 0 else { throw BackendError.message("视频无法读取，未导入") }
                 // The CLI glob is lowercase *.mp4; normalize imported extensions to match it.
                 let stem = String(source.deletingPathExtension().lastPathComponent.drop(while: { $0 == "." }))
                 let destination = directory.appendingPathComponent((stem.isEmpty ? "Wallpaper" : stem) + ".mp4")
@@ -277,6 +278,9 @@ struct PhontoBackend: WallpaperBackend {
                 defer { try? FileManager.default.removeItem(at: staged) }
                 try await Task.detached(priority: .utility) { try FileManager.default.copyItem(at: source, to: staged) }.value
                 try Task.checkCancellation()
+                guard try MaterialDiscovery.stamp(source) == sourceStamp else {
+                    throw BackendError.message("视频源文件在导入时发生变化，请等待写入完成后重试")
+                }
                 var visibility = URLResourceValues(); visibility.isHidden = false
                 var visibleStaged = staged
                 try visibleStaged.setResourceValues(visibility)

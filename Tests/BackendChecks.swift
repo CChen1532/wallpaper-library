@@ -213,6 +213,26 @@ import ImageIO
         MaterialDiscovery.setIncluded(false, folder: importedDirectory, defaults: videoDefaults)
         check(!(await importBackend.importFiles([fixture.appendingPathComponent("not-video.txt")])).isEmpty && !MaterialDiscovery.roots(home: importHome, defaults: videoDefaults).map(\.path).contains(importedDirectory.path),
               "全失败导入不会重新启用已移除来源")
+        let changingSource = fixture.appendingPathComponent("changing.mp4")
+        try Data([1]).write(to: changingSource)
+        let changingBackend = PhontoBackend(home: importHome,
+            runner: ReplacingImportRunner(source: changingSource), discoveryDefaultsSuite: videoDefaultsName)
+        let changingProblems = await changingBackend.importFiles([changingSource])
+        check(!changingProblems.isEmpty && !FileManager.default.fileExists(
+            atPath: importedDirectory.appendingPathComponent("changing.mp4").path),
+            "媒体校验期间被替换的源文件不能被标记为成功导入")
+        check(try !FileManager.default.contentsOfDirectory(atPath: importedDirectory.path).contains {
+            $0.hasPrefix(".import-")
+        } && !MaterialDiscovery.roots(home: importHome, defaults: videoDefaults).map(\.path).contains(importedDirectory.path),
+              "发生变化的导入清理临时文件并保留来源移除状态")
+        for response in [#"{"streams":[{"width":8,"height":0}]}"#,
+                         #"{"streams":[{"width":8}]}"#] {
+            let invalidDimensions = PhontoBackend(home: importHome,
+                runner: ImportProbeRunner(response: response), discoveryDefaultsSuite: videoDefaultsName)
+            check(!(await invalidDimensions.importFiles([changingSource])).isEmpty &&
+                  !FileManager.default.fileExists(atPath: importedDirectory.appendingPathComponent("changing.mp4").path),
+                  "缺少有效高度的视频不能通过导入校验")
+        }
         model.selected = "/tmp/new.mp4"
         await controlled.clearLibrary()
         await model.refreshLibrary()
@@ -417,4 +437,21 @@ private struct DurationBackend: WallpaperBackend {
     func importFiles(_ urls: [URL]) async -> [String] { [] }
     func trash(_ url: URL) async throws {}
     func diagnostics() async throws -> BackendDiagnostics { .init(displays: "", status: "") }
+}
+
+private struct ReplacingImportRunner: CommandExecuting {
+    let source: URL
+    func run(_ executable: String, _ args: [String], timeout: Double) async throws -> CommandResult {
+        guard executable.hasSuffix("ffprobe") else { throw BackendError.message("unexpected import fixture command") }
+        try Data([9, 8, 7]).write(to: source, options: .atomic)
+        return .init(code: 0, text: #"{"streams":[{"width":8,"height":8}]}"#)
+    }
+}
+
+private struct ImportProbeRunner: CommandExecuting {
+    let response: String
+    func run(_ executable: String, _ args: [String], timeout: Double) async throws -> CommandResult {
+        guard executable.hasSuffix("ffprobe") else { throw BackendError.message("unexpected import fixture command") }
+        return .init(code: 0, text: response)
+    }
 }
