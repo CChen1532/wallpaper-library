@@ -13,15 +13,19 @@ import WebKit
     private var expectedTotal: Int?
     private var generation = UUID()
     private var timeout: Task<Void, Never>?
+    private var expectedNavigation: WKNavigation?
 
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        // WebKit owns the persistent Steam session under the stable app bundle
-        // identifier. Never copy cookies or passwords into app settings.
-        configuration.websiteDataStore = .default()
-        webView = WKWebView(frame: .zero, configuration: configuration)
+    init(webView: WKWebView? = nil) {
+        if let webView { self.webView = webView }
+        else {
+            let configuration = WKWebViewConfiguration()
+            // WebKit owns the persistent Steam session under the stable app bundle
+            // identifier. Never copy cookies or passwords into app settings.
+            configuration.websiteDataStore = .default()
+            self.webView = WKWebView(frame: .zero, configuration: configuration)
+        }
         super.init()
-        webView.navigationDelegate = self
+        self.webView.navigationDelegate = self
     }
     func open() {
         if webView.url == nil { webView.load(URLRequest(url: WorkshopSubscriptionPage.startURL)) }
@@ -31,7 +35,7 @@ import WebKit
         reading = true; error = nil; page = 1; collected = []; seen = []; profilePath = nil; expectedTotal = nil; generation = UUID()
         load(WorkshopSubscriptionPage.startURL)
     }
-    func cancel() { generation = UUID(); reading = false; timeout?.cancel(); timeout = nil; webView.stopLoading() }
+    func cancel() { generation = UUID(); reading = false; expectedNavigation = nil; timeout?.cancel(); timeout = nil; webView.stopLoading() }
     private func load(_ url: URL) {
         timeout?.cancel()
         let current = generation
@@ -40,7 +44,7 @@ import WebKit
             guard let self, self.reading, self.generation == current else { return }
             self.fail(WorkshopFailure.timedOut)
         }
-        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+        expectedNavigation = webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
     }
     private func fail(_ failure: Error) {
         error = (failure as? WorkshopFailure)?.localizedDescription ?? WorkshopFailure.network.localizedDescription
@@ -54,10 +58,16 @@ import WebKit
         }
         decisionHandler(.allow)
     }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if reading { fail(error) } }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if reading, (error as NSError).code != NSURLErrorCancelled { fail(error) } }
+    private func navigationFailed(_ navigation: WKNavigation?, error: Error) {
+        guard reading, let navigation, navigation === expectedNavigation else { return }
+        let failure = error as NSError
+        guard failure.domain != NSURLErrorDomain || failure.code != NSURLErrorCancelled else { return }
+        fail(error)
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navigationFailed(navigation, error: error) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navigationFailed(navigation, error: error) }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard reading, let url = webView.url else { return }
+        guard reading, let navigation, navigation === expectedNavigation, let url = webView.url else { return }
         guard WorkshopSubscriptionPage.validURL(url), profilePath == nil || profilePath == url.path else { fail(WorkshopFailure.subscriptionLogin); return }
         let current = generation
         // Fixed read-only DOM extraction. Only result cards and pagination are returned, never form fields/cookies.
@@ -69,7 +79,7 @@ import WebKit
         })()
         """
         webView.evaluateJavaScript(script) { [weak self] value, failure in
-            guard let self, self.reading, self.generation == current else { return }
+            guard let self, self.reading, self.generation == current, self.expectedNavigation === navigation else { return }
             self.timeout?.cancel()
             guard failure == nil, let html = value as? String else { self.fail(WorkshopFailure.subscriptionLogin); return }
             do {
