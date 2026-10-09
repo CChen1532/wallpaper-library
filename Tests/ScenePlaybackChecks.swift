@@ -208,6 +208,8 @@ import UniformTypeIdentifiers
         let screen3 = SceneDisplay(id: 3, uuid: "00000000-0000-0000-0000-000000000003", name: "Screen B")
         let player = ScenePlayer(focusProvider: { 1 }, displayProvider: { [screen1] })
         try player.start(configuration("cancel", mode: "stalled"))
+        let cancelledRequest = player.playbackRequestID
+        check(player.isActive && !player.hasActivated(requestID: cancelledRequest), "准备阶段不确认壁纸已设为桌面")
         do { try player.start(configuration("duplicate")); preconditionFailure("duplicate accepted") }
         catch { check(true, "重复开始不创建第二个渲染器") }
         try await wait { !log("cancel").isEmpty }
@@ -216,6 +218,18 @@ import UniformTypeIdentifiers
         check(player.phase == .stopped && !player.isActive && !hasLivePID("cancel"), "就绪前取消会清理拥有的进程")
         check(!log("cancel").contains("\"cmd\":\"activate\"") && ContinuousClock.now - cancelStart < .seconds(2), "准备中取消不会晚激活且快速返回")
         check(log("duplicate").isEmpty, "重复播放没有产生子进程")
+        check(!player.hasActivated(requestID: cancelledRequest), "已取消的准备请求不产生成功确认")
+        try player.start(configuration("cancel"))
+        let readyRequest = player.playbackRequestID
+        try await wait { player.phase == .playing }
+        check(player.hasActivated(requestID: readyRequest) && !player.hasActivated(requestID: cancelledRequest),
+              "同一壁纸重试只确认实际激活的新请求")
+        await player.stop()
+        try player.start(configuration("failed-confirmation", mode: "crash"))
+        let failedRequest = player.playbackRequestID
+        try await wait { player.phase == .failed }
+        check(!player.hasActivated(requestID: failedRequest), "渲染器激活失败不产生成功确认")
+        await player.stop()
 
         let focus = FocusFixture()
         let following = ScenePlayer(focusProvider: { focus.displayID }, displayProvider: { [screen1, screen3] })

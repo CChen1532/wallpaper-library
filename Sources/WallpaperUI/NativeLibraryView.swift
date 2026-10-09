@@ -56,6 +56,8 @@ struct NativeLibraryView: View {
     /// Wallpaper the hero shows when nothing is selected ("换一张").
     @State private var spotlightID: String?
     @State private var toast: (id: UUID, text: String)?
+    @State private var playbackNoticeRequest = UUID()
+    @State private var pendingSceneNotice: (requestID: UUID, title: String)?
     private var query: String { GalleryNavigation.normalizedQuery(search) }
     private var filtered: [Wallpaper] { model.items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) } }
     private var selectedVideo: Wallpaper? {
@@ -183,6 +185,10 @@ struct NativeLibraryView: View {
                 syncRotationFields()
             }
         }
+        .onChange(of: scenePlayer.phase) { _, _ in deliverSceneNotice() }
+        .onChange(of: ObjectIdentifier(scenePlayer)) { _, _ in
+            playbackNoticeRequest = UUID(); pendingSceneNotice = nil
+        }
         .alert("操作提示", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(AppStrings.text(model.error ?? "", locale: locale)) }
         .confirmationDialog("将此壁纸移入废纸篓？", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("移入废纸篓", role: .destructive) {
@@ -247,7 +253,7 @@ struct NativeLibraryView: View {
         return entries.first(where: isPlaying) ?? entries.first
     }
     private func isPlaying(_ entry: GalleryEntry) -> Bool {
-        if let scene = entry.scene { return scenePlayer.isActive && scenePlayer.package == URL(fileURLWithPath: scene.packagePath) }
+        if let scene = entry.scene { return scenePlayer.phase == .playing && scenePlayer.package == URL(fileURLWithPath: scene.packagePath) }
         return model.stateIssue == nil && model.state.running && model.state.currentPath == entry.id
     }
     private func coverSource(_ entry: GalleryEntry) -> CoverSource {
@@ -263,14 +269,35 @@ struct NativeLibraryView: View {
     }
     private func play(_ entry: GalleryEntry) {
         guard canPlay(entry) else { return }
+        let request = UUID()
+        playbackNoticeRequest = request; pendingSceneNotice = nil; toast = nil
+        let requestedModel = model
+        let requestedPlayer = scenePlayer
         Task {
             if let scene = entry.scene {
-                await model.playScene(root: scene.root, name: scene.name, title: scene.title ?? scene.name, expectedBytes: scene.packageBytes)
+                await requestedModel.playScene(root: scene.root, name: scene.name, title: scene.title ?? scene.name, expectedBytes: scene.packageBytes)
+                guard playbackNoticeRequest == request, requestedModel.error == nil,
+                      requestedPlayer.isActive, requestedPlayer.package?.path == entry.id else { return }
+                pendingSceneNotice = (requestedPlayer.playbackRequestID, entry.title)
+                deliverSceneNotice()
             } else if let video = entry.video {
-                await model.perform(.play(video.id))
+                await requestedModel.perform(.play(video.id))
+                guard playbackNoticeRequest == request, requestedModel.error == nil,
+                      requestedModel.stateIssue == nil, requestedModel.state.currentPath == entry.id else { return }
+                showPlaybackNotice(entry.title)
             }
-            if model.error == nil { showToast(AppStrings.text("已设为壁纸", locale: locale) + " · " + entry.title) }
         }
+    }
+    private func deliverSceneNotice() {
+        guard let pending = pendingSceneNotice else { return }
+        guard pending.requestID == scenePlayer.playbackRequestID else { pendingSceneNotice = nil; return }
+        if scenePlayer.hasActivated(requestID: pending.requestID) {
+            pendingSceneNotice = nil
+            showPlaybackNotice(pending.title)
+        } else if scenePlayer.phase != .starting { pendingSceneNotice = nil }
+    }
+    private func showPlaybackNotice(_ title: String) {
+        showToast(AppStrings.text("已设为壁纸", locale: locale) + " · " + title)
     }
     private func showToast(_ text: String) {
         let id = UUID()

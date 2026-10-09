@@ -154,6 +154,9 @@ struct SceneLaunchConfiguration: Sendable {
     }
 
     var isActive: Bool { worker != nil }
+    /// Preparation owns a renderer but has not yet confirmed desktop presentation.
+    var playbackRequestID: UUID { generation }
+    func hasActivated(requestID: UUID) -> Bool { generation == requestID && phase == .playing }
     var supportsControls: Bool { phase == .playing && supportsLiveProperties }
     func togglePause() { if supportsControls { manualPause.toggle() } }
     var connectedDisplays: [SceneDisplay] { displayProvider() }

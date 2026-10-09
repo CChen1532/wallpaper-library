@@ -183,6 +183,19 @@ import ImageIO
         await model.perform(.next)
         await operation.value
         check(await controlled.actionCount == 2, "进行中重复操作被拒绝")
+        await controlled.setActionFailure(true)
+        await model.perform(.play("/tmp/new.mp4"))
+        check(model.error?.contains("fixture playback failure") == true, "播放失败保留本次错误")
+        await controlled.setActionFailure(false)
+        await model.perform(.play("/tmp/new.mp4"))
+        check(model.error == nil && model.state.currentPath == "/tmp/new.mp4", "成功重试清除上一次播放错误")
+        model.error = "previous failure"
+        model.busy = true
+        await model.perform(.play("/tmp/new.mp4"))
+        check(model.error == "previous failure", "被忙碌保护拒绝的操作不会吞掉错误")
+        model.busy = false
+        await model.perform(.off)
+        check(model.error == nil, "停止成功清除旧的操作错误")
         model.state.rotating = true
         model.state.interval = 90
         model.stateIssue = "查询失败"
@@ -298,6 +311,7 @@ actor ControlledBackend: WallpaperBackend {
     var failLibrary = false
     var slow = false
     var actionCount = 0
+    var failAction = false
     func state() async throws -> PlaybackState {
         if firstRead { firstRead = false; return await withCheckedContinuation { pending = $0 } }
         return value
@@ -311,9 +325,11 @@ actor ControlledBackend: WallpaperBackend {
     func clearLibrary() { list = [] }
     func setLibraryFailure() { failLibrary = true }
     func setSlowOperation() { slow = true }
+    func setActionFailure(_ value: Bool) { failAction = value }
     func perform(_ action: Action) async throws {
         actionCount += 1
         if slow { try await Task.sleep(for: .milliseconds(100)) }
+        if failAction { throw BackendError.message("fixture playback failure") }
         value.running = true; value.lastPath = "/tmp/new.mp4"
     }
     func importFiles(_ urls: [URL]) async -> [String] { [] }

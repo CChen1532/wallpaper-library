@@ -448,6 +448,7 @@ import Combine
     }
     private func beginOperation() -> Bool {
         guard !isWorking else { return false }
+        error = nil
         busy = true
         stateRevision += 1 // Invalidate an already-running poll before the mutation.
         return true
@@ -470,6 +471,7 @@ import Combine
         switch action {
         case .stop, .off:
             guard !busy, !shuttingDown else { return }
+            error = nil
             busy = true; stateRevision += 1
         default:
             guard beginOperation() else { return }
