@@ -52,6 +52,41 @@ def labels(key):
     return [f'local.wallpaper.phonto.{key.lower()}.{slot}' for slot in ('a', 'b')]
 
 
+def remove_labels(owned):
+    errors = []
+    for label in owned:
+        try:
+            remove(label)
+        except Exception as error:
+            errors.append(str(error))
+    if errors:
+        raise RuntimeError('; '.join(errors))
+
+
+def registered_display_keys():
+    result = command(['/bin/launchctl', 'list'])
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or '无法读取视频播放任务')
+    keys = set()
+    prefix = 'local.wallpaper.phonto.'
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or not fields[2].startswith(prefix):
+            continue
+        label = fields[2]
+        raw, separator, slot = label[len(prefix):].rpartition('.')
+        if not separator or slot not in ('a', 'b'):
+            continue
+        try:
+            key = str(uuid.UUID(raw)).upper()
+        except ValueError:
+            continue
+        # Only the exact canonical labels generated here belong to this app.
+        if label in labels(key):
+            keys.add(key)
+    return keys
+
+
 def record(key):
     try:
         return json.loads((ROOT / (key + '.json')).read_text())
@@ -70,15 +105,39 @@ def state(key):
 
 def retire_legacy():
     # No pkill: other displays are owned by different labels.
-    for label in ['com.local.phonto-rotate', 'com.local.phonto-wall', 'com.local.phonto-wall.b']:
-        remove(label)
+    remove_labels(['com.local.phonto-rotate', 'com.local.phonto-wall', 'com.local.phonto-wall.b'])
     for path in [HOME / '.config/phonto/rotate.conf', HOME / 'Library/LaunchAgents/com.local.phonto-rotate.plist']:
         path.unlink(missing_ok=True)
 
 
 def stop(key):
-    for label in labels(key):
-        remove(label)
+    remove_labels(labels(key))
+
+
+def stop_all():
+    keys, errors = set(), []
+    for path in ROOT.glob('*.json'):
+        try:
+            keys.add(str(uuid.UUID(path.stem)).upper())
+        except ValueError:
+            continue
+    # An interrupted launch can leave a registered job before its path record
+    # is committed. Include those owners without touching unrelated services.
+    try:
+        keys.update(registered_display_keys())
+    except Exception as error:
+        errors.append(str(error))
+    try:
+        retire_legacy()
+    except Exception as error:
+        errors.append(str(error))
+    for key in sorted(keys):
+        try:
+            stop(key)
+        except Exception as error:
+            errors.append(str(error))
+    if errors:
+        raise RuntimeError('; '.join(errors))
 
 
 def start(key, display, path):
@@ -136,9 +195,7 @@ def main(args):
         ROOT.mkdir(parents=True, exist_ok=True)
         with (ROOT / 'control.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            retire_legacy()
-            for path in ROOT.glob('*.json'):
-                stop(str(uuid.UUID(path.stem)).upper())
+            stop_all()
         return
     if args == ['status']:
         print('Display-scoped playback control')

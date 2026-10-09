@@ -55,6 +55,9 @@ class DisplayControlTests(unittest.TestCase):
             elif verb == 'submit':
                 self.next_pid += 1
                 self.jobs[args[3]] = {'pid': self.next_pid, 'args': args[5:]}
+            elif verb == 'list':
+                out = 'PID\tStatus\tLabel\n' + '\n'.join(
+                    f"{job['pid']}\t0\t{label}" for label, job in self.jobs.items())
         elif args[0] == str(c.PHONTO):
             out = '\n'.join(name + '  ' + name + '  1920x1080' for name in self.attached)
         elif args[0] == str(c.WINWAIT):
@@ -134,6 +137,77 @@ class DisplayControlTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             c.start(A, 'Monitor A', '/missing/video.mp4')
         self.assertFalse(self.jobs)
+
+    def test_all_stop_finds_owned_jobs_without_records(self):
+        self.start(); self.start(B, 'Monitor B')
+        for path in c.ROOT.glob('*.json'):
+            path.unlink()
+        unrelated = 'local.wallpaper.phonto.not-a-uuid.a'
+        self.jobs[unrelated] = {'pid': 400}
+        self.jobs['another.app'] = {'pid': 401}
+        c.main(['off'])
+        self.assertEqual(set(self.jobs), {unrelated, 'another.app'})
+
+    def test_all_stop_ignores_unrelated_record_names(self):
+        self.start(); self.start(B, 'Monitor B')
+        (c.ROOT / 'settings.json').write_text('{}')
+        c.main(['off'])
+        self.assertFalse(self.jobs)
+        self.assertTrue((c.ROOT / 'settings.json').is_file())
+
+    def test_all_stop_continues_after_one_owner_fails(self):
+        self.start(); self.start(B, 'Monitor B')
+        blocked = c.labels(A)[0]
+        original = self.command
+        def command(args, timeout=8):
+            if args[:2] == ['/bin/launchctl', 'remove'] and args[2] == blocked:
+                return subprocess.CompletedProcess(args, 1, '', 'permission denied')
+            return original(args, timeout)
+        with patch.object(c, 'command', command):
+            with self.assertRaisesRegex(RuntimeError, '停止视频任务失败'):
+                c.main(['off'])
+        self.assertEqual(set(self.jobs), {blocked})
+
+    def test_scoped_stop_attempts_both_slots_after_failure(self):
+        self.start()
+        first, second = c.labels(A)
+        self.jobs[second] = {'pid': 402}
+        original = self.command
+        def command(args, timeout=8):
+            if args[:2] == ['/bin/launchctl', 'remove'] and args[2] == first:
+                return subprocess.CompletedProcess(args, 1, '', 'permission denied')
+            return original(args, timeout)
+        with patch.object(c, 'command', command):
+            with self.assertRaises(RuntimeError):
+                c.stop(A)
+        self.assertEqual(set(self.jobs), {first})
+
+    def test_all_stop_still_attempts_records_if_listing_fails(self):
+        self.start(); self.start(B, 'Monitor B')
+        original = self.command
+        def command(args, timeout=8):
+            if args == ['/bin/launchctl', 'list']:
+                return subprocess.CompletedProcess(args, 1, '', 'list denied')
+            return original(args, timeout)
+        with patch.object(c, 'command', command):
+            with self.assertRaisesRegex(RuntimeError, 'list denied'):
+                c.main(['off'])
+        self.assertFalse(self.jobs)
+
+    def test_all_stop_continues_when_legacy_stop_fails(self):
+        self.start(); self.start(B, 'Monitor B')
+        blocked = 'com.local.phonto-rotate'
+        self.jobs[blocked] = {'pid': 403}
+        self.jobs['com.local.phonto-wall.b'] = {'pid': 404}
+        original = self.command
+        def command(args, timeout=8):
+            if args[:2] == ['/bin/launchctl', 'remove'] and args[2] == blocked:
+                return subprocess.CompletedProcess(args, 1, '', 'permission denied')
+            return original(args, timeout)
+        with patch.object(c, 'command', command):
+            with self.assertRaises(RuntimeError):
+                c.main(['off'])
+        self.assertEqual(set(self.jobs), {blocked})
 
 
 if __name__ == '__main__':
