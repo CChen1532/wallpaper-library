@@ -54,6 +54,8 @@ bash scripts/check.sh
 
 Build output goes to `dist/` and intermediate caches to `.build/`; neither is committed. The app is ad-hoc signed and not notarized.
 
+For the complete bundle, set `SCENE_RUNTIME_SOURCE` to a prepared Mirage runtime, `PORTABLE_PYTHON_SOURCE` to a standalone CPython root, and `MEDIA_TOOLS_SOURCE` to a directory containing `phonto`, `phonto-winwait`, `ffmpeg` and `ffprobe`. The Moon model is kept outside Git: download the `sourceFile` in `Scenes/LunarObservatory/asset-manifest.json` to its `localFile` path relative to that manifest, then run `python3 scripts/verify-moon-asset.py`. The model is included in the app bundle.
+
 ## Usage
 
 - Click a video card and choose *Set as Dynamic Wallpaper*; the video then plays on the desktop. Previous, Random and Next are in the footer.

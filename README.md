@@ -53,6 +53,8 @@ bash scripts/check.sh
 
 构建产物写入 `dist/`，中间缓存写入 `.build/`，两者都不入库。应用使用本地 ad-hoc 签名，尚未公证。
 
+完整打包需要通过 `SCENE_RUNTIME_SOURCE` 指定已准备的 Mirage 运行时，通过 `PORTABLE_PYTHON_SOURCE` 指定独立 CPython 根目录，通过 `MEDIA_TOOLS_SOURCE` 指定包含 `phonto`、`phonto-winwait`、`ffmpeg` 和 `ffprobe` 的目录。月球模型不入源码库：按 `Scenes/LunarObservatory/asset-manifest.json` 的 `sourceFile` 下载到 `localFile` 对应位置，再运行 `python3 scripts/verify-moon-asset.py` 校验；模型会随应用包分发。
+
 ## 使用
 
 - 单击视频卡片，在详情区点「设为动态壁纸」，视频就会在桌面背景播放；底部有上一段、随机、下一段。
