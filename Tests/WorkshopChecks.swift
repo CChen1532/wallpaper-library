@@ -49,6 +49,18 @@ final class WorkshopEventLog: @unchecked Sendable {
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: root) }
         let storage = WorkshopStorage(root: root.appendingPathComponent("App"))
+        let architectureError = NSError(domain: NSPOSIXErrorDomain, code: Int(EBADARCH))
+        check(WorkshopSteamProcess.launchFailure(for: architectureError) == .incompatibleArchitecture,
+              "architecture launch errors explain Rosetta recovery")
+        check(WorkshopSteamProcess.launchFailure(for: NSError(domain: NSCocoaErrorDomain, code: NSExecutableArchitectureMismatchError)) == .incompatibleArchitecture,
+              "Cocoa architecture mismatch gets the same recovery")
+        check(WorkshopSteamProcess.launchFailure(for: NSError(domain: NSCocoaErrorDomain, code: NSExecutableLoadError,
+              userInfo: [NSUnderlyingErrorKey: architectureError])) == .incompatibleArchitecture,
+              "wrapped posix_spawn architecture error keeps its recovery")
+        for code in [ENOENT, EACCES, ENOEXEC] {
+            check(WorkshopSteamProcess.launchFailure(for: NSError(domain: NSPOSIXErrorDomain, code: Int(code))) == .launchFailed,
+                  "other launch failures do not incorrectly prescribe Rosetta")
+        }
         let logExecutable = root.appendingPathComponent("log-boundary-steamcmd")
         try fm.copyItem(at: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Tests/Fixtures/workshop-log-boundary-fixture.py"), to: logExecutable)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: logExecutable.path)
@@ -250,6 +262,13 @@ final class WorkshopEventLog: @unchecked Sendable {
               "repeated preconnect and first download share one authenticated process")
         await warm.closeSession()
         check(kill(warmPID, 0) == -1, "closing preconnected session reaps child")
+        let bootstrap = WorkshopSteamProcess(), bootstrapStage = try storage.makeStaging()
+        try await bootstrap.connect(binary: executable, account: "bootstrap_user", staging: bootstrapStage, timeout: 3) { _ in }
+        check(try String(contentsOf: bootstrapStage.appendingPathComponent("launches"), encoding: .utf8).split(separator: "\n").count == 3,
+              "preconnect tolerates bootstrap assertion warnings and both self-update restarts")
+        let bootstrapPID = Int32(try String(contentsOf: bootstrapStage.appendingPathComponent("child.pid"), encoding: .utf8))!
+        await bootstrap.closeSession()
+        check(kill(bootstrapPID, 0) == -1, "updated preconnect process is reaped on close")
         for account in ["test_user", "prompt_user", "failed_user"] {
             let cold = WorkshopSteamProcess(), stage = try storage.makeStaging()
             do {
@@ -257,7 +276,8 @@ final class WorkshopEventLog: @unchecked Sendable {
                 fatalError("unauthenticated connection accepted")
             } catch {
                 if account == "test_user" { check(error as? WorkshopFailure == .passwordRequired, "expired cached login requests password without retaining it") }
-                else { check(true, "bare prompt or failed user info never reports authenticated") }
+                else if account == "failed_user" { check(error as? WorkshopFailure == .loginFailed, "failed user info still rejects authentication") }
+                else { check(error as? WorkshopFailure == .timedOut, "bare prompt never reports authenticated") }
             }
             let pid = Int32(try String(contentsOf: stage.appendingPathComponent("child.pid"), encoding: .utf8))!
             check(kill(pid, 0) == -1, "failed preconnect closes child")

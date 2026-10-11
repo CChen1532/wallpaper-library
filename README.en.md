@@ -32,6 +32,7 @@ A macOS 15+ SwiftUI app that turns videos and Wallpaper Engine scenes into one l
 ## Requirements
 
 - macOS 15.0 or later
+- Workshop downloads use the Intel version of SteamCMD. On Apple silicon, run `softwareupdate --install-rosetta` in Terminal and follow the installation prompts before connecting to Steam. See [Apple's installation instructions](https://support.apple.com/102527).
 - Swift 5.9+ / Apple Command Line Tools to build (the SwiftUI part has no external package dependencies)
 - A working Mirage Scene runtime (GPL-3.0, see below) to build the complete app
 

@@ -13,6 +13,16 @@ account = args[args.index('+login') + 1]
 (stage / 'child.pid').write_text(str(os.getpid()))
 with (stage / 'launches').open('a') as counter:
     counter.write(str(os.getpid()) + '\n')
+if item is None and account in ('cached_user', 'bootstrap_user'):
+    print("python3: warning: confstr() failed with code 5; using /tmp instead", flush=True)
+if item is None and account == 'bootstrap_user':
+    marker = stage / 'updated'
+    attempts = int(marker.read_text()) if marker.exists() else 0
+    marker.write_text(str(attempts + 1))
+    if attempts < 2:
+        print('Assertion Failed: Missing String for EOSType (-2)', flush=True)
+        print('Update complete, launching...', flush=True)
+        sys.exit(42)
 if item is None and account in ('prompt_user', 'failed_user', 'slow_user'):
     if account == 'failed_user':
         print('Logged in OK\nWaiting for user info...FAILED. Timed out.\nOK', flush=True)
@@ -39,7 +49,7 @@ if item in ('104', '105'):
     print('Downloading item', flush=True)
     while True:
         time.sleep(1)
-if account != 'cached_user':
+if account not in ('cached_user', 'bootstrap_user'):
     print('Pass', end='', flush=True)
     time.sleep(0.05)
     print('word:', end='', flush=True)

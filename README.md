@@ -31,6 +31,7 @@ macOS 15+ 原生 SwiftUI 动态壁纸库：把视频和 Wallpaper Engine 场景�
 ## 系统要求
 
 - macOS 15.0 或更高版本
+- 创意工坊下载使用 Intel 版 SteamCMD；Apple 芯片 Mac 需要先安装 Rosetta。在终端运行 `softwareupdate --install-rosetta` 并按提示完成安装，再连接 Steam。详见 [Apple 安装说明](https://support.apple.com/102527)。
 - 构建需要 Swift 5.9+ / Apple Command Line Tools（SwiftUI 部分不依赖外部包）
 - 构建完整应用还需要可用的 Mirage Scene 运行时（GPL-3.0，见下）
 

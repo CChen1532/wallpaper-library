@@ -392,7 +392,8 @@ import Combine
                     if error is CancellationError || Task.isCancelled { syncResults[value.id] = "待同步"; break }
                     syncResults[value.id] = "同步失败，可重试"
                     record(error)
-                    if let failure = error as? WorkshopFailure, failure == .loginFailed || failure == .launchFailed { break }
+                    if let failure = error as? WorkshopFailure,
+                       failure == .loginFailed || failure == .launchFailed || failure == .incompatibleArchitecture { break }
                 }
             }
         }

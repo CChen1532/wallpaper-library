@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 
 enum WorkshopComponent {
+    static let rosettaHelpURL = URL(string: "https://support.apple.com/102527")!
     // Valve's macOS bootstrap archive, checked against the HTTPS source on 2026-09-27.
     // Refuse a changed archive until its contents have been reviewed and this pin updated.
     static let bootstrapSHA256 = "8ecc17c8988e5acadcc78e631c48490f76150f2dfaa6cf8d7b4b67b097bd753b"
@@ -151,6 +152,22 @@ final class WorkshopSteamProcess: @unchecked Sendable {
             + (keepAlive ? [] : ["+quit"])
     }
 
+    static func launchFailure(for error: Error) -> WorkshopFailure {
+        // Foundation may wrap posix_spawn's EBADARCH in a Cocoa error.
+        // Keep architecture failures separate from permissions, missing libraries,
+        // and other launch failures so users get the correct recovery step.
+        var current = error as NSError
+        for _ in 0..<8 {
+            if (current.domain == NSPOSIXErrorDomain && current.code == Int(EBADARCH)) ||
+                (current.domain == NSCocoaErrorDomain && current.code == NSExecutableArchitectureMismatchError) {
+                return .incompatibleArchitecture
+            }
+            guard let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+            current = underlying
+        }
+        return .launchFailed
+    }
+
     private func run(binary: URL, account: String, password: String, id: String?, staging: URL,
                      timeout: TimeInterval, keepAlive: Bool, expectedBytes: Int64, onEvent: @escaping @Sendable (WorkshopSteamEvent) -> Void) throws -> URL {
         if lock.withLock({ cancelled }) { throw CancellationError() }
@@ -179,7 +196,7 @@ final class WorkshopSteamProcess: @unchecked Sendable {
             try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             process.environment = ["HOME": profile.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8", "TERM": "dumb"]
             process.standardInput = terminal; process.standardOutput = terminal; process.standardError = terminal
-            do { try process.run() } catch { throw WorkshopFailure.launchFailed }
+            do { try process.run() } catch { throw Self.launchFailure(for: error) }
             close(slave); ownsSlave = false
             ownsMaster = false
             session = Session(process: process, master: master, account: account, binary: binary, staging: staging)
@@ -258,7 +275,13 @@ final class WorkshopSteamProcess: @unchecked Sendable {
                     throw WorkshopFailure.downloadFailed
                 }
                 if id == nil {
-                    if lower.contains("failed") || lower.contains("error!") { throw WorkshopFailure.loginFailed }
+                    // Bootstrap assertions and runtime warnings can contain
+                    // "failed" before login begins. Only reject login failures,
+                    // allowing Valve's self-update to finish and restart.
+                    if transcript.range(of: #"(?m)^\s*(?:failed\b|error!)|(?:waiting for user info|logging in)[^\r\n]*\bfailed\b"#,
+                                        options: [.regularExpression, .caseInsensitive]) != nil {
+                        throw WorkshopFailure.loginFailed
+                    }
                     let marker = transcript.range(of: #"waiting for user info\.\.\.\s*ok"#, options: [.regularExpression, .caseInsensitive])
                     if reachedPrompt(after: marker, output: output) {
                         guard process.isRunning else { throw WorkshopFailure.loginFailed }
