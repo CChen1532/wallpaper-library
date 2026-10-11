@@ -5,9 +5,9 @@
 A macOS 15+ SwiftUI app that turns videos and Wallpaper Engine scenes into one library of live desktop wallpapers.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Status](https://img.shields.io/badge/status-0.2.73%20preview-orange)
+![Status](https://img.shields.io/badge/status-0.2.83%20preview-orange)
 
-> **Status: 0.2.73 preview.** The main features work, but some capabilities have not been verified on real hardware. *Known limitations* lists what is still open.
+> **Status: 0.2.83 preview.** The main features work, but some capabilities have not been verified on real hardware. *Known limitations* lists what is still open.
 > The repository is source-first. A prebuilt app is on the [Releases](https://github.com/CChen1532/wallpaper-library/releases) page (Apple silicon only, ad-hoc signed and not notarized, so right-click → *Open* the first time).
 > Or install it with Homebrew: `brew install --cask CChen1532/tap/wallpaperui` ([homebrew-tap](https://github.com/CChen1532/homebrew-tap)).
 > No wallpaper assets, scene packages or third-party runtimes are bundled in this repository.
@@ -32,6 +32,7 @@ A macOS 15+ SwiftUI app that turns videos and Wallpaper Engine scenes into one l
 ## Requirements
 
 - macOS 15.0 or later
+- Workshop downloads use the Intel version of SteamCMD. On Apple silicon, run `softwareupdate --install-rosetta` in Terminal and follow the installation prompts before connecting to Steam. See [Apple's installation instructions](https://support.apple.com/102527).
 - Swift 5.9+ / Apple Command Line Tools to build (the SwiftUI part has no external package dependencies)
 - A working Mirage Scene runtime (GPL-3.0, see below) to build the complete app
 
@@ -52,6 +53,8 @@ bash scripts/check.sh
 ```
 
 Build output goes to `dist/` and intermediate caches to `.build/`; neither is committed. The app is ad-hoc signed and not notarized.
+
+For the complete bundle, set `SCENE_RUNTIME_SOURCE` to a prepared Mirage runtime, `PORTABLE_PYTHON_SOURCE` to a standalone CPython root, and `MEDIA_TOOLS_SOURCE` to a directory containing `phonto`, `phonto-winwait`, `ffmpeg` and `ffprobe`. The Moon model is kept outside Git: download the `sourceFile` in `Scenes/LunarObservatory/asset-manifest.json` to its `localFile` path relative to that manifest, then run `python3 scripts/verify-moon-asset.py`. The model is included in the app bundle.
 
 ## Usage
 

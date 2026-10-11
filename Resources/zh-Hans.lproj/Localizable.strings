@@ -437,6 +437,9 @@
 "正在下载素材…" = "正在下载素材…";
 "下载组件" = "下载组件";
 "已就绪" = "已就绪";
+"已安装" = "已安装";
+"Rosetta 安装说明" = "Rosetta 安装说明";
+"SteamCMD 的处理器架构无法在当前系统运行。Apple 芯片 Mac 请先安装 Rosetta，然后重新连接 Steam。重新下载组件无法解决 Rosetta 缺失。" = "SteamCMD 的处理器架构无法在当前系统运行。Apple 芯片 Mac 请先安装 Rosetta，然后重新连接 Steam。重新下载组件无法解决 Rosetta 缺失。";
 "首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。" = "首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。";
 "准备下载组件" = "准备下载组件";
 "选择已有组件…" = "选择已有组件…";

@@ -481,6 +481,9 @@ struct WorkshopView: View {
                     if let error = workshop.connectionError {
                         Label(AppStrings.text(error, locale: locale), systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        if error == WorkshopFailure.incompatibleArchitecture.localizedDescription {
+                            Link("Rosetta 安装说明", destination: WorkshopComponent.rosettaHelpURL)
+                        }
                     }
                     if workshop.connectionReady {
                         Label("Steam 会话已就绪", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
@@ -560,13 +563,14 @@ struct WorkshopView: View {
                 DisclosureGroup(isExpanded: $showComponentDetails) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(component.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Link("Rosetta 安装说明", destination: WorkshopComponent.rosettaHelpURL)
                         Button("选择已有组件…", action: chooseComponent).disabled(workshop.busy || workshop.connecting)
                     }.padding(.top, 8)
                 } label: {
                     HStack {
                         Text("下载组件")
                         Spacer()
-                        Label("已就绪", systemImage: "checkmark.circle")
+                        Label("已安装", systemImage: "checkmark.circle")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

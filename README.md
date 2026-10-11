@@ -5,9 +5,9 @@
 macOS 15+ 原生 SwiftUI 动态壁纸库：把视频和 Wallpaper Engine 场景放进同一个图库，选中就能设为桌面动态背景。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Status](https://img.shields.io/badge/status-0.2.73%20preview-orange)
+![Status](https://img.shields.io/badge/status-0.2.83%20preview-orange)
 
-> **状态：0.2.73 预览版。** 主要功能可用，但有些能力还没做完实机验收，边界写在「已知限制」里。
+> **状态：0.2.83 预览版。** 主要功能可用，但有些能力还没做完实机验收，边界写在「已知限制」里。
 > 仓库以源码为主；已构建的应用包请到 [Releases](https://github.com/CChen1532/wallpaper-library/releases) 下载（仅 Apple 芯片，ad-hoc 签名、未公证，首次打开要右键 →「打开」）。仓库里不含壁纸素材、场景包和第三方运行时。
 > 也可以一条命令装：`brew install --cask CChen1532/tap/wallpaperui`（[homebrew-tap](https://github.com/CChen1532/homebrew-tap)）。
 
@@ -31,6 +31,7 @@ macOS 15+ 原生 SwiftUI 动态壁纸库：把视频和 Wallpaper Engine 场景�
 ## 系统要求
 
 - macOS 15.0 或更高版本
+- 创意工坊下载使用 Intel 版 SteamCMD；Apple 芯片 Mac 需要先安装 Rosetta。在终端运行 `softwareupdate --install-rosetta` 并按提示完成安装，再连接 Steam。详见 [Apple 安装说明](https://support.apple.com/102527)。
 - 构建需要 Swift 5.9+ / Apple Command Line Tools（SwiftUI 部分不依赖外部包）
 - 构建完整应用还需要可用的 Mirage Scene 运行时（GPL-3.0，见下）
 
@@ -51,6 +52,8 @@ bash scripts/check.sh
 ```
 
 构建产物写入 `dist/`，中间缓存写入 `.build/`，两者都不入库。应用使用本地 ad-hoc 签名，尚未公证。
+
+完整打包需要通过 `SCENE_RUNTIME_SOURCE` 指定已准备的 Mirage 运行时，通过 `PORTABLE_PYTHON_SOURCE` 指定独立 CPython 根目录，通过 `MEDIA_TOOLS_SOURCE` 指定包含 `phonto`、`phonto-winwait`、`ffmpeg` 和 `ffprobe` 的目录。月球模型不入源码库：按 `Scenes/LunarObservatory/asset-manifest.json` 的 `sourceFile` 下载到 `localFile` 对应位置，再运行 `python3 scripts/verify-moon-asset.py` 校验；模型会随应用包分发。
 
 ## 使用
 

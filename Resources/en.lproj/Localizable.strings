@@ -437,6 +437,9 @@
 "正在下载素材…" = "Downloading wallpaper…";
 "下载组件" = "Download Component";
 "已就绪" = "Ready";
+"已安装" = "Installed";
+"Rosetta 安装说明" = "How to install Rosetta";
+"SteamCMD 的处理器架构无法在当前系统运行。Apple 芯片 Mac 请先安装 Rosetta，然后重新连接 Steam。重新下载组件无法解决 Rosetta 缺失。" = "SteamCMD's processor architecture cannot run on this system. On Apple silicon, install Rosetta, then reconnect to Steam. Downloading the component again will not fix missing Rosetta.";
 "首次下载需要 SteamCMD。组件从 Valve 获取并校验，Apple 芯片 Mac 可能需要 Rosetta。" = "Downloads require SteamCMD. The component is downloaded from Valve and verified. Apple silicon Macs may need Rosetta.";
 "准备下载组件" = "Prepare Download Component";
 "选择已有组件…" = "Choose Existing Component…";
