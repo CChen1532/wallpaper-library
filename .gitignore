@@ -13,3 +13,6 @@ xcuserdata/
 # Python 辅助脚本缓存
 __pycache__/
 *.pyc
+
+# NASA 原始模型按 asset-manifest.json 校验后打包，不将大型二进制提交到源码库
+/Scenes/LunarObservatory/01-Selene/assets/moon.glb

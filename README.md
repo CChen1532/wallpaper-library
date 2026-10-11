@@ -5,9 +5,9 @@
 macOS 15+ 原生 SwiftUI 动态壁纸库：把视频和 Wallpaper Engine 场景放进同一个图库，选中就能设为桌面动态背景。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Status](https://img.shields.io/badge/status-0.2.73%20preview-orange)
+![Status](https://img.shields.io/badge/status-0.2.83%20preview-orange)
 
-> **状态：0.2.73 预览版。** 主要功能可用，但有些能力还没做完实机验收，边界写在「已知限制」里。
+> **状态：0.2.83 预览版。** 主要功能可用，但有些能力还没做完实机验收，边界写在「已知限制」里。
 > 仓库以源码为主；已构建的应用包请到 [Releases](https://github.com/CChen1532/wallpaper-library/releases) 下载（仅 Apple 芯片，ad-hoc 签名、未公证，首次打开要右键 →「打开」）。仓库里不含壁纸素材、场景包和第三方运行时。
 > 也可以一条命令装：`brew install --cask CChen1532/tap/wallpaperui`（[homebrew-tap](https://github.com/CChen1532/homebrew-tap)）。
 

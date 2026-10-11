@@ -5,9 +5,9 @@
 A macOS 15+ SwiftUI app that turns videos and Wallpaper Engine scenes into one library of live desktop wallpapers.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Status](https://img.shields.io/badge/status-0.2.73%20preview-orange)
+![Status](https://img.shields.io/badge/status-0.2.83%20preview-orange)
 
-> **Status: 0.2.73 preview.** The main features work, but some capabilities have not been verified on real hardware. *Known limitations* lists what is still open.
+> **Status: 0.2.83 preview.** The main features work, but some capabilities have not been verified on real hardware. *Known limitations* lists what is still open.
 > The repository is source-first. A prebuilt app is on the [Releases](https://github.com/CChen1532/wallpaper-library/releases) page (Apple silicon only, ad-hoc signed and not notarized, so right-click → *Open* the first time).
 > Or install it with Homebrew: `brew install --cask CChen1532/tap/wallpaperui` ([homebrew-tap](https://github.com/CChen1532/homebrew-tap)).
 > No wallpaper assets, scene packages or third-party runtimes are bundled in this repository.
