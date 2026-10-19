@@ -14,8 +14,8 @@ import Combine
     private let failure: () -> String?
     private var job: Task<Void, Never>?
     private var generation = 0
-    private var interval = 3600.0
-    private var mode = "rand"
+    private(set) var interval = 3600.0
+    private(set) var mode = "rand"
 
     init(items: @escaping () -> [RotationWallpaper], ready: @escaping () -> Bool,
          play: @escaping (RotationWallpaper) async -> Bool, failure: @escaping () -> String?) {

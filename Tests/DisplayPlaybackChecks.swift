@@ -138,8 +138,19 @@ import Foundation
         await first.perform(.next)
         try await waitUntil { first.state.currentPath == otherVideo.path && !first.selectionRotation.switching }
         check(second.state.currentPath == video.path, "rotation remains bound to its originating display after target selection changes")
+        second.startSelectedRotation(interval: 120, mode: "rand")
+        try await waitUntil { second.selectionRotation.currentID != nil && !second.selectionRotation.switching }
+        check(first.rotationIntervalText == "1 分钟" && second.rotationIntervalText == "2 分钟",
+              "each display reports its running interval after another display changes the shared defaults")
+        check(first.selectedRotationInterval == 60 && first.selectedRotationMode == "next" &&
+              second.selectedRotationInterval == 120 && second.selectedRotationMode == "rand",
+              "rotation controls restore the selected display's actual interval and mode")
+        check(first.selectedRotationInterval != collection.interval && first.selectedRotationMode != collection.mode,
+              "another display's defaults are not incorrectly treated as applied to the first display")
         await playback.suspend()
         check(!first.selectionRotation.active && !first.state.running && !second.state.running, "sleep/session lock cleans all display owners")
+        check(first.selectedRotationInterval == collection.interval && first.selectedRotationMode == collection.mode,
+              "stopped displays offer the last saved defaults for the next rotation")
         await first.perform(.play(video.path)); await second.perform(.play(video.path))
         await playback.shutdown()
         let finalA = await backends[a.uuid]!.state(), finalB = await backends[b.uuid]!.state()

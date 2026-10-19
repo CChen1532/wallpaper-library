@@ -44,16 +44,18 @@ actor CoverImageLoader {
     static let shared = CoverImageLoader()
     private let cache = NSCache<NSString, CoverRaster>()
     private let decodeQueue = OperationQueue()
-    private var pending: [String: Task<CoverRaster?, Never>] = [:]
+    private let pending = CoverLoadPool<String, CoverRaster>()
     private var remoteData: [URL: (Date, Data)] = [:]
-    private var remotePending: [URL: Task<Data?, Never>] = [:]
+    private let remotePending = CoverLoadPool<URL, Data>()
     private var remoteFailures: [URL: Date] = [:]
     private var networkCount = 0
-    private var networkWaiters: [CheckedContinuation<Void, Never>] = []
+    private var networkWaiters: [(UUID, CheckedContinuation<Bool, Never>)] = []
+    private let remoteFetch: @Sendable (URL) async -> Data?
     static let maximumBytes = 16 * 1024 * 1024
     static let animationBudget = 12 * 1024 * 1024
 
-    init() {
+    init(remoteFetch: (@Sendable (URL) async -> Data?)? = nil) {
+        self.remoteFetch = remoteFetch ?? { await Self.fetch($0) }
         cache.countLimit = 64
         cache.totalCostLimit = 128 * 1024 * 1024
         decodeQueue.maxConcurrentOperationCount = 2
@@ -93,29 +95,39 @@ actor CoverImageLoader {
     }
 
     private func coalesced(_ key: String, load: @escaping @Sendable () async -> CoverRaster?) async -> CoverRaster? {
-        if let task = pending[key] { return await task.value }
-        let task = Task { await load() }
-        pending[key] = task
-        let result = await task.value
-        pending[key] = nil
+        await pending.value(for: key) { await self.loadRaster(key, load: load) }
+    }
+
+    private func loadRaster(_ key: String, load: @Sendable () async -> CoverRaster?) async -> CoverRaster? {
+        guard !Task.isCancelled else { return nil }
+        if let cached = cache.object(forKey: key as NSString) { return cached }
+        let result = await load()
+        guard !Task.isCancelled else { return nil }
         if let result { cache.setObject(result, forKey: key as NSString, cost: result.cost) }
         return result
     }
 
     private func decode(url: URL? = nil, data: Data? = nil, size: CoverSize, animated: Bool) async -> CoverRaster? {
-        await withCheckedContinuation { continuation in
-            decodeQueue.addOperation {
-                let options = [kCGImageSourceShouldCache: false] as CFDictionary
-                let source = url.map { CGImageSourceCreateWithURL($0 as CFURL, options) }
-                    ?? data.map { CGImageSourceCreateWithData($0 as CFData, options) }
-                continuation.resume(returning: source.flatMap { $0 }.flatMap {
-                    Self.decodeFrames($0, size: size.rawValue, animated: animated)
-                })
+        let cancellation = CoverDecodeCancellation()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                decodeQueue.addOperation {
+                    guard !cancellation.isCancelled else { continuation.resume(returning: nil); return }
+                    let options = [kCGImageSourceShouldCache: false] as CFDictionary
+                    let source = url.map { CGImageSourceCreateWithURL($0 as CFURL, options) }
+                        ?? data.map { CGImageSourceCreateWithData($0 as CFData, options) }
+                    continuation.resume(returning: source.flatMap { $0 }.flatMap {
+                        Self.decodeFrames($0, size: size.rawValue, animated: animated,
+                                          shouldCancel: { cancellation.isCancelled })
+                    })
+                }
             }
-        }
+        }, onCancel: { cancellation.cancel() })
     }
 
-    static func decodeFrames(_ source: CGImageSource, size: Int, animated: Bool) -> CoverRaster? {
+    static func decodeFrames(_ source: CGImageSource, size: Int, animated: Bool,
+                             shouldCancel: () -> Bool = { false }) -> CoverRaster? {
+        guard !shouldCancel() else { return nil }
         let count = CGImageSourceGetCount(source)
         guard count > 0, let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
@@ -142,6 +154,7 @@ actor CoverImageLoader {
         var frames: [CGImage] = [], delays: [TimeInterval] = []
         var decodedCost = 0
         for slot in 0..<outputCount {
+            guard !shouldCancel() else { return nil }
             let index = isAnimation ? slot * count / outputCount : 0
             guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, options) else {
                 return frames.first.map(CoverRaster.init)
@@ -204,18 +217,19 @@ actor CoverImageLoader {
     }
 
     private func download(_ url: URL) async -> Data? {
+        await remotePending.value(for: url) { await self.fetchAndCache(url) }
+    }
+    private func fetchAndCache(_ url: URL) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         if let cached = remoteData[url], Date().timeIntervalSince(cached.0) < 300 { return cached.1 }
         if let failed = remoteFailures[url], Date().timeIntervalSince(failed) < 30 { return nil }
-        if let task = remotePending[url] { return await task.value }
-        let task = Task { () -> Data? in
-            await self.acquireNetwork()
-            let data = await Self.fetch(url)
-            self.releaseNetwork()
-            return data
-        }
-        remotePending[url] = task
-        let data = await task.value
-        remotePending[url] = nil
+        guard await acquireNetwork() else { return nil }
+        defer { releaseNetwork() }
+        guard !Task.isCancelled else { return nil }
+        let data = await remoteFetch(url)
+        // Cancellation is navigation, not a network failure. Do not cache its
+        // result or impose the failure cooldown when the user scrolls back.
+        guard !Task.isCancelled else { return nil }
         if let data {
             if remoteData.values.reduce(0, { $0 + $1.1.count }) + data.count > 32 * 1024 * 1024 { remoteData.removeAll() }
             remoteData[url] = (Date(), data)
@@ -225,13 +239,24 @@ actor CoverImageLoader {
         }
         return data
     }
-    private func acquireNetwork() async {
-        if networkCount < 4 { networkCount += 1; return }
-        await withCheckedContinuation { networkWaiters.append($0) }
+    private func acquireNetwork() async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if networkCount < 4 { networkCount += 1; return true }
+        let id = UUID()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume(returning: false) }
+                else { networkWaiters.append((id, continuation)) }
+            }
+        }, onCancel: { Task { await self.cancelNetworkWaiter(id) } })
+    }
+    private func cancelNetworkWaiter(_ id: UUID) {
+        guard let index = networkWaiters.firstIndex(where: { $0.0 == id }) else { return }
+        networkWaiters.remove(at: index).1.resume(returning: false)
     }
     private func releaseNetwork() {
         if networkWaiters.isEmpty { networkCount -= 1 }
-        else { networkWaiters.removeFirst().resume() }
+        else { networkWaiters.removeFirst().1.resume(returning: true) }
     }
     private static func fetch(_ url: URL) async -> Data? {
         let configuration = URLSessionConfiguration.ephemeral
@@ -251,4 +276,55 @@ actor CoverImageLoader {
             return data
         } catch { return nil }
     }
+}
+
+/// A card and its inspector can share work. Each reader owns a continuation;
+/// only the last reader leaving cancels the underlying fetch/decode.
+private actor CoverLoadPool<Key: Hashable & Sendable, Value: Sendable> {
+    private struct Flight {
+        let generation: UUID
+        let task: Task<Void, Never>
+        var readers: [UUID: CheckedContinuation<Value?, Never>]
+    }
+    private var flights: [Key: Flight] = [:]
+
+    func value(for key: Key, load: @escaping @Sendable () async -> Value?) async -> Value? {
+        let reader = UUID()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: nil); return }
+                if flights[key] != nil {
+                    flights[key]?.readers[reader] = continuation
+                } else {
+                    let generation = UUID()
+                    let task = Task {
+                        let value = await load()
+                        finish(key, generation: generation, value: Task.isCancelled ? nil : value)
+                    }
+                    flights[key] = Flight(generation: generation, task: task, readers: [reader: continuation])
+                }
+            }
+        }, onCancel: { Task { await self.cancel(key, reader: reader) } })
+    }
+    private func cancel(_ key: Key, reader: UUID) {
+        guard var flight = flights[key], let continuation = flight.readers.removeValue(forKey: reader) else { return }
+        if flight.readers.isEmpty {
+            flights[key] = nil
+            flight.task.cancel()
+        } else { flights[key] = flight }
+        continuation.resume(returning: nil)
+    }
+    private func finish(_ key: Key, generation: UUID, value: Value?) {
+        // A cancelled fetch may finish after a new request for the same URL.
+        guard let flight = flights[key], flight.generation == generation else { return }
+        flights[key] = nil
+        for continuation in flight.readers.values { continuation.resume(returning: value) }
+    }
+}
+
+private final class CoverDecodeCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    var isCancelled: Bool { lock.withLock { cancelled } }
+    func cancel() { lock.withLock { cancelled = true } }
 }

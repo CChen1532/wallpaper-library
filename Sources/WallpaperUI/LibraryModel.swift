@@ -62,10 +62,13 @@ import Combine
     var isWorking: Bool { busy || loading || scenePlayer.isTransitioning || videoBackdrop.transitioning || shuttingDown || otherDisplayBusy() || !displayConnected }
     var selectedWallpaper: Wallpaper? { items.first { $0.id == selected } }
     var isRotating: Bool { selectionRotation.active || state.rotating }
+    // Defaults are shared, but an already-running display keeps its own schedule.
+    var selectedRotationInterval: Int? { selectionRotation.active ? Int(exactly: selectionRotation.interval) : collection.interval }
+    var selectedRotationMode: String { selectionRotation.active ? selectionRotation.mode : collection.mode }
     var rotationStatusText: String { selectionRotation.active ? "所选壁纸轮播中" : stateIssue == nil ? (state.rotating ? "已开启" : "已关闭") : "状态未知" }
     var rotationIntervalText: String {
         guard selectionRotation.active || stateIssue == nil else { return "未知" }
-        let interval = selectionRotation.active ? collection.interval : state.interval
+        let interval = selectionRotation.active ? selectedRotationInterval : state.interval
         return interval.map { $0 % 60 == 0 ? "\($0 / 60) 分钟" : "\($0) 秒" } ?? "未知"
     }
     func selectNextVideo(in visibleIDs: [String], forward: Bool) {

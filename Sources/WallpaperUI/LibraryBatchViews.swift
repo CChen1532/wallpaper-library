@@ -85,12 +85,15 @@ struct SelectionRotationView: View {
     @Binding var draft: RotationDraft
     let chooseWallpapers: () -> Void
     private var applied: Bool {
-        model.selectionRotation.active && draft.matches(interval: collection.interval, mode: collection.mode)
+        model.selectionRotation.active && draft.matches(interval: model.selectedRotationInterval, mode: model.selectedRotationMode)
     }
     var body: some View {
         Form {
             Section("所选壁纸轮播") {
                 LabeledContent("当前状态", value: AppStrings.text(model.selectionRotation.active ? "已开启" : "已关闭", locale: locale))
+                if model.selectionRotation.active {
+                    LabeledContent("当前间隔", value: AppStrings.text(model.rotationIntervalText, locale: locale))
+                }
                 Text("仅轮播下方列表中的场景与视频；隐藏项会跳过。退出应用或系统睡眠时停止自动切换。")
                     .font(.callout).foregroundStyle(.secondary)
                 if let issue = model.selectionRotation.issue {
@@ -164,6 +167,7 @@ struct SelectionRotationView: View {
             }
         }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear { if !draft.isEdited { sync() } }
+            .onChange(of: model.targetDisplayUUID) { _, _ in sync() }
     }
-    private func sync() { draft.sync(interval: collection.interval, mode: collection.mode, supportedModes: ["rand", "next"]) }
+    private func sync() { draft.sync(interval: model.selectedRotationInterval, mode: model.selectedRotationMode, supportedModes: ["rand", "next"]) }
 }
